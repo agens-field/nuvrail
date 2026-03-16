@@ -1,8 +1,9 @@
 # Nuvrail — Marketing & Communications Ethos
 
-**Status:** Draft v1  
+**Status:** Draft v2  
 **Date:** March 16, 2026  
-**Author:** Jack (CEO)
+**Author:** Jack (CEO)  
+**Reviewed by:** Stella (CMO)
 
 ---
 
@@ -22,7 +23,7 @@ We speak to that person. We name the fear. We solve it.
 
 **Direct.** No fluff, no filler. We say what we mean in the fewest words that carry the full weight of the idea.
 
-**Grounded.** We use analogies. Nuvrail is the bonded professional with a logbook — not the stranger you hand your house keys to. We are the git pull request model applied to email. These are not marketing slogans. They are the clearest way to explain what we do to someone who has never heard of us.
+**Grounded.** We use analogies. Nuvrail is the pull request model applied to email. Every proposed action is staged, reviewed, and approved before it touches a real inbox — exactly the way a code change has to pass review before it touches production. This is not a marketing slogan. It is the clearest way to explain what we do to someone who has never heard of us.
 
 **Honest about the problem.** We do not minimize the risk AI agents pose to email. We name it, quantify it when we can, and position Nuvrail as the answer. Buyers trust vendors who understand the problem better than they do.
 
@@ -44,9 +45,13 @@ We speak to that person. We name the fear. We solve it.
 
 AI agents that access email are unsafe today — not because AI is untrustworthy, but because there is no mechanism for humans to review and sanction what agents do before they do it.
 
-Every other trust-adjacent product in this space either ignores the problem (Nylas gives raw access) or locks you into a single ecosystem (Microsoft Copilot, Google Workspace AI). Nuvrail is provider-agnostic, agent-agnostic, and built from the ground up around the approval layer.
+Every other trust-adjacent product in this space either ignores the problem or constrains the solution:
 
-The analogy that works: **email is the most sensitive data most companies have. Giving an AI agent raw access to it without a review layer is like giving a contractor a master key and no check-in process.** Nuvrail is the check-in process. Every proposed action is logged, staged, and held until a human approves it.
+- **Nylas** built the IMAP abstraction layer (raised $45M) and gives AI agents raw access. No approval layer.
+- **Microsoft Copilot / Google Workspace AI** — closed ecosystems. Approval is on their terms, in their product, for their customers only.
+- **Workflow automation tools (Zapier, Make, n8n)** — teams are already attempting to solve this with a Zap + Gmail + a Slack approval bot. Fragile, unaudited, not built for AI agents. That is the DIY incumbent we are replacing.
+
+Nuvrail is provider-agnostic, agent-agnostic, and built from the ground up around the approval layer. Every proposed email action is staged for human review, logged immutably, and held until a human approves the diff. Nothing reaches the inbox without sign-off.
 
 ---
 
@@ -56,6 +61,7 @@ The analogy that works: **email is the most sensitive data most companies have. 
 - We do not hide the tradeoff. Nuvrail adds a step to AI email workflows. That step is the product. We do not apologize for it.
 - We do not claim to be AI. We are the human layer that makes AI trustworthy.
 - We do not chase the consumer market at the expense of the enterprise buyer.
+- We do not call our customers "users." Enterprise buyers are decision-makers and their trust is the product. We say teams, customers, and buyers.
 
 ---
 
@@ -63,7 +69,7 @@ The analogy that works: **email is the most sensitive data most companies have. 
 
 **For** enterprise teams deploying AI agents that touch email —  
 **Nuvrail** is the approval gateway that sits between AI agents and real inboxes.  
-**Unlike** raw IMAP access or closed-ecosystem AI tools —  
+**Unlike** raw IMAP access, closed-ecosystem AI tools, or DIY workflow automation —  
 **Nuvrail** stages every proposed email action for human review, logs everything immutably, and works with any provider and any agent.
 
 ---
@@ -74,9 +80,9 @@ The analogy that works: **email is the most sensitive data most companies have. 
 |---|---|
 | Website / landing page | Clear, direct, problem-first. Lead with the fear, land on the solution. |
 | Technical docs | Precise. No marketing language. Show the architecture, not the tagline. |
-| Press / analyst briefings | Narrative-driven. Use the analogy. Anchor to the competitive gap (Nylas raised $45M and left the approval layer unsolved). |
+| Press / analyst briefings | Narrative-driven. Use the PR analogy. Anchor to the competitive gap — $45M raised by Nylas and the approval layer is still unsolved. |
 | Developer outreach | Peer-to-peer. No pitch. Show how Nuvrail makes their agent enterprise-deployable. |
-| Social | Sparse. We are not a social-first company. When we post, it means something. |
+| Social | Sparse and purposeful. When we post, it means something — a product milestone, a sharp insight about AI agent risk, or a customer story that makes the trust problem concrete. We don't post to fill a calendar. |
 
 ---
 
