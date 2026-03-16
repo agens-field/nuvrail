@@ -1,0 +1,13 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+COPY pyproject.toml .
+RUN pip install --no-cache-dir -e .
+
+COPY gateway/ ./gateway/
+COPY api/ ./api/
+
+ENV NUVRAIL_DATA_DIR=/data
+VOLUME ["/data"]
+
+CMD ["python", "-m", "gateway.proxy"]

@@ -1,0 +1,27 @@
+version: "3.9"
+
+services:
+  gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile.gateway
+    ports:
+      - "1143:1143"   # IMAP proxy
+      - "8080:8080"   # REST API
+    volumes:
+      - nuvrail_data:/data
+    env_file: .env
+    restart: unless-stopped
+
+  web:
+    build:
+      context: web
+      dockerfile: Dockerfile.web
+    ports:
+      - "3000:80"
+    depends_on:
+      - gateway
+    restart: unless-stopped
+
+volumes:
+  nuvrail_data:
