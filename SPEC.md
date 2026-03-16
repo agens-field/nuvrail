@@ -1,9 +1,9 @@
 # Nuvrail IMAP/SMTP Approval Gateway — Specification
 
-**Status:** Draft v2
+**Status:** Draft v3
 **Date:** March 16, 2026
 **Authors:** Martin Modahl, Jack (CEO)
-**Changelog:** v2 — security/auth model added, SMTP moved to launch, failure modes defined, schema updated, localhost replaced with deployment URLs, all open questions closed.
+**Changelog:** v2 — security/auth model added, SMTP moved to launch, failure modes defined, schema updated, localhost replaced with deployment URLs, all open questions closed. v3 — multi-provider support (Google, Microsoft, Apple, generic IMAP/SMTP) added to Milestone 2; provider abstraction layer specified.
 
 ---
 
@@ -505,8 +505,9 @@ This requires no IMAP extensions and works with any compliant IMAP client or age
 |---|---|
 | IMAP Proxy Server | Python + `asyncio` + custom IMAP4rev1 state machine |
 | SMTP Proxy Server | Python + `asyncio` + `aiosmtpd` |
-| Provider IMAP connection | `aioimaplib` + XOAUTH2 |
-| Provider SMTP connection | `aiosmtplib` + XOAUTH2 |
+| Provider IMAP connection | `aioimaplib` + provider auth (XOAUTH2 or app-specific password) |
+| Provider SMTP connection | `aiosmtplib` + provider auth (XOAUTH2 or app-specific password) |
+| Provider abstraction | `ProviderConnection` interface; implementations for Google, Microsoft, Apple, Generic IMAP/SMTP |
 | Token encryption | AES-256, per-user derived keys |
 | Local State DB | SQLite via `aiosqlite` (dev) / PostgreSQL (prod) |
 | Approval REST API | FastAPI |
@@ -540,7 +541,7 @@ This requires no IMAP extensions and works with any compliant IMAP client or age
 - [ ] Execution failure handling: alert + retry (§5.3, §12)
 - [ ] Rejection reverts local state; AI sees revert on next sync
 
-### Milestone 2 — Approval app + SMTP proxy + notifications (Weeks 3–4)
+### Milestone 2 — Approval app + SMTP proxy + notifications + multi-provider (Weeks 3–4)
 - [ ] React PWA with Pending / Audit / Agents views
 - [ ] SMTP proxy on `test.nuvrail.com:587`; all sends staged
 - [ ] SMTP send approval cards (always individual, never batched)
@@ -549,6 +550,12 @@ This requires no IMAP extensions and works with any compliant IMAP client or age
 - [ ] Batch grouping of related IMAP operations (§7.2)
 - [ ] Undo button for reversible IMAP operations within 24h window (§7.3)
 - [ ] Fallback email digest for unacknowledged push notifications
+- [ ] `ProviderConnection` abstraction layer — clean interface separating gateway logic from provider-specific auth
+- [ ] **Microsoft / Outlook** — OAuth2 (Azure AD personal + work accounts), XOAUTH2 for IMAP/SMTP against `outlook.office365.com` / `smtp.office365.com`
+- [ ] **Apple / iCloud** — app-specific password flow (guided setup UI), stored AES-256 encrypted; IMAP `imap.mail.me.com`, SMTP `smtp.mail.me.com`
+- [ ] **Generic IMAP/SMTP** — username + password auth (stored encrypted); user supplies host, port, TLS settings; covers Yahoo, Fastmail, self-hosted, and any standard IMAP/SMTP server
+- [ ] Provider selection UI in onboarding flow: Google / Microsoft / Apple / Other
+- [ ] Per-provider connection health indicator in approval app
 
 ### Milestone 3 — Polish + rules + deployment (Week 5)
 - [ ] Auto-approval rules engine for IMAP operations (sends excluded)
@@ -577,11 +584,11 @@ This requires no IMAP extensions and works with any compliant IMAP client or age
 | 11 | Urgency definition? | Sends and Trash moves always urgent; 12h pending ops escalated; user-defined VIP rules |
 | 12 | Notification fallback? | Email digest after 1 hour of unacknowledged Web Push |
 | 13 | Deployment URLs? | `test.nuvrail.com` (testing), `mail.nuvrail.com` (production) |
+| 14 | Multi-provider support timeline? | Google (Milestone 0–1), Microsoft + Apple + Generic IMAP/SMTP (Milestone 2) — provider-agnostic from launch |
 
 ---
 
 ## 16. Open Questions
 
-- [ ] Multi-provider support timeline: Gmail only through Phase 1, or begin Outlook in Phase 2?
 - [ ] Should the open source release include the full gateway + staging engine, or proxy only?
-- [ ] Android app: Phase 2 alongside Outlook, or later?
+- [ ] Android app: Phase 2 alongside multi-provider, or later?
