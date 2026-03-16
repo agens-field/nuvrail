@@ -1,9 +1,10 @@
 # Nuvrail — Marketing & Communications Plan
 
-**Status:** Draft v1  
+**Status:** Draft v2  
 **Date:** March 16, 2026  
 **Author:** Stella (CMO)  
-**Inputs:** MarketingEthos.md (v2), SPEC.md
+**Inputs:** MarketingEthos.md (v2), SPEC.md  
+**Board decisions incorporated:** Open source core (v2), SMTP at launch (v2), Nuvrail as unified company/product name (v2)
 
 ---
 
@@ -27,7 +28,7 @@ Nuvrail is the missing layer.
 
 ### What we are
 
-The approval gateway between AI agents and real inboxes. Provider-agnostic. Agent-agnostic. Every proposed action staged, reviewed, logged.
+The approval gateway between AI agents and real inboxes. Provider-agnostic. Agent-agnostic. Every proposed action staged, reviewed, logged. The core is open source — anyone can run it, audit it, and contribute to it. The managed service is how most teams will actually use it.
 
 ### What we are not
 
@@ -71,11 +72,13 @@ The DIY automation category is our most important near-term competitive target. 
 > Nuvrail is the approval gateway that changes that: every write is a diff, every approval is a commit, every action is logged forever.
 
 ### Trust proof points (in priority order)
-1. **No permanent deletes** — the gateway blocks EXPUNGE; nothing is gone until you say so
-2. **Immutable audit log** — every proposed, approved, and rejected action is recorded
-3. **Provider-agnostic** — works with Gmail today; designed to work with any IMAP server
-4. **Agent-agnostic** — the AI sees standard IMAP; Nuvrail requires no agent modifications
-5. **Human-readable diffs** — approvals show plain language, not raw commands
+1. **Open source core** — the proxy, staging logic, and audit schema are public; anyone can audit how it works
+2. **No permanent deletes** — the gateway blocks EXPUNGE; nothing is gone until you say so
+3. **Immutable audit log** — every proposed, approved, and rejected action is recorded
+4. **IMAP and SMTP** — covers the full email surface: reads, writes, and sends
+5. **Provider-agnostic** — works with any IMAP/SMTP server; not locked to Gmail or any ecosystem
+6. **Agent-agnostic** — the AI sees standard protocols; Nuvrail requires no agent modifications
+7. **Human-readable diffs** — approvals show plain language, not raw commands
 
 ### Tagline options (for testing)
 - *The approval layer between AI agents and your inbox.*
@@ -124,6 +127,7 @@ Goal: Build the audience before we have a product to sell.
 - Open a waitlist landing page. Single CTA: "Get early access." Capture email + company size + "are you deploying AI agents today?"
 - Jack and KC begin posting on X/Twitter and LinkedIn: short, sharp takes on AI agent risk, with no product pitch yet. Build credibility in the space before we pitch.
 - Identify 20 target companies (Series B–D B2B SaaS, known to be deploying AI tooling). Research who the CTO or VP Eng is.
+- Prepare the open source repo for public visibility: clean README, architecture diagram, self-hosted quickstart, clear statement of what's open vs. what's Nuvrail Cloud.
 
 **Success metric:** 500 waitlist signups before launch. At least 10 from target company list.
 
@@ -131,7 +135,7 @@ Goal: Build the audience before we have a product to sell.
 Goal: Get 10 technical teams using the product and telling us what breaks.
 
 **Actions:**
-- Show HN post: *"Show HN: Nuvrail — IMAP approval gateway for AI agents (like git, but for email)"*. Link to GitHub repo + demo video.
+- Show HN post: *"Show HN: Nuvrail — IMAP/SMTP approval gateway for AI agents (like git, but for email)"*. Link to GitHub repo + demo video.
 - Direct outreach to 20 target companies. Personal email from Jack (CEO). Not a pitch — an invitation: "We built the thing you've been trying to build with Zapier. Would you be willing to try it?"
 - Post demo video on X, LinkedIn, and relevant Discord/Slack communities (AI agent builders, developer tools).
 - Offer white-glove onboarding for first 10 teams. Stella or KC on a call. Learn everything.
@@ -192,13 +196,31 @@ Goal: Establish Nuvrail as the default answer to "how do you give AI agents emai
 
 ## 6. Developer Relations
 
-Nuvrail's growth is developer-led. The enterprise buyer says yes only after their engineering team has evaluated the product. This means developer trust is the prerequisite for everything else.
+Nuvrail's growth is developer-led. The enterprise buyer says yes only after their engineering team has evaluated the product. Developer trust is the prerequisite for everything else.
+
+### Open Source Strategy
+
+The core of Nuvrail — the IMAP/SMTP proxy, the staging queue, the audit log schema — is open source. This is not a charity decision; it's the primary distribution and trust mechanism.
+
+**What's open source:**
+- The IMAP and SMTP proxy servers
+- The staging queue and approval logic
+- The audit log schema and query interface
+- Self-hosted deployment via Docker Compose (single command)
+
+**What's Nuvrail Cloud (the business):**
+- Managed hosting — we run it, monitor it, handle uptime
+- OAuth integrations with Gmail, Outlook, and others
+- The iOS/Android approval app
+- Multi-account and team features (shared audit trail, role-based approval)
+- SLAs, support, and enterprise security features
+
+**The conversion path:** A developer finds the repo, runs it locally, shows their CTO. The CTO says "great, but we're not running our own infrastructure." That's the sale. Open source is the top of funnel; the managed service captures the revenue.
 
 ### Principles
-- Open source what makes sense to open source (the IMAP proxy layer is a strong candidate; discuss with KC)
 - Docs are a product, not an afterthought. The integration guide must be completable in under 15 minutes.
 - Be honest in public about limitations and edge cases. Developers notice when companies hide the hard parts.
-- Show the architecture. The SPEC.md is already a strong piece of developer communication — a version of it should be public.
+- Show the architecture. The SPEC.md is already strong developer communication — a public version belongs in the repo on day one.
 
 ### Community
 - Primary channel: GitHub (issues, discussions, public roadmap)
@@ -218,8 +240,9 @@ Nuvrail's growth is developer-led. The enterprise buyer says yes only after thei
 
 1. **The gap Nylas left open.** $45M raised to build AI email infrastructure. The approval layer is still missing. That's the story.
 2. **The DIY problem.** Engineers are duct-taping together Zap + Gmail + Slack to solve a problem that deserves a real product.
-3. **The governance angle.** As AI regulation increases (EU AI Act, emerging US standards), companies will need audit trails for AI actions. Nuvrail is the audit trail for email.
-4. **The founding story.** The insight came from actually using AI agents with email access and watching them act without guardrails. Personal stakes make a good story.
+3. **Open source trust.** The core is public. You can read exactly how every operation is staged and logged. That's not typical for infrastructure that handles your email — and it's the point.
+4. **The governance angle.** As AI regulation increases (EU AI Act, emerging US standards), companies will need audit trails for AI actions. Nuvrail is the audit trail for email.
+5. **The founding story.** The insight came from actually using AI agents with email access and watching them act without guardrails. Personal stakes make a good story.
 
 ### Target outlets
 - **Developer-focused:** Hacker News, The Register, InfoQ
@@ -276,10 +299,15 @@ We are not spending money to amplify a message we haven't validated. The pre-lau
 
 ## 10. Open Questions for the Board
 
-1. **Open source?** Should the IMAP proxy layer be open source? This is a significant trust signal for developers and could drive organic distribution. Needs a conversation with KC about what's defensible if the core is open.
-2. **Pricing model?** We haven't defined this. Enterprise infrastructure typically goes usage-based (per operation, per seat, or per account). Need to decide before Phase 2 launch.
-3. **SMTP scope and timeline?** The spec notes SMTP comes after IMAP. Should we announce SMTP support as a roadmap item at launch, or stay quiet until it's ready?
-4. **"Nuvrail" brand vs. product name?** Is Nuvrail the company and the product? Or should the product have its own name? Simpler to keep them unified at this stage.
+1. **Pricing model?** *(Awaiting Jack's input.)* Enterprise infrastructure typically goes usage-based (per operation, per seat, or per account). The open source / managed service split gives us a natural free tier (self-hosted) vs. paid tier (Nuvrail Cloud). Need to decide before Phase 2 launch.
+
+The following questions have been resolved:
+
+| Question | Decision |
+|---|---|
+| Open source? | Yes — IMAP/SMTP proxy, staging queue, audit log. Managed service is the business. |
+| SMTP at launch? | Yes — IMAP and SMTP launch together. |
+| Nuvrail brand vs. product name? | Nuvrail is both the company and the product. One name. |
 
 ---
 
