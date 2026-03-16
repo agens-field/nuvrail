@@ -1,9 +1,9 @@
 # Nuvrail IMAP/SMTP Approval Gateway — Specification
 
-**Status:** Draft v3
+**Status:** Draft v4
 **Date:** March 16, 2026
 **Authors:** Martin Modahl, Jack (CEO)
-**Changelog:** v2 — security/auth model added, SMTP moved to launch, failure modes defined, schema updated, localhost replaced with deployment URLs, all open questions closed. v3 — multi-provider support (Google, Microsoft, Apple, generic IMAP/SMTP) added to Milestone 2; provider abstraction layer specified.
+**Changelog:** v2 — security/auth model added, SMTP moved to launch, failure modes defined, schema updated, localhost replaced with deployment URLs, all open questions closed. v3 — multi-provider support (Google, Microsoft, Apple, generic IMAP/SMTP) added to Milestone 2; provider abstraction layer specified. v4 — open source scope defined: IMAP/SMTP gateway + web approval app are open source (MIT or Apache 2.0); iOS app is proprietary and closed source.
 
 ---
 
@@ -585,10 +585,43 @@ This requires no IMAP extensions and works with any compliant IMAP client or age
 | 12 | Notification fallback? | Email digest after 1 hour of unacknowledged Web Push |
 | 13 | Deployment URLs? | `test.nuvrail.com` (testing), `mail.nuvrail.com` (production) |
 | 14 | Multi-provider support timeline? | Google (Milestone 0–1), Microsoft + Apple + Generic IMAP/SMTP (Milestone 2) — provider-agnostic from launch |
+| 15 | Open source scope? | IMAP/SMTP gateway + web approval app (including staging engine) are open source. iOS app is proprietary closed source. |
 
 ---
 
-## 16. Open Questions
+## 16. Open Source Boundary
 
-- [ ] Should the open source release include the full gateway + staging engine, or proxy only?
+```
+┌─────────────────────────────────────────────────────────┐
+│  OPEN SOURCE (MIT or Apache 2.0)                        │
+│                                                         │
+│  • IMAP Proxy Server                                    │
+│  • SMTP Proxy Server                                    │
+│  • Staging Engine + Staging Queue                       │
+│  • Audit Log (schema + query interface)                 │
+│  • Approval REST API                                    │
+│  • Web Approval App (React PWA)                         │
+│  • Docker Compose self-hosted deployment                │
+│  • Provider abstraction layer                           │
+│                                                         │
+├─────────────────────────────────────────────────────────┤
+│  PROPRIETARY (closed source)                            │
+│                                                         │
+│  • iOS App (SwiftUI)                                    │
+│  • Nuvrail Cloud managed infrastructure                 │
+│  • Multi-tenant platform layer (Phase 3)                │
+│  • Enterprise features (SSO, team audit trail, SLAs)    │
+└─────────────────────────────────────────────────────────┘
+```
+
+The open source core is the trust mechanism. Anyone can audit exactly how operations are staged, logged, and executed. Self-hosted deployment is fully supported and free.
+
+The iOS app is proprietary. It is a distribution advantage (App Store), a UX differentiator (native push, haptics, action buttons), and a monetization surface. It is not required to run Nuvrail — the web PWA covers the same approval flows.
+
+The Nuvrail Cloud managed service (hosting, OAuth integrations, uptime SLA, enterprise features) is the primary revenue model.
+
+---
+
+## 17. Open Questions
+
 - [ ] Android app: Phase 2 alongside multi-provider, or later?
