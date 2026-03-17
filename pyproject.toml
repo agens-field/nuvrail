@@ -34,5 +34,5 @@ line-length = 100
 include = ["gateway*", "api*"]
 
 [build-system]
-requires = ["setuptools"]
+requires = ["setuptools>=64"]
 build-backend = "setuptools.build_meta"
