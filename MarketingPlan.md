@@ -104,7 +104,7 @@ Recommend A/B testing the first two on the landing page at launch.
 **Role:** Founding engineer at an AI startup building an email automation agent  
 **Situation:** First enterprise prospect asked "what happens if the agent makes a mistake?" Priya doesn't have an answer.  
 **Fear:** Losing the deal because they can't credibly answer the trust question.  
-**What they need from us:** A drop-in approval layer they can point to. Fast integration, clear docs, no need to build it themselves.  
+**What they need from us:** A drop-in approval layer they can point to. Fast integration, clear docs, no need to build it themselves. Cloud Starter lets them start free — no procurement conversation, no credit card.  
 **Where they live:** GitHub, Discord developer communities, AI/agent-focused newsletters (The Rundown, TLDR AI), X/Twitter.
 
 ### Persona 3 — "The DIY Escapee" (near-term conversion target)
@@ -297,17 +297,42 @@ We are not spending money to amplify a message we haven't validated. The pre-lau
 
 ---
 
-## 10. Open Questions for the Board
+## 10. Pricing Model
 
-1. **Pricing model?** *(Awaiting Jack's input.)* Enterprise infrastructure typically goes usage-based (per operation, per seat, or per account). The open source / managed service split gives us a natural free tier (self-hosted) vs. paid tier (Nuvrail Cloud). Need to decide before Phase 2 launch.
+All board decisions resolved. No open questions.
 
-The following questions have been resolved:
+### Tiers
+
+| Tier | What you get | Price |
+|---|---|---|
+| **Self-Hosted** | Full open source, community support, unlimited everything | Free |
+| **Cloud Starter** | 1 email account, 1 AI agent, 30-day audit history | Free (freemium) |
+| **Cloud Pro** | Up to 5 accounts, 5 agents, unlimited audit, auto-approval rules, Web Push | $29/account/month |
+| **Cloud Team** | Unlimited accounts/agents, shared audit trail, role-based approvals, SSO, SLA | $199/month flat (up to ~10 accounts) or custom above |
+
+### Why this structure works for marketing
+
+**Self-Hosted → Cloud Starter** is a no-friction conversion. A developer who runs the open source version and wants to skip managing infrastructure upgrades to Cloud Starter without a procurement conversation.
+
+**Cloud Starter → Cloud Pro** is the Priya conversion. She starts free, her enterprise prospect asks "how do we deploy this at scale?", and the answer is Cloud Team — with Priya as the champion inside the deal.
+
+**Cloud Team** is the enterprise sale. Flat $199 removes the "how much will this cost us?" anxiety from the initial conversation. Custom pricing above ~10 accounts keeps the door open for large deployments.
+
+### Marketing implications
+
+- The freemium tier means our developer outreach has a zero-friction CTA: "Sign up free, no credit card."
+- Self-Hosted remains the trust anchor — we never hide the product behind a paywall
+- Pricing page copy should lead with Self-Hosted to establish credibility, then present Cloud tiers as "let us run it for you"
+- $29/account/month is defensible on value: one prevented incident (wrong email sent by an agent, client relationship damaged) is worth more than a year of Pro
+
+### Resolved board decisions
 
 | Question | Decision |
 |---|---|
 | Open source? | Yes — IMAP/SMTP proxy, staging queue, audit log. Managed service is the business. |
 | SMTP at launch? | Yes — IMAP and SMTP launch together. |
 | Nuvrail brand vs. product name? | Nuvrail is both the company and the product. One name. |
+| Pricing model? | Four-tier structure above. Numbers to be refined before Phase 2 launch. |
 
 ---
 
