@@ -1,10 +1,10 @@
 # Nuvrail — Marketing & Communications Plan
 
-**Status:** Draft v2  
+**Status:** Draft v3  
 **Date:** March 16, 2026  
 **Author:** Stella (CMO)  
 **Inputs:** MarketingEthos.md (v2), SPEC.md  
-**Board decisions incorporated:** Open source core (v2), SMTP at launch (v2), Nuvrail as unified company/product name (v2)
+**Board decisions incorporated:** Open source core (v2), SMTP at launch (v2), Nuvrail as unified company/product name (v2), pricing model (v2), dual founding story / founding story PR priority / developer press sequencing / customer success / agent-agnostic amplification (v3)
 
 ---
 
@@ -71,6 +71,11 @@ The DIY automation category is our most important near-term competitive target. 
 ### Solution statement (one sentence)
 > Nuvrail is the approval gateway that changes that: every write is a diff, every approval is a commit, every action is logged forever.
 
+### Agent-agnostic message (use early and often)
+> Nuvrail works with any AI agent and any email provider. We have no incentive to lock you in — and that's the point.
+
+This is a meaningful trust signal that distinguishes us from every closed-ecosystem competitor. It should appear on the pricing page, in the integration guide, and in enterprise sales conversations. "We don't care what AI you're using" is the plain-language version.
+
 ### Trust proof points (in priority order)
 1. **Open source core** — the proxy, staging logic, and audit schema are public; anyone can audit how it works
 2. **No permanent deletes** — the gateway blocks EXPUNGE; nothing is gone until you say so
@@ -132,15 +137,16 @@ Goal: Build the audience before we have a product to sell.
 **Success metric:** 500 waitlist signups before launch. At least 10 from target company list.
 
 ### Phase 1 — Developer Preview (Milestone 2 complete)
-Goal: Get 10 technical teams using the product and telling us what breaks.
+Goal: Get 10 technical teams using the product and telling us what breaks. Build developer press credibility before Phase 2.
 
 **Actions:**
 - Show HN post: *"Show HN: Nuvrail — IMAP/SMTP approval gateway for AI agents (like git, but for email)"*. Link to GitHub repo + demo video.
 - Direct outreach to 20 target companies. Personal email from Jack (CEO). Not a pitch — an invitation: "We built the thing you've been trying to build with Zapier. Would you be willing to try it?"
 - Post demo video on X, LinkedIn, and relevant Discord/Slack communities (AI agent builders, developer tools).
 - Offer white-glove onboarding for first 10 teams. Stella or KC on a call. Learn everything.
+- Pitch developer newsletters: The Changelog, TLDR AI, Console.dev. Developer credibility built here makes the Phase 2 business press pitch stronger.
 
-**Success metric:** 10 teams actively using the product. At least 3 willing to give a quote.
+**Success metric:** 10 teams actively using the product. At least 3 willing to give a quote. At least 1 developer newsletter feature.
 
 ### Phase 2 — Public Launch (Milestone 3 complete)
 Goal: Establish Nuvrail as the default answer to "how do you give AI agents email access safely?"
@@ -160,12 +166,15 @@ Goal: Establish Nuvrail as the default answer to "how do you give AI agents emai
 
 ### Tier 1 — Foundational (write once, use everywhere)
 
-| Content | Format | Purpose |
-|---|---|---|
-| "Email has no git" | Long-form post (1,500 words) | Establishes the founding insight; drives waitlist |
-| Product explainer video | 3-minute demo | Shows the approval flow end-to-end; front page of website |
-| Architecture one-pager | PDF / web page | Gives CTOs and CISOs something to review internally |
-| Integration guide | Technical docs | Tells developers how to point their agent at Nuvrail in 15 minutes |
+| Content | Format | Audience | Purpose |
+|---|---|---|---|
+| "Email has no git" | Long-form post (1,500 words) | Developers / Hacker News | Founding insight in developer language; git framing, Show HN angle; drives waitlist signups from technical audience |
+| "The contractor analogy" | Long-form post (1,200 words) | CTOs / CISOs / LinkedIn | Same founding insight in risk language; contractor with a master key framing; what happens when there's no check-in process; drives enterprise inbound |
+| Product explainer video | 3-minute demo | Both | Shows the approval flow end-to-end; front page of website |
+| Architecture one-pager | PDF / web page | CTO / CISO | Something they can review internally and share with their security team |
+| Integration guide | Technical docs | Developers | How to point any agent at Nuvrail in under 15 minutes |
+
+These two founding posts are the same story told to two different people. The developer version leads with the git analogy and the missing infrastructure layer. The enterprise version leads with the risk — a real scenario of what goes wrong with unrestricted AI email access — and lands on Nuvrail as the check-in process. Neither version mentions the other's framing. Each should feel written for exactly one reader.
 
 ### Tier 2 — Launch assets
 
@@ -238,25 +247,70 @@ The core of Nuvrail — the IMAP/SMTP proxy, the staging queue, the audit log sc
 
 ### Story angles (in priority order)
 
-1. **The gap Nylas left open.** $45M raised to build AI email infrastructure. The approval layer is still missing. That's the story.
-2. **The DIY problem.** Engineers are duct-taping together Zap + Gmail + Slack to solve a problem that deserves a real product.
-3. **Open source trust.** The core is public. You can read exactly how every operation is staged and logged. That's not typical for infrastructure that handles your email — and it's the point.
-4. **The governance angle.** As AI regulation increases (EU AI Act, emerging US standards), companies will need audit trails for AI actions. Nuvrail is the audit trail for email.
-5. **The founding story.** The insight came from actually using AI agents with email access and watching them act without guardrails. Personal stakes make a good story.
+1. **The gap Nylas left open.** $45M raised to build AI email infrastructure. The approval layer is still missing. That's the hook — but no journalist writes a piece from a hook alone.
+2. **The founding story.** "We built this because we watched an AI agent have unrestricted email access and it was alarming." Personal stakes are what make this a story rather than a product announcement. The Nylas gap is the context; the founding story is the reason anyone cares. These two belong together in every pitch.
+3. **The DIY problem.** Engineers are duct-taping together Zap + Gmail + Slack to solve a problem that deserves a real product. Good for developer-focused outlets; relatable and specific.
+4. **Open source trust.** The core is public. You can read exactly how every operation is staged and logged. That's not typical for infrastructure that handles your email — and it's the point.
+5. **The governance angle.** As AI regulation increases (EU AI Act, emerging US standards), companies will need audit trails for AI actions. Nuvrail is the audit trail for email. Longer arc — relevant for analyst briefings more than launch press.
 
-### Target outlets
-- **Developer-focused:** Hacker News, The Register, InfoQ
-- **AI-focused:** Import AI (Jack Clark), The Batch (Andrew Ng), TLDR AI, The Rundown
-- **Business/enterprise:** TechCrunch, The Information, Protocol (if revived)
-- **Analyst firms:** Gartner (AI governance track), Forrester (zero-trust AI), 451 Research
+### Target outlets by phase
+
+**Phase 1 (Developer Preview) — build developer credibility first:**
+- The Changelog podcast / newsletter
+- TLDR AI, The Rundown
+- Hacker News (Show HN)
+- Console.dev (developer tools newsletter)
+- AI-focused: Import AI (Jack Clark), The Batch (Andrew Ng)
+
+Developer press credibility is what makes the Phase 2 business press pitch land. "Already covered by The Changelog and featured on HN front page" is a better opening than a cold pitch.
+
+**Phase 2 (Public Launch) — business and enterprise press:**
+- TechCrunch, The Information
+- The Register, InfoQ
+- Analyst firms: Gartner (AI governance track), Forrester (zero-trust AI), 451 Research
 
 ### Timing
-- Analyst briefings: begin 6 weeks before public launch (give them time to write)
-- Press embargo: lift day of launch, coordinated with Show HN and Product Hunt
+- Developer newsletter pitches: begin at Phase 1 launch
+- Analyst briefings: begin 6 weeks before Phase 2 launch (give them time to write)
+- Business press embargo: lift day of Phase 2 launch, coordinated with Show HN and Product Hunt
 
 ---
 
-## 8. Metrics & Success Criteria
+## 8. Customer Success
+
+For a trust-first product, onboarding is not an operational detail — it's part of the product. An enterprise buyer who doesn't feel safe in the first 10 minutes will never become a reference customer. A reference customer is worth more than any press mention.
+
+### The first 30 days
+
+**Days 1–3: Connection and orientation**
+- Personal welcome from Stella or KC (not a drip sequence)
+- Confirm the agent is connected through Nuvrail and operations are staging correctly
+- Walk through the audit log together — show them what it looks like when the AI proposes an action
+- Answer the CISO question before they ask it: here's exactly what we log, where it lives, and how to export it
+
+**Days 4–14: First real use**
+- Customer runs their AI agent against real email with Nuvrail in the loop
+- We are on Slack or email, same-day response, for any friction
+- We document every question they ask — these become FAQ entries, docs improvements, or product fixes
+- If they hit an edge case, we fix it or explain the workaround personally
+
+**Days 15–30: Value confirmation**
+- Short check-in: what's working, what's not, what would make this a no-brainer to expand?
+- If they're happy: ask for a quote and whether they'd participate in a case study
+- If they're not: understand why before they churn — this is the most valuable conversation we can have
+
+### Reference customer goal
+
+Every Phase 1 customer is a potential reference customer. By 90 days post-launch, we want at least one customer who will:
+- Take a call from a prospect
+- Let us publish their story (anonymized if needed)
+- Give us a quote we can use on the website
+
+Reference customers close enterprise deals faster than any piece of content we can write. Invest accordingly.
+
+---
+
+## 9. Metrics & Success Criteria
 
 ### Pre-launch
 - Waitlist signups: **500 target**
@@ -281,7 +335,7 @@ The core of Nuvrail — the IMAP/SMTP proxy, the staging queue, the audit log sc
 
 ---
 
-## 9. Budget Priorities (Seed Stage)
+## 10. Budget Priorities (Seed Stage)
 
 We are not spending money to amplify a message we haven't validated. The pre-launch and developer preview phases should run on near-zero paid spend.
 
@@ -297,7 +351,7 @@ We are not spending money to amplify a message we haven't validated. The pre-lau
 
 ---
 
-## 10. Pricing Model
+## 11. Pricing Model
 
 All board decisions resolved. No open questions.
 
