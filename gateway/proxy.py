@@ -1,31 +1,46 @@
 """
-Nuvrail IMAP Proxy — Milestone 0.1: Dumb byte pipe with LOGIN interception.
+Nuvrail IMAP Proxy — Milestone 0.2: Parser-aware intercept.
 
-Data flow:
+Data flow (0.2):
 
-  Client (plain TCP)               proxy.py               Upstream (SSL/TLS)
-  ──────────────────               ────────               ──────────────────
-       connect          ──────────────────────────►       SSL connect
-                        ◄──────────────────────────       greeting
+  Client (plain TCP)               proxy.py                Upstream (SSL/TLS)
+  ──────────────────               ────────                ──────────────────
+       connect          ──────────────────────────►        SSL connect
+                        ◄──────────────────────────        greeting
        ◄── greeting
-       cmd ──────────────────────────────────────►
-                        (intercepts LOGIN, logs it)
-                        ◄──────────────────────────       response
-       ◄── response
-       ...              ◄──────────────────────────       ...
-       disconnect ──────────────────────────────►
 
-Sub-milestone 0.1: NO parser, NO classifier, NO staging engine.
-The LOGIN line is intercepted only for logging/future translation.
-All bytes pass through to upstream unchanged.
+       cmd ────────────────► parse_line()
+                                   │
+                          ┌────────┴──────────────────────┐
+                          │  classify() → read             │  classify() → write/blocked
+                          │                                │
+                          ▼                                ▼
+                  forward cmd to upstream          intercept & respond locally
+                  ◄──── upstream response          send OK [STAGED] / OK Noted
+                  ◄──── forward response
+
+       (special case: sync literal {N})
+       ◄── "+ Ready for literal data"
+       literal bytes ────────────────                 (discarded — staged stub)
+       ◄── "<tag> OK [STAGED] ..."
+
+       ...              ◄──────────────────────────        ...
+       disconnect ────────────────────────────────►
+
+Sub-milestone 0.1 LOGIN intercept is preserved; 0.3 will translate to XOAUTH2.
+Upstream→client direction is still a raw byte pump.
 """
 
 import asyncio
 import logging
 import os
+import re
 import ssl
 
 from dotenv import load_dotenv
+
+from gateway.command_router import classify
+from gateway.imap_parser import parse_line
 
 load_dotenv()
 
@@ -36,39 +51,92 @@ _UPSTREAM_PORT: int = int(os.environ.get("NUVRAIL_TEST_IMAP_PORT", "993"))
 
 _READ_CHUNK = 4096
 
+# Matches the literal size at end of an IMAP line: {N} or {N+}
+_LITERAL_RE = re.compile(r"\{(\d+)\+?\}$")
+
 
 async def _client_to_upstream(
     client_reader: asyncio.StreamReader,
     upstream_writer: asyncio.StreamWriter,
+    client_writer: asyncio.StreamWriter,
     peer: str,
 ) -> None:
-    """Pump lines from client → upstream, intercepting LOGIN for logging.
+    """Parse each client line and route: read→upstream, write/blocked→intercept.
 
-    Reads line-by-line so we can detect the LOGIN command without a full parser.
-    All bytes pass through unchanged.
+    Handles sync literals ({N} at end of line) by consuming the literal body
+    from the client and responding with OK [STAGED] without forwarding.
     """
     while True:
         try:
-            line = await client_reader.readline()
+            line_bytes = await client_reader.readline()
         except (asyncio.IncompleteReadError, ConnectionResetError, OSError):
             break
-        if not line:
+        if not line_bytes:
             break
 
-        # Detect LOGIN command: <tag> LOGIN <user> <password>\r\n
-        # No quoted-string parsing here — that lands in milestone 0.2.
-        decoded = line.decode("utf-8", errors="replace").rstrip("\r\n")
-        parts = decoded.split()
+        raw = line_bytes.decode("utf-8", errors="replace").rstrip("\r\n")
+
+        # --- LOGIN intercept (kept from 0.1) ---------------------------------
+        parts = raw.split()
         if len(parts) >= 3 and parts[1].upper() == "LOGIN":
             user = parts[2] if len(parts) > 2 else "<unknown>"
-            # TODO: in sub-milestone 0.3, translate LOGIN to XOAUTH2 for OAuth2 providers
+            # TODO 0.3: translate LOGIN to XOAUTH2 for OAuth2 providers
             logger.debug("[%s] LOGIN intercepted user=%s [password redacted]", peer, user)
 
-        try:
-            upstream_writer.write(line)
-            await upstream_writer.drain()
-        except (ConnectionResetError, BrokenPipeError, OSError):
-            break
+        # --- Parse line -------------------------------------------------------
+        parsed = parse_line(raw)
+
+        if parsed is None:
+            # Sync literal: {N} at end of line — consume the literal bytes and
+            # respond with STAGED instead of forwarding to upstream.
+            tag = raw.split()[0] if raw.split() else "?"
+            m = _LITERAL_RE.search(raw)
+            literal_size = int(m.group(1)) if m else 0
+
+            try:
+                client_writer.write(b"+ Ready for literal data\r\n")
+                await client_writer.drain()
+                if literal_size > 0:
+                    await client_reader.readexactly(literal_size)
+                await client_reader.readline()  # consume trailing CRLF after literal
+                client_writer.write(
+                    f"{tag} OK [STAGED] Operation queued for approval\r\n".encode()
+                )
+                await client_writer.drain()
+            except (asyncio.IncompleteReadError, ConnectionResetError, OSError):
+                break
+            logger.info("[%s] STAGED (literal): %s", peer, raw)
+            continue
+
+        action = classify(parsed)
+
+        if action == "read":
+            # Pass through to upstream; the u2c pump returns the response.
+            try:
+                upstream_writer.write(line_bytes)
+                await upstream_writer.drain()
+            except (ConnectionResetError, BrokenPipeError, OSError):
+                break
+
+        elif action == "write":
+            # Intercept — don't forward, respond locally.
+            resp = f"{parsed.tag} OK [STAGED] Operation queued for approval\r\n"
+            try:
+                client_writer.write(resp.encode())
+                await client_writer.drain()
+            except (ConnectionResetError, BrokenPipeError, OSError):
+                break
+            logger.info("[%s] STAGED: %s", peer, raw)
+            # TODO 0.3+: create Operation record in staging engine
+
+        else:  # blocked
+            resp = f"{parsed.tag} OK Noted\r\n"
+            try:
+                client_writer.write(resp.encode())
+                await client_writer.drain()
+            except (ConnectionResetError, BrokenPipeError, OSError):
+                break
+            logger.info("[%s] BLOCKED: %s", peer, raw)
 
 
 async def _upstream_to_client(
@@ -110,8 +178,10 @@ async def handle_client(
             ssl=ssl_ctx,
         )
     except Exception as exc:
-        logger.error("[%s] Failed to connect to upstream %s:%d — %s", peer_str, _UPSTREAM_HOST, _UPSTREAM_PORT, exc)
-        # Return a proper IMAP error to the client rather than just dropping the connection.
+        logger.error(
+            "[%s] Failed to connect to upstream %s:%d — %s",
+            peer_str, _UPSTREAM_HOST, _UPSTREAM_PORT, exc,
+        )
         try:
             client_writer.write(b"* BYE Upstream connection failed\r\n")
             await client_writer.drain()
@@ -131,11 +201,14 @@ async def handle_client(
         upstream_writer.close()
         return
 
-    # Start bidirectional pump: two tasks, one per direction.
-    c2u = asyncio.create_task(_client_to_upstream(client_reader, upstream_writer, peer_str))
-    u2c = asyncio.create_task(_upstream_to_client(upstream_reader, client_writer, peer_str))
+    # Start bidirectional pump.
+    c2u = asyncio.create_task(
+        _client_to_upstream(client_reader, upstream_writer, client_writer, peer_str)
+    )
+    u2c = asyncio.create_task(
+        _upstream_to_client(upstream_reader, client_writer, peer_str)
+    )
 
-    # Wait for either direction to finish (disconnect on either side).
     done, pending = await asyncio.wait({c2u, u2c}, return_when=asyncio.FIRST_COMPLETED)
 
     for task in pending:
@@ -145,7 +218,6 @@ async def handle_client(
         except asyncio.CancelledError:
             pass
 
-    # Close both sides cleanly.
     try:
         upstream_writer.close()
         await upstream_writer.wait_closed()
@@ -169,7 +241,10 @@ async def start_proxy(host: str, port: int) -> asyncio.AbstractServer:
     """
     server = await asyncio.start_server(handle_client, host, port)
     actual = server.sockets[0].getsockname()
-    logger.info("Nuvrail IMAP proxy listening on %s:%d → upstream %s:%d", actual[0], actual[1], _UPSTREAM_HOST, _UPSTREAM_PORT)
+    logger.info(
+        "Nuvrail IMAP proxy listening on %s:%d → upstream %s:%d",
+        actual[0], actual[1], _UPSTREAM_HOST, _UPSTREAM_PORT,
+    )
     return server
 
 

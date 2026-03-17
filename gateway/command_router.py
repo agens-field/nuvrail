@@ -1,5 +1,5 @@
 """
-IMAP command classifier.
+IMAP command classifier (Milestone 0.2).
 
 Determines whether a parsed command is:
   - "read"    → pass through to upstream
@@ -8,6 +8,7 @@ Determines whether a parsed command is:
 
 Sub-milestone: 0.2
 """
+
 from gateway.imap_parser import ParsedCommand
 
 READ_COMMANDS = {
@@ -27,6 +28,14 @@ BLOCKED_COMMANDS = {
 
 
 def classify(cmd: ParsedCommand) -> str:
-    """Returns 'read', 'write', or 'blocked'."""
-    # TODO: implement in sub-milestone 0.2
-    raise NotImplementedError
+    """Return 'read', 'write', or 'blocked' for the given parsed command.
+
+    Unknown commands default to 'read' so the proxy never crashes on extension
+    commands or future RFC additions — better to pass through than to break.
+    """
+    if cmd.command in BLOCKED_COMMANDS:
+        return "blocked"
+    if cmd.command in WRITE_COMMANDS:
+        return "write"
+    # READ_COMMANDS and all unknowns (AUTHENTICATE, LOGIN, custom extensions)
+    return "read"
