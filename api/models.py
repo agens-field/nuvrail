@@ -92,3 +92,61 @@ class AuditListResponse(BaseModel):
     total: int
     limit: int
     offset: int
+
+
+# ---------------------------------------------------------------------------
+# Auth + Agent credential models (Lane 2 / Lane 3)
+# ---------------------------------------------------------------------------
+
+
+class UserCreateRequest(BaseModel):
+    email: str
+    password: str
+    display_name: Optional[str] = None
+
+
+class UserResponse(BaseModel):
+    user_id: int
+    email: str
+    display_name: Optional[str] = None
+    created_at: int
+
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+
+class LoginResponse(BaseModel):
+    token: str
+    token_type: str = "bearer"
+    user_id: int
+    email: str
+
+
+class AgentCreateRequest(BaseModel):
+    label: Optional[str] = "default"
+    upstream_host: str
+    upstream_imap_port: int = 993
+    upstream_smtp_port: int = 587
+    upstream_user: str
+    upstream_password: str
+
+
+class AgentCreateResponse(BaseModel):
+    id: int
+    agent_username: str
+    agent_token: str  # SHOWN ONCE — never returned again
+    label: str
+    upstream_host: str
+    upstream_user: str
+
+
+class AgentResponse(BaseModel):
+    id: int
+    agent_username: str
+    label: str
+    upstream_host: str
+    upstream_user: str
+    created_at: int
+    revoked_at: Optional[int] = None

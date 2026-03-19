@@ -14,17 +14,27 @@ Test topology:
 Each test starts the proxy via an ephemeral port (port 0), connects as a
 plain TCP client, and exercises the command/response behaviour.
 Credentials are loaded from .env via conftest.py.
+
+Auth notes (post-auth milestone):
+  The proxy now verifies SMTP AUTH credentials against the agent_credentials
+  table. Integration tests create a temp DB, register the upstream credentials
+  as an agent credential, and use agent_username/agent_token for AUTH PLAIN.
 """
 
 import asyncio
 import base64
 import os
+import tempfile
+import time
+from pathlib import Path
 
 import pytest
 import pytest_asyncio
 from dotenv import load_dotenv
 
+import gateway.state_db as _state_db_mod
 from gateway.smtp_proxy import handle_smtp_client
+from gateway.state_db import get_db, init_db
 
 # Ensure .env is loaded even when running this file directly.
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -39,12 +49,65 @@ _TIMEOUT = 20  # seconds — generous for slow upstreams and TLS handshake overh
 
 
 @pytest_asyncio.fixture(loop_scope="session")
-async def smtp_proxy_server():
-    """Start SMTP proxy on an ephemeral port; yield (host, port); tear down."""
+async def smtp_integration_db(upstream_smtp_config: dict) -> tuple[Path, str, str]:
+    """Create a temp DB, register upstream SMTP creds as an agent credential.
+
+    Returns (db_path, agent_username, agent_token_plain) so tests can use
+    agent_username/agent_token as AUTH PLAIN credentials.
+    """
+    from api.auth import generate_token, hash_agent_token
+
+    tmpdir = tempfile.mkdtemp()
+    try:
+        db_path = Path(tmpdir) / "smtp_integration.db"
+        await init_db(db_path)
+
+        agent_username = "nuvrail_smtp_test"
+        agent_token_plain = generate_token()
+        hashed = hash_agent_token(agent_token_plain)
+        now = int(time.time())
+
+        async with get_db(db_path) as db:
+            cur = await db.execute(
+                "INSERT INTO users (email, hashed_password, api_token, created_at) VALUES (?, ?, ?, ?)",
+                ("smtp_test@test.com", "x", "smtp_test_token", now),
+            )
+            user_id = cur.lastrowid
+            await db.execute(
+                """INSERT INTO agent_credentials
+                   (user_id, label, agent_username, hashed_token,
+                    upstream_host, upstream_imap_port, upstream_smtp_port,
+                    upstream_user, upstream_password, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    user_id, "test", agent_username, hashed,
+                    upstream_smtp_config.get("host", ""),
+                    993,
+                    upstream_smtp_config.get("port", 587),
+                    upstream_smtp_config.get("user", ""),
+                    upstream_smtp_config.get("password", ""),
+                    now,
+                ),
+            )
+            await db.commit()
+
+        original_db_path = _state_db_mod.DB_PATH
+        _state_db_mod.DB_PATH = db_path
+        yield db_path, agent_username, agent_token_plain
+        _state_db_mod.DB_PATH = original_db_path
+    finally:
+        import shutil
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+@pytest_asyncio.fixture(loop_scope="session")
+async def smtp_proxy_server(smtp_integration_db: tuple):
+    """Start SMTP proxy on an ephemeral port; yield (host, port, agent_user, agent_token)."""
+    db_path, agent_username, agent_token = smtp_integration_db
     server = await asyncio.start_server(handle_smtp_client, "127.0.0.1", 0)
     host, port = server.sockets[0].getsockname()
     task = asyncio.create_task(server.serve_forever())
-    yield host, port
+    yield host, port, agent_username, agent_token
     server.close()
     await server.wait_closed()
     task.cancel()
@@ -114,10 +177,10 @@ def _auth_plain_b64(user: str, password: str) -> str:
 
 @pytest.mark.asyncio(loop_scope="session")
 async def test_smtp_proxy_forwards_greeting(
-    smtp_proxy_server: tuple[str, int],
+    smtp_proxy_server: tuple,
 ) -> None:
     """Proxy must forward the upstream SMTP greeting (starts with 220)."""
-    host, port = smtp_proxy_server
+    host, port, _au, _at = smtp_proxy_server
     reader, writer = await _connect(host, port)
     try:
         greeting = await _read_line(reader)
@@ -130,10 +193,10 @@ async def test_smtp_proxy_forwards_greeting(
 
 @pytest.mark.asyncio(loop_scope="session")
 async def test_smtp_ehlo(
-    smtp_proxy_server: tuple[str, int],
+    smtp_proxy_server: tuple,
 ) -> None:
     """EHLO must return 250 with capabilities; STARTTLS must NOT be advertised."""
-    host, port = smtp_proxy_server
+    host, port, _au, _at = smtp_proxy_server
     reader, writer = await _connect(host, port)
     try:
         await _read_line(reader)  # consume greeting
@@ -150,20 +213,20 @@ async def test_smtp_ehlo(
 
 @pytest.mark.asyncio(loop_scope="session")
 async def test_smtp_auth_valid_credentials(
-    smtp_proxy_server: tuple[str, int],
+    smtp_proxy_server: tuple,
     upstream_smtp_config: dict,
 ) -> None:
-    """AUTH PLAIN with valid credentials must return 235 Authentication succeeded."""
-    host, port = smtp_proxy_server
+    """AUTH PLAIN with valid agent credentials must return 235 Authentication succeeded."""
+    host, port, agent_user, agent_token = smtp_proxy_server
+    if not upstream_smtp_config.get("host"):
+        pytest.skip("NUVRAIL_TEST_SMTP_HOST not set")
     reader, writer = await _connect(host, port)
     try:
         await _read_line(reader)  # consume greeting
         await _send(writer, "EHLO test.client\r\n")
         await _read_response(reader)
 
-        user = upstream_smtp_config["user"]
-        password = upstream_smtp_config["password"]
-        creds = _auth_plain_b64(user, password)
+        creds = _auth_plain_b64(agent_user, agent_token)
         await _send(writer, f"AUTH PLAIN {creds}\r\n")
         lines = await _read_response(reader)
         assert lines[-1].startswith("235"), (
@@ -179,10 +242,10 @@ async def test_smtp_auth_valid_credentials(
 
 @pytest.mark.asyncio(loop_scope="session")
 async def test_smtp_auth_bad_credentials(
-    smtp_proxy_server: tuple[str, int],
+    smtp_proxy_server: tuple,
 ) -> None:
     """AUTH PLAIN with bad credentials must return 535; proxy must not crash."""
-    host, port = smtp_proxy_server
+    host, port, _au, _at = smtp_proxy_server
     reader, writer = await _connect(host, port)
     try:
         await _read_line(reader)  # consume greeting
@@ -201,11 +264,13 @@ async def test_smtp_auth_bad_credentials(
 
 @pytest.mark.asyncio(loop_scope="session")
 async def test_smtp_data_returns_staged(
-    smtp_proxy_server: tuple[str, int],
+    smtp_proxy_server: tuple,
     upstream_smtp_config: dict,
 ) -> None:
     """Full session EHLO→AUTH→MAIL FROM→RCPT TO→DATA→body→'.' must return 250 OK [STAGED]."""
-    host, port = smtp_proxy_server
+    host, port, agent_user, agent_token = smtp_proxy_server
+    if not upstream_smtp_config.get("host"):
+        pytest.skip("NUVRAIL_TEST_SMTP_HOST not set")
     reader, writer = await _connect(host, port)
     try:
         await _read_line(reader)  # consume greeting
@@ -214,13 +279,12 @@ async def test_smtp_data_returns_staged(
         ehlo_resp = await _read_response(reader)
         assert ehlo_resp[0].startswith("250"), f"EHLO failed: {ehlo_resp!r}"
 
-        user = upstream_smtp_config["user"]
-        password = upstream_smtp_config["password"]
-        creds = _auth_plain_b64(user, password)
+        creds = _auth_plain_b64(agent_user, agent_token)
         await _send(writer, f"AUTH PLAIN {creds}\r\n")
         auth_resp = await _read_response(reader)
         assert auth_resp[-1].startswith("235"), f"AUTH failed: {auth_resp!r}"
 
+        user = upstream_smtp_config["user"]
         await _send(writer, f"MAIL FROM:<{user}>\r\n")
         mail_resp = await _read_response(reader)
         assert mail_resp[-1].startswith("250"), f"MAIL FROM failed: {mail_resp!r}"
@@ -261,11 +325,13 @@ async def test_smtp_data_returns_staged(
 
 @pytest.mark.asyncio(loop_scope="session")
 async def test_smtp_quit_clean(
-    smtp_proxy_server: tuple[str, int],
+    smtp_proxy_server: tuple,
     upstream_smtp_config: dict,
 ) -> None:
     """QUIT after AUTH must return 221 and the connection must close cleanly."""
-    host, port = smtp_proxy_server
+    host, port, agent_user, agent_token = smtp_proxy_server
+    if not upstream_smtp_config.get("host"):
+        pytest.skip("NUVRAIL_TEST_SMTP_HOST not set")
     reader, writer = await _connect(host, port)
     try:
         await _read_line(reader)  # consume greeting
@@ -273,9 +339,7 @@ async def test_smtp_quit_clean(
         await _send(writer, "EHLO test.client\r\n")
         await _read_response(reader)
 
-        user = upstream_smtp_config["user"]
-        password = upstream_smtp_config["password"]
-        creds = _auth_plain_b64(user, password)
+        creds = _auth_plain_b64(agent_user, agent_token)
         await _send(writer, f"AUTH PLAIN {creds}\r\n")
         auth_resp = await _read_response(reader)
         assert auth_resp[-1].startswith("235"), f"AUTH failed: {auth_resp!r}"

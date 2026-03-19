@@ -52,6 +52,7 @@ from gateway.staging import create_operation
 from gateway.state_db import (
     DB_PATH,
     apply_optimistic_flag_update,
+    get_db,
     get_message,
     get_pending_reverts,
     init_db,
@@ -276,6 +277,31 @@ async def _sync_upstream_line(
             logger.warning("[%s] Failed to sync FETCH line: %s", peer, exc)
 
 
+async def _verify_agent_credential(
+    agent_user: str, agent_pass: str, db_path: Path
+) -> Optional[dict]:
+    """Verify agent username + password against agent_credentials table.
+
+    Returns the credential row if valid and not revoked, None otherwise.
+    bcrypt verification uses rounds=10 (faster than human passwords — verified
+    per-connection on every IMAP LOGIN).
+    """
+    async with get_db(db_path) as db:
+        async with db.execute(
+            """SELECT * FROM agent_credentials
+               WHERE agent_username = ? AND revoked_at IS NULL""",
+            (agent_user,),
+        ) as cur:
+            row = await cur.fetchone()
+    if row is None:
+        return None
+    from api.auth import verify_password  # noqa: PLC0415
+
+    if not verify_password(agent_pass, row["hashed_token"]):
+        return None
+    return dict(row)
+
+
 async def _client_to_upstream(
     client_reader: asyncio.StreamReader,
     upstream_writer: asyncio.StreamWriter,
@@ -299,12 +325,46 @@ async def _client_to_upstream(
 
         raw = line_bytes.decode("utf-8", errors="replace").rstrip("\r\n")
 
-        # --- LOGIN intercept (kept from 0.1) ---------------------------------
+        # --- LOGIN intercept — verify agent credentials ----------------------
+        # If this is a LOGIN command, verify the agent_username + agent_token
+        # against the agent_credentials table. On success, rewrite the LOGIN
+        # command with the stored upstream credentials before forwarding.
+        #
+        # Phase 0 upstream rewrite flow:
+        #   Client sends: <tag> LOGIN nuvrail_xxxx <agent_token>
+        #   Proxy verifies: agent_credentials table lookup + bcrypt verify
+        #   Proxy rewrites: <tag> LOGIN upstream_user upstream_password
+        #   Proxy forwards: rewritten LOGIN to upstream IMAP server
+        #
+        # TODO 0.3: use credential upstream_host/port for dynamic upstream routing
         parts = raw.split()
         if len(parts) >= 3 and parts[1].upper() == "LOGIN":
-            user = parts[2] if len(parts) > 2 else "<unknown>"
-            # TODO 0.3: translate LOGIN to XOAUTH2 for OAuth2 providers
-            logger.debug("[%s] LOGIN intercepted user=%s [password redacted]", peer, user)
+            agent_user = parts[2] if len(parts) > 2 else ""
+            agent_pass = parts[3] if len(parts) > 3 else ""
+            # Verify agent username + token against agent_credentials table
+            credential = await _verify_agent_credential(agent_user, agent_pass, db_path)
+            if credential is None:
+                # Reject: send BYE and close the connection
+                tag = parts[0] if parts else "*"
+                try:
+                    client_writer.write(
+                        f"* BYE Authentication failed\r\n"
+                        f"{tag} NO Authentication credentials invalid\r\n".encode()
+                    )
+                    await client_writer.drain()
+                except OSError:
+                    pass
+                logger.warning("[%s] Agent auth failed for user=%s", peer, agent_user)
+                return  # exits the loop, triggers cleanup
+            # Rewrite LOGIN with stored upstream credentials before forwarding.
+            # Phase 0: use env-var upstream (same host/port). Agent token is
+            # never forwarded. Passwords never logged.
+            upstream_user = credential["upstream_user"]
+            upstream_password = credential["upstream_password"]
+            tag = parts[0]
+            rewritten = f"{tag} LOGIN {upstream_user} {upstream_password}\r\n"
+            line_bytes = rewritten.encode()
+            logger.info("[%s] Agent authenticated: %s → upstream user: %s", peer, agent_user, upstream_user)
 
         # --- Parse line -------------------------------------------------------
         parsed = parse_line(raw)

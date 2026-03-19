@@ -14,16 +14,27 @@ Test topology:
 Each test starts the proxy as a background asyncio task, binds to an
 ephemeral port, then connects to it as a plain TCP client.
 Credentials are loaded from .env via conftest.py.
+
+Auth notes (post-auth milestone):
+  The proxy now verifies IMAP LOGIN credentials against the agent_credentials
+  table. Integration tests create a temp DB, register the upstream credentials
+  as an agent credential, and use the resulting agent_username/agent_token for
+  IMAP LOGIN instead of upstream credentials directly.
 """
 
 import asyncio
 import os
+import tempfile
+import time
+from pathlib import Path
 
 import pytest
 import pytest_asyncio
 from dotenv import load_dotenv
 
+import gateway.state_db as _state_db_mod
 from gateway.proxy import handle_client
+from gateway.state_db import get_db, init_db
 
 # Ensure .env is loaded even when running this file directly.
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -38,12 +49,67 @@ _TIMEOUT = 15  # seconds — generous for CI and slow upstreams
 
 
 @pytest_asyncio.fixture(loop_scope="session")
-async def proxy_server():
-    """Start the proxy on an ephemeral port; yield (host, port); tear down."""
+async def imap_integration_db(upstream_imap_config: dict) -> tuple[Path, str, str]:
+    """Create a temp DB, register upstream creds as an agent credential.
+
+    Returns (db_path, agent_username, agent_token_plain) so tests can use
+    agent_username/agent_token as IMAP LOGIN credentials.
+    """
+    from api.auth import generate_token, hash_agent_token
+
+    tmpdir = tempfile.mkdtemp()
+    try:
+        db_path = Path(tmpdir) / "imap_integration.db"
+        await init_db(db_path)
+
+        agent_username = "nuvrail_imap_test"
+        agent_token_plain = generate_token()
+        hashed = hash_agent_token(agent_token_plain)
+        now = int(time.time())
+
+        # Create a stub user and agent credential
+        async with get_db(db_path) as db:
+            cur = await db.execute(
+                "INSERT INTO users (email, hashed_password, api_token, created_at) VALUES (?, ?, ?, ?)",
+                ("imap_test@test.com", "x", "imap_test_token", now),
+            )
+            user_id = cur.lastrowid
+            await db.execute(
+                """INSERT INTO agent_credentials
+                   (user_id, label, agent_username, hashed_token,
+                    upstream_host, upstream_imap_port, upstream_smtp_port,
+                    upstream_user, upstream_password, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    user_id, "test", agent_username, hashed,
+                    upstream_imap_config["host"],
+                    upstream_imap_config["port"],
+                    587,
+                    upstream_imap_config["user"],
+                    upstream_imap_config["password"],
+                    now,
+                ),
+            )
+            await db.commit()
+
+        # Patch the module-level DB_PATH so handle_client uses this test DB
+        original_db_path = _state_db_mod.DB_PATH
+        _state_db_mod.DB_PATH = db_path
+        yield db_path, agent_username, agent_token_plain
+        _state_db_mod.DB_PATH = original_db_path
+    finally:
+        import shutil
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+@pytest_asyncio.fixture(loop_scope="session")
+async def proxy_server(imap_integration_db: tuple):
+    """Start the proxy on an ephemeral port; yield (host, port, agent_username, agent_token); tear down."""
+    db_path, agent_username, agent_token = imap_integration_db
     server = await asyncio.start_server(handle_client, "127.0.0.1", 0)
     host, port = server.sockets[0].getsockname()
     task = asyncio.create_task(server.serve_forever())
-    yield host, port
+    yield host, port, agent_username, agent_token
     server.close()
     await server.wait_closed()
     task.cancel()
@@ -99,9 +165,9 @@ async def _close(writer: asyncio.StreamWriter) -> None:
 
 
 @pytest.mark.asyncio(loop_scope="session")
-async def test_proxy_forwards_greeting(proxy_server: tuple[str, int]) -> None:
+async def test_proxy_forwards_greeting(proxy_server: tuple) -> None:
     """Proxy must forward the upstream IMAP greeting (contains OK or PREAUTH)."""
-    host, port = proxy_server
+    host, port, _agent_user, _agent_pass = proxy_server
     reader, writer = await _connect(host, port)
     try:
         greeting = await _read_line(reader)
@@ -114,17 +180,21 @@ async def test_proxy_forwards_greeting(proxy_server: tuple[str, int]) -> None:
 
 @pytest.mark.asyncio(loop_scope="session")
 async def test_login_valid_credentials(
-    proxy_server: tuple[str, int],
+    proxy_server: tuple,
     upstream_imap_config: dict,
 ) -> None:
-    """LOGIN with valid credentials must return a tagged OK."""
-    host, port = proxy_server
+    """LOGIN with agent credentials must return a tagged OK.
+
+    The proxy verifies agent_username + agent_token against agent_credentials,
+    then forwards LOGIN to upstream using stored upstream credentials.
+    """
+    host, port, agent_user, agent_token = proxy_server
+    if not upstream_imap_config.get("host"):
+        pytest.skip("NUVRAIL_TEST_IMAP_HOST not set")
     reader, writer = await _connect(host, port)
     try:
         await _read_line(reader)  # consume greeting
-        user = upstream_imap_config["user"]
-        password = upstream_imap_config["password"]
-        writer.write(f"a001 LOGIN {user} {password}\r\n".encode())
+        writer.write(f"a001 LOGIN {agent_user} {agent_token}\r\n".encode())
         await writer.drain()
         lines = await _read_until_ok_or_no(reader, "a001")
         last = lines[-1].upper()
@@ -139,18 +209,20 @@ async def test_login_valid_credentials(
 
 
 @pytest.mark.asyncio(loop_scope="session")
-async def test_login_bad_credentials(proxy_server: tuple[str, int]) -> None:
-    """LOGIN with bad credentials must return NO/BAD — proxy must not crash."""
-    host, port = proxy_server
+async def test_login_bad_credentials(proxy_server: tuple) -> None:
+    """LOGIN with unknown agent credentials must be rejected by the proxy."""
+    host, port, _agent_user, _agent_pass = proxy_server
     reader, writer = await _connect(host, port)
     try:
         await _read_line(reader)  # consume greeting
-        writer.write(b"a002 LOGIN baduser@example.com wrongpassword\r\n")
+        writer.write(b"a002 LOGIN unknown_agent wrongtoken\r\n")
         await writer.drain()
-        lines = await _read_until_ok_or_no(reader, "a002")
-        last = lines[-1].upper()
-        assert "A002 NO" in last or "A002 BAD" in last, (
-            f"Expected NO or BAD after bad LOGIN, got: {lines!r}"
+        # Proxy sends BYE + NO and closes; read both lines
+        line1 = await _read_line(reader)
+        line2 = await _read_line(reader)
+        combined = (line1 + " " + line2).upper()
+        assert "BYE" in combined or "NO" in combined, (
+            f"Expected BYE or NO after bad LOGIN, got: {line1!r} {line2!r}"
         )
     finally:
         await _close(writer)
@@ -158,18 +230,17 @@ async def test_login_bad_credentials(proxy_server: tuple[str, int]) -> None:
 
 @pytest.mark.asyncio(loop_scope="session")
 async def test_select_inbox_after_login(
-    proxy_server: tuple[str, int],
+    proxy_server: tuple,
     upstream_imap_config: dict,
 ) -> None:
     """After a successful LOGIN, SELECT INBOX must return a tagged OK."""
-    host, port = proxy_server
+    host, port, agent_user, agent_token = proxy_server
+    if not upstream_imap_config.get("host"):
+        pytest.skip("NUVRAIL_TEST_IMAP_HOST not set")
     reader, writer = await _connect(host, port)
     try:
         await _read_line(reader)  # consume greeting
-        user = upstream_imap_config["user"]
-        password = upstream_imap_config["password"]
-
-        writer.write(f"a003 LOGIN {user} {password}\r\n".encode())
+        writer.write(f"a003 LOGIN {agent_user} {agent_token}\r\n".encode())
         await writer.drain()
         await _read_until_ok_or_no(reader, "a003")
 
@@ -189,18 +260,17 @@ async def test_select_inbox_after_login(
 
 @pytest.mark.asyncio(loop_scope="session")
 async def test_logout_clean(
-    proxy_server: tuple[str, int],
+    proxy_server: tuple,
     upstream_imap_config: dict,
 ) -> None:
     """LOGOUT after a successful login must complete cleanly (tagged OK)."""
-    host, port = proxy_server
+    host, port, agent_user, agent_token = proxy_server
+    if not upstream_imap_config.get("host"):
+        pytest.skip("NUVRAIL_TEST_IMAP_HOST not set")
     reader, writer = await _connect(host, port)
     try:
         await _read_line(reader)  # consume greeting
-        user = upstream_imap_config["user"]
-        password = upstream_imap_config["password"]
-
-        writer.write(f"a005 LOGIN {user} {password}\r\n".encode())
+        writer.write(f"a005 LOGIN {agent_user} {agent_token}\r\n".encode())
         await writer.drain()
         await _read_until_ok_or_no(reader, "a005")
 

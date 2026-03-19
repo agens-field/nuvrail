@@ -109,6 +109,32 @@ CREATE TABLE IF NOT EXISTS audit_log (
     detail       TEXT                       -- JSON
 );
 
+CREATE TABLE IF NOT EXISTS users (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    email           TEXT NOT NULL UNIQUE,
+    display_name    TEXT,
+    hashed_password TEXT NOT NULL,       -- bcrypt hash of human password
+    api_token       TEXT UNIQUE,         -- long-lived bearer token (32 bytes, base58)
+    created_at      INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS agent_credentials (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id            INTEGER NOT NULL REFERENCES users(id),
+    label              TEXT NOT NULL DEFAULT 'default',
+    agent_username     TEXT NOT NULL UNIQUE,  -- e.g. "nuvrail_<hex8>"
+    hashed_token       TEXT NOT NULL,          -- bcrypt hash of the agent token
+    -- Upstream email connection config (stored in plaintext for Phase 0)
+    -- TODO: encrypt at rest with AES-256 per-user key in a later milestone
+    upstream_host      TEXT NOT NULL,
+    upstream_imap_port INTEGER NOT NULL DEFAULT 993,
+    upstream_smtp_port INTEGER NOT NULL DEFAULT 587,
+    upstream_user      TEXT NOT NULL,
+    upstream_password  TEXT NOT NULL,          -- upstream IMAP/SMTP password (plaintext for Phase 0)
+    created_at         INTEGER NOT NULL,
+    revoked_at         INTEGER                 -- NULL = active
+);
+
 CREATE TABLE IF NOT EXISTS pending_reverts (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     operation_id TEXT NOT NULL REFERENCES staged_operations(id),

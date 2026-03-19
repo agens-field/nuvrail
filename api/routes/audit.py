@@ -24,6 +24,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse
 
+from api.auth import get_current_user
 from api.models import AuditEntry, AuditListResponse
 from api.routes.operations import get_db_path
 from gateway.state_db import get_db
@@ -66,6 +67,7 @@ async def list_audit(
     event: Optional[str] = Query(default=None),
     actor: Optional[str] = Query(default=None),
     db_path: Path = Depends(get_db_path),
+    current_user: dict = Depends(get_current_user),
 ) -> AuditListResponse:
     """
     List audit log entries, newest first, with joined operation context.
@@ -126,6 +128,7 @@ async def list_audit(
 @router.get("/audit/export")
 async def export_audit(
     db_path: Path = Depends(get_db_path),
+    current_user: dict = Depends(get_current_user),
 ) -> JSONResponse:
     """
     Export the complete audit log as a JSON download.
@@ -165,6 +168,7 @@ async def export_audit(
 async def get_audit_entry(
     entry_id: int,
     db_path: Path = Depends(get_db_path),
+    current_user: dict = Depends(get_current_user),
 ) -> AuditEntry:
     """Retrieve a single audit log entry by its integer ID."""
     select_sql = """

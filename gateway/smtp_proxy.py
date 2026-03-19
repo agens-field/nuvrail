@@ -68,6 +68,7 @@ from typing import Optional
 from dotenv import load_dotenv
 
 from gateway.staging import create_operation
+from gateway.state_db import DB_PATH, get_db
 
 load_dotenv()
 
@@ -79,6 +80,39 @@ _UPSTREAM_PORT: int = int(os.environ.get("NUVRAIL_TEST_SMTP_PORT", "587"))
 # Regex helpers for envelope extraction
 _MAIL_FROM_RE = re.compile(r"MAIL FROM:\s*<([^>]*)>", re.IGNORECASE)
 _RCPT_TO_RE = re.compile(r"RCPT TO:\s*<([^>]*)>", re.IGNORECASE)
+
+
+# ---------------------------------------------------------------------------
+# Agent credential verification
+# ---------------------------------------------------------------------------
+
+
+async def _verify_smtp_agent_credential(
+    agent_user: str, agent_pass: str, db_path: "Optional[Path]" = None
+) -> "Optional[dict]":
+    """Verify SMTP agent username + password against agent_credentials table.
+
+    Returns the credential row if valid and not revoked, None otherwise.
+    db_path defaults to the current module-level DB_PATH (read at call time
+    so integration tests can patch gateway.state_db.DB_PATH).
+    """
+    import gateway.state_db as _state_db_mod  # noqa: PLC0415
+
+    _db = db_path if db_path is not None else _state_db_mod.DB_PATH
+    async with get_db(_db) as db:
+        async with db.execute(
+            """SELECT * FROM agent_credentials
+               WHERE agent_username = ? AND revoked_at IS NULL""",
+            (agent_user,),
+        ) as cur:
+            row = await cur.fetchone()
+    if row is None:
+        return None
+    from api.auth import verify_password  # noqa: PLC0415
+
+    if not verify_password(agent_pass, row["hashed_token"]):
+        return None
+    return dict(row)  # type: ignore[return-value]
 
 
 # ---------------------------------------------------------------------------
@@ -281,23 +315,67 @@ async def handle_smtp_client(
             logger.debug("[%s] C→P: %s", peer_str, line)
 
             # ----------------------------------------------------------------
-            # AUTH — log user, redact creds, pass through unchanged
+            # AUTH — verify agent credentials, then pass through
             # ----------------------------------------------------------------
             if cmd == "AUTH":
                 parts = line.split()
                 mech = parts[1].upper() if len(parts) > 1 else ""
+
+                # For AUTH PLAIN with inline credentials, verify immediately.
+                # AUTH LOGIN is multi-step; we verify after collecting the password.
+                agent_auth_ok: Optional[bool] = None  # None = deferred to multi-step
+
+                upstream_credential: Optional[dict] = None  # stored upstream cred row
+
                 if mech == "PLAIN" and len(parts) >= 3:
-                    user = _extract_auth_user_plain(parts[2])
-                    # TODO 0.3: translate AUTH PLAIN to XOAUTH2 for OAuth2 providers
-                    logger.info("[%s] AUTH PLAIN user=%s [credentials redacted]", peer_str, user)
+                    import base64 as _b64  # noqa: PLC0415
+
+                    try:
+                        decoded = _b64.b64decode(parts[2])
+                        auth_parts = decoded.split(b"\x00")
+                        agent_user = auth_parts[1].decode("utf-8", errors="replace") if len(auth_parts) >= 3 else ""
+                        agent_pass_plain = auth_parts[2].decode("utf-8", errors="replace") if len(auth_parts) >= 3 else ""
+                    except Exception:
+                        agent_user, agent_pass_plain = "", ""
+                    cred = await _verify_smtp_agent_credential(agent_user, agent_pass_plain)
+                    agent_auth_ok = cred is not None
+                    if agent_auth_ok:
+                        upstream_credential = cred
+                        logger.info("[%s] SMTP agent authenticated via AUTH PLAIN: %s", peer_str, agent_user)
+                    else:
+                        logger.warning("[%s] SMTP AUTH PLAIN failed for user=%s", peer_str, agent_user)
+
                 elif mech == "LOGIN":
                     # TODO 0.3: translate AUTH LOGIN to XOAUTH2 for OAuth2 providers
-                    logger.info("[%s] AUTH LOGIN [credentials redacted]", peer_str)
+                    logger.info("[%s] AUTH LOGIN [multi-step — deferring credential check]", peer_str)
+                    # agent_auth_ok stays None; we pass through (Phase 0 limitation)
                 else:
                     logger.info("[%s] AUTH %s [credentials redacted]", peer_str, mech)
 
-                # Pass through to upstream unchanged
-                upstream_writer.write(line_bytes)
+                # If we already know auth failed, reject immediately
+                if agent_auth_ok is False:
+                    client_writer.write(b"535 5.7.8 Authentication credentials invalid\r\n")
+                    await client_writer.drain()
+                    logger.warning("[%s] SMTP connection closed after auth failure", peer_str)
+                    break
+
+                # Rewrite AUTH PLAIN with upstream credentials if we have them.
+                # The agent token is never forwarded to the upstream.
+                # Phase 0: use stored upstream_user + upstream_password.
+                # TODO 0.3: use credential upstream_host/port for dynamic routing.
+                if upstream_credential is not None and mech == "PLAIN":
+                    import base64 as _b64r  # noqa: PLC0415
+
+                    up_user = upstream_credential["upstream_user"]
+                    up_pass = upstream_credential["upstream_password"]
+                    rewritten_b64 = _b64r.b64encode(
+                        f"\x00{up_user}\x00{up_pass}".encode()
+                    ).decode()
+                    rewritten_line = f"AUTH PLAIN {rewritten_b64}\r\n"
+                    upstream_writer.write(rewritten_line.encode())
+                else:
+                    # Pass through unchanged (AUTH LOGIN multi-step or unknown mech)
+                    upstream_writer.write(line_bytes)
                 await upstream_writer.drain()
 
                 # AUTH LOGIN is multi-step: relay challenge/response pairs

@@ -50,6 +50,7 @@ import aioimaplib
 import aiosmtplib
 from fastapi import APIRouter, Depends, HTTPException
 
+from api.auth import get_current_user
 from api.models import ApproveResponse, OperationListResponse, OperationResponse, RejectResponse
 from gateway.staging import get_operation, list_operations, update_operation_status
 from gateway.state_db import DB_PATH, get_db, insert_pending_reverts, restore_from_snapshot
@@ -213,6 +214,7 @@ def _row_to_response(row: dict) -> OperationResponse:
 async def list_ops(
     status: Optional[str] = None,
     db_path: Path = Depends(get_db_path),
+    current_user: dict = Depends(get_current_user),
 ) -> OperationListResponse:
     """List staged operations, optionally filtered by status."""
     rows = await list_operations(status=status, db_path=db_path)
@@ -224,6 +226,7 @@ async def list_ops(
 async def get_op(
     op_id: str,
     db_path: Path = Depends(get_db_path),
+    current_user: dict = Depends(get_current_user),
 ) -> OperationResponse:
     """Retrieve a single operation by ID."""
     row = await get_operation(op_id, db_path=db_path)
@@ -236,6 +239,7 @@ async def get_op(
 async def approve_op(
     op_id: str,
     db_path: Path = Depends(get_db_path),
+    current_user: dict = Depends(get_current_user),
 ) -> ApproveResponse:
     """Approve and execute an operation.
 
@@ -347,6 +351,7 @@ async def approve_op(
 async def reject_op(
     op_id: str,
     db_path: Path = Depends(get_db_path),
+    current_user: dict = Depends(get_current_user),
 ) -> RejectResponse:
     """Reject a pending operation."""
     row = await get_operation(op_id, db_path=db_path)

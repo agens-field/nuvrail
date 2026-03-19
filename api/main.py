@@ -26,7 +26,7 @@ from typing import AsyncGenerator
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from api.routes import audit, operations
+from api.routes import audit, auth, operations
 from gateway.expiry import run_expiry_loop
 from gateway.state_db import DB_PATH, init_db
 
@@ -67,10 +67,11 @@ app = FastAPI(title="Nuvrail Approval API", version="0.1.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:3000"],
+    allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 app.include_router(operations.router, prefix="/api/v1")
 app.include_router(audit.router, prefix="/api/v1")
+app.include_router(auth.router, prefix="/api/v1")

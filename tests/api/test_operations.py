@@ -13,10 +13,14 @@ from pathlib import Path
 import httpx
 import pytest
 
+from api.auth import get_auth_db_path, get_current_user
 from api.main import app
 from api.routes.operations import get_db_path
 from gateway.staging import create_operation
 from gateway.state_db import init_db
+
+# Fake user used to satisfy auth dependency in tests that don't test auth itself
+_FAKE_USER = {"id": 1, "email": "test@test.com", "display_name": None, "created_at": 0, "api_token": "testtoken"}
 
 
 # ---------------------------------------------------------------------------
@@ -34,8 +38,13 @@ async def db_path(tmp_path: Path) -> Path:
 
 @pytest.fixture()
 async def client(db_path: Path) -> httpx.AsyncClient:
-    """Return an AsyncClient wired to the app with the test DB injected."""
+    """Return an AsyncClient wired to the app with the test DB injected.
+
+    get_current_user is bypassed so these tests don't need a real token.
+    """
     app.dependency_overrides[get_db_path] = lambda: db_path
+    app.dependency_overrides[get_auth_db_path] = lambda: db_path
+    app.dependency_overrides[get_current_user] = lambda: _FAKE_USER
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
         yield c

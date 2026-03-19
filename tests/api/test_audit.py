@@ -13,10 +13,13 @@ import httpx
 import pytest
 import pytest_asyncio
 
+from api.auth import get_auth_db_path, get_current_user
 from api.main import app
 from api.routes.operations import get_db_path
 from gateway.staging import create_operation, update_operation_status
 from gateway.state_db import get_db, init_db
+
+_FAKE_USER = {"id": 1, "email": "test@test.com", "display_name": None, "created_at": 0, "api_token": "testtoken"}
 
 
 @pytest_asyncio.fixture(loop_scope="session")
@@ -29,6 +32,8 @@ async def db_path(tmp_path_factory: pytest.TempPathFactory) -> Path:
 @pytest_asyncio.fixture(loop_scope="session")
 async def client(db_path: Path) -> httpx.AsyncClient:
     app.dependency_overrides[get_db_path] = lambda: db_path
+    app.dependency_overrides[get_auth_db_path] = lambda: db_path
+    app.dependency_overrides[get_current_user] = lambda: _FAKE_USER
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
         yield c
