@@ -11,11 +11,13 @@ from pathlib import Path
 import pytest
 
 from gateway.state_db import (
+    apply_optimistic_flag_update,
     get_message,
     get_messages_by_uid_set,
     get_or_create_folder,
     init_db,
     resolve_sequence_to_uid,
+    snapshot_messages,
     update_flags,
     update_folder_stats,
     upsert_folders_from_list,
@@ -232,3 +234,90 @@ async def test_resolve_sequence_to_uid(db_path: Path) -> None:
 
     missing = await resolve_sequence_to_uid(folder_id, 99, db_path=db_path)
     assert missing is None
+
+
+# ---------------------------------------------------------------------------
+# Snapshot and optimistic update tests (milestone 1.2)
+# ---------------------------------------------------------------------------
+
+
+async def test_snapshot_messages_captures_flags(db_path: Path) -> None:
+    """snapshot_messages returns current flags for matching UIDs."""
+    folder_id = await get_or_create_folder("INBOX", db_path=db_path)
+    await upsert_message(folder_id, 10, seq_num=1, flags=[r"\Seen"], db_path=db_path)
+    await upsert_message(folder_id, 11, seq_num=2, flags=[], db_path=db_path)
+
+    snap = await snapshot_messages(folder_id, "10,11", db_path=db_path)
+
+    assert "10" in snap
+    assert "11" in snap
+    assert r"\Seen" in snap["10"]["flags"]
+    assert snap["11"]["flags"] == []
+    assert snap["10"]["folder_id"] == folder_id
+
+
+async def test_snapshot_messages_empty_uid_set(db_path: Path) -> None:
+    """snapshot_messages returns empty dict when no messages match."""
+    folder_id = await get_or_create_folder("INBOX", db_path=db_path)
+    snap = await snapshot_messages(folder_id, "999", db_path=db_path)
+    assert snap == {}
+
+
+async def test_snapshot_messages_range(db_path: Path) -> None:
+    """snapshot_messages handles range uid_set_str."""
+    folder_id = await get_or_create_folder("INBOX", db_path=db_path)
+    for uid in [1, 2, 3]:
+        await upsert_message(folder_id, uid, seq_num=uid, flags=[r"\Seen"], db_path=db_path)
+
+    snap = await snapshot_messages(folder_id, "1:3", db_path=db_path)
+    assert len(snap) == 3
+    assert all(k in snap for k in ["1", "2", "3"])
+
+
+async def test_apply_optimistic_flag_update_adds_flags(db_path: Path) -> None:
+    """apply_optimistic_flag_update adds flags to existing messages."""
+    folder_id = await get_or_create_folder("INBOX", db_path=db_path)
+    await upsert_message(folder_id, 42, seq_num=1, flags=[], db_path=db_path)
+
+    await apply_optimistic_flag_update(
+        folder_id, "42", flags_add=[r"\Seen"], flags_remove=[], db_path=db_path
+    )
+
+    msg = await get_message(folder_id, 42, db_path=db_path)
+    import json as _json
+    flags = _json.loads(msg["flags"])
+    assert r"\Seen" in flags
+
+
+async def test_apply_optimistic_flag_update_removes_flags(db_path: Path) -> None:
+    """apply_optimistic_flag_update removes flags from existing messages."""
+    folder_id = await get_or_create_folder("INBOX", db_path=db_path)
+    await upsert_message(folder_id, 42, seq_num=1, flags=[r"\Seen", r"\Flagged"], db_path=db_path)
+
+    await apply_optimistic_flag_update(
+        folder_id, "42", flags_add=[], flags_remove=[r"\Flagged"], db_path=db_path
+    )
+
+    msg = await get_message(folder_id, 42, db_path=db_path)
+    import json as _json
+    flags = _json.loads(msg["flags"])
+    assert r"\Seen" in flags
+    assert r"\Flagged" not in flags
+
+
+async def test_apply_optimistic_flag_update_no_op_for_unknown_uid(db_path: Path) -> None:
+    """apply_optimistic_flag_update silently skips UIDs not in the DB."""
+    folder_id = await get_or_create_folder("INBOX", db_path=db_path)
+    # Should not raise even with no matching messages
+    await apply_optimistic_flag_update(
+        folder_id, "999", flags_add=[r"\Seen"], flags_remove=[], db_path=db_path
+    )
+
+
+async def test_snapshot_preserves_seq_num(db_path: Path) -> None:
+    """snapshot includes seq_num for each UID."""
+    folder_id = await get_or_create_folder("INBOX", db_path=db_path)
+    await upsert_message(folder_id, 7, seq_num=3, flags=[r"\Seen"], db_path=db_path)
+
+    snap = await snapshot_messages(folder_id, "7", db_path=db_path)
+    assert snap["7"]["seq_num"] == 3

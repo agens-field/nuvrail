@@ -91,6 +91,7 @@ CREATE TABLE IF NOT EXISTS staged_operations (
     folder_to       TEXT,
     flags_add       TEXT,                   -- JSON array
     flags_remove    TEXT,                   -- JSON array
+    snapshot        TEXT,                   -- JSON {uid: {flags, seq_num, folder_id}} pre-op state
     decided_at      INTEGER,
     decided_by      TEXT,
     executed_at     INTEGER,
@@ -402,3 +403,77 @@ async def resolve_sequence_to_uid(
         ) as cur:
             row = await cur.fetchone()
     return int(row["uid"]) if row is not None else None
+
+
+# ---------------------------------------------------------------------------
+# Snapshot and optimistic update (milestone 1.2 — rejection revert)
+# ---------------------------------------------------------------------------
+
+
+async def snapshot_messages(
+    folder_id: int,
+    uid_set_str: str,
+    db_path: Path = DB_PATH,
+) -> dict:
+    """Capture current state of messages matching uid_set_str.
+
+    Returns a dict keyed by str(uid) containing the pre-operation state
+    needed to revert the messages table on rejection:
+      {"42": {"flags": ["\\\\Seen"], "seq_num": 5, "folder_id": 1}, ...}
+
+    If no messages match (uid not yet in state DB — message hasn't been
+    FETCH'd through the proxy yet), the snapshot will be empty for that
+    uid. Revert will be a no-op for unknown UIDs.
+    """
+    rows = await get_messages_by_uid_set(folder_id, uid_set_str, db_path=db_path)
+    snapshot: dict = {}
+    for row in rows:
+        uid_str = str(row["uid"])
+        flags_raw = row.get("flags", "[]")
+        flags = json.loads(flags_raw) if isinstance(flags_raw, str) else (flags_raw or [])
+        snapshot[uid_str] = {
+            "flags": flags,
+            "seq_num": row.get("sequence_num"),
+            "folder_id": folder_id,
+        }
+    return snapshot
+
+
+async def apply_optimistic_flag_update(
+    folder_id: int,
+    uid_set_str: str,
+    flags_add: "list[str]",
+    flags_remove: "list[str]",
+    db_path: Path = DB_PATH,
+) -> None:
+    """Apply a proposed flag change to the messages table optimistically.
+
+    Called immediately after staging a STORE operation so the AI sees
+    the proposed state without waiting for approval. Does not touch upstream.
+
+    Flag merge logic:
+      - flags_add:    add each flag to existing set (dedup)
+      - flags_remove: remove each flag from existing set
+      Both lists can be non-empty simultaneously (e.g. FLAGS.SILENT with add/remove).
+
+    Messages not yet in the state DB (uid unknown) are silently skipped —
+    the snapshot will also be empty for them, so there is nothing to revert.
+    """
+    rows = await get_messages_by_uid_set(folder_id, uid_set_str, db_path=db_path)
+    if not rows:
+        return
+
+    now = int(time.time())
+    async with get_db(db_path) as db:
+        for row in rows:
+            uid = row["uid"]
+            flags_raw = row.get("flags", "[]")
+            current = set(json.loads(flags_raw) if isinstance(flags_raw, str) else (flags_raw or []))
+            current.update(flags_add)
+            current.difference_update(flags_remove)
+            new_flags = json.dumps(sorted(current))
+            await db.execute(
+                "UPDATE messages SET flags = ?, last_updated = ? WHERE folder_id = ? AND uid = ?",
+                (new_flags, now, folder_id, uid),
+            )
+        await db.commit()

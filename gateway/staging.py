@@ -43,9 +43,15 @@ async def create_operation(
     folder_to: Optional[str] = None,
     flags_add: Optional[list] = None,
     flags_remove: Optional[list] = None,
+    snapshot: Optional[dict] = None,
     db_path: Path = DB_PATH,
 ) -> str:
-    """Insert a staged_operations row + audit_log entry. Returns operation ID."""
+    """Insert a staged_operations row + audit_log entry. Returns operation ID.
+
+    snapshot: pre-operation state dict from snapshot_messages(), stored as JSON.
+    Used by the rejection revert mechanism (milestone 1.2) to restore messages
+    table and generate unsolicited FETCH responses.
+    """
     op_id = _generate_op_id()
     now = int(time.time())
     expires_at = now + 48 * 3600
@@ -56,8 +62,9 @@ async def create_operation(
             INSERT INTO staged_operations (
                 id, created_at, expires_at, status, op_type, protocol,
                 imap_command, smtp_envelope, description, agent_id,
-                message_ids, folder_from, folder_to, flags_add, flags_remove
-            ) VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?)
+                message_ids, folder_from, folder_to, flags_add, flags_remove,
+                snapshot
+            ) VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?)
             """,
             (
                 op_id,
@@ -73,6 +80,7 @@ async def create_operation(
                 folder_to,
                 json.dumps(flags_add) if flags_add is not None else None,
                 json.dumps(flags_remove) if flags_remove is not None else None,
+                json.dumps(snapshot) if snapshot is not None else None,
             ),
         )
         await db.execute(

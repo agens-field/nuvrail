@@ -164,3 +164,35 @@ async def test_update_status_with_error(db_path: Path) -> None:
     assert row is not None
     assert row["status"] == "failed"
     assert row["error"] == "Connection refused"
+
+
+async def test_create_operation_with_snapshot(db_path: Path) -> None:
+    """snapshot dict is stored as JSON in staged_operations.snapshot."""
+    import json
+    snap = {"42": {"flags": [r"\Seen"], "seq_num": 5, "folder_id": 1}}
+    op_id = await create_operation(
+        op_type="store",
+        protocol="imap",
+        description="Mark as read",
+        imap_command="A001 UID STORE 42 +FLAGS (\\Seen)",
+        snapshot=snap,
+        db_path=db_path,
+    )
+    row = await get_operation(op_id, db_path=db_path)
+    assert row is not None
+    stored = json.loads(row["snapshot"])
+    assert "42" in stored
+    assert r"\Seen" in stored["42"]["flags"]
+
+
+async def test_create_operation_without_snapshot_stores_null(db_path: Path) -> None:
+    """Omitting snapshot stores NULL (not an empty string)."""
+    op_id = await create_operation(
+        op_type="move",
+        protocol="imap",
+        description="Move to Archive",
+        db_path=db_path,
+    )
+    row = await get_operation(op_id, db_path=db_path)
+    assert row is not None
+    assert row["snapshot"] is None

@@ -50,7 +50,9 @@ from gateway.operation_parser import ParsedOperation, parse_append, parse_copy, 
 from gateway.staging import create_operation
 from gateway.state_db import (
     DB_PATH,
+    apply_optimistic_flag_update,
     init_db,
+    snapshot_messages,
     update_folder_stats,
     upsert_folders_from_list,
     upsert_message,
@@ -223,6 +225,7 @@ async def _client_to_upstream(
     client_writer: asyncio.StreamWriter,
     session: dict,
     peer: str,
+    db_path: Path = DB_PATH,
 ) -> None:
     """Parse each client line and route: read→upstream, write/blocked→intercept.
 
@@ -321,6 +324,39 @@ async def _client_to_upstream(
             try:
                 parsed_op = _build_parsed_op(parsed)
                 if parsed_op is not None:
+                    # For flag operations (STORE), take a pre-op snapshot of
+                    # affected messages and apply the optimistic update so the
+                    # AI sees the proposed state immediately. The snapshot is
+                    # stored in staged_operations for later revert on rejection.
+                    op_snapshot: Optional[dict] = None
+                    folder_id = session.get("folder_id")
+                    is_flag_op = parsed.command.upper() in ("STORE",) and (
+                        parsed_op.flags_add or parsed_op.flags_remove
+                    )
+                    if is_flag_op and folder_id is not None and parsed_op.message_ids:
+                        uid_set_str = parsed_op.message_ids[0] if len(parsed_op.message_ids) == 1 else ",".join(parsed_op.message_ids)
+                        try:
+                            op_snapshot = await snapshot_messages(
+                                folder_id, uid_set_str, db_path=db_path
+                            )
+                            await apply_optimistic_flag_update(
+                                folder_id,
+                                uid_set_str,
+                                flags_add=parsed_op.flags_add or [],
+                                flags_remove=parsed_op.flags_remove or [],
+                                db_path=db_path,
+                            )
+                            logger.debug(
+                                "[%s] Snapshot captured + optimistic update applied for %s UIDs",
+                                peer, len(op_snapshot),
+                            )
+                        except Exception as snap_exc:
+                            logger.warning(
+                                "[%s] Snapshot/optimistic update failed (non-fatal): %s",
+                                peer, snap_exc,
+                            )
+                            op_snapshot = None
+
                     op_id = await create_operation(
                         op_type=parsed_op.op_type,
                         protocol="imap",
@@ -331,10 +367,11 @@ async def _client_to_upstream(
                         folder_to=parsed_op.folder_to,
                         flags_add=parsed_op.flags_add if parsed_op.flags_add else None,
                         flags_remove=parsed_op.flags_remove if parsed_op.flags_remove else None,
+                        snapshot=op_snapshot,
                     )
                     resp = f"{parsed.tag} OK [STAGED] Operation queued — ID: {op_id}\r\n"
                 else:
-                    # CREATE / RENAME or unknown write — stage generically
+                    # CREATE / RENAME or unknown write — stage generically (no snapshot)
                     op_id = await create_operation(
                         op_type=parsed.command.lower(),
                         protocol="imap",
@@ -463,7 +500,7 @@ async def handle_client(
 
     # Start bidirectional pump.
     c2u = asyncio.create_task(
-        _client_to_upstream(client_reader, upstream_writer, client_writer, session, peer_str)
+        _client_to_upstream(client_reader, upstream_writer, client_writer, session, peer_str, DB_PATH)
     )
     u2c = asyncio.create_task(
         _upstream_to_client(upstream_reader, client_writer, session, DB_PATH, peer_str)
