@@ -1,14 +1,193 @@
 """
-/api/v1/audit endpoints.
+/api/v1/audit endpoints — Milestone 1.2.
 
-GET  /audit          — query audit log
-GET  /audit/:id      — single entry
-GET  /audit/export   — JSON download
+GET  /audit               — query audit log (paginated, filterable)
+GET  /audit/{entry_id}    — single audit entry with joined operation detail
+GET  /audit/export        — full audit log as JSON download
 
-Sub-milestone: 1.2 (read), 3.2 (export)
+Audit log is append-only and immutable. No write endpoints exist here.
+Each entry is joined with staged_operations so callers get the operation
+description, type, and protocol without a second request.
+
+Query parameters for GET /audit:
+  limit  int  default=50, max=500
+  offset int  default=0
+  event  str  filter by event name (staged/approved/rejected/executed/execution_failed)
+  actor  str  filter by actor (ai_agent/human/system)
 """
-from fastapi import APIRouter
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import JSONResponse
+
+from api.models import AuditEntry, AuditListResponse
+from api.routes.operations import get_db_path
+from gateway.state_db import get_db
 
 router = APIRouter()
 
-# TODO: implement endpoints in sub-milestone 1.2
+
+def _row_to_entry(row: dict) -> AuditEntry:
+    """Convert a raw DB row (audit_log LEFT JOIN staged_operations) to AuditEntry."""
+    detail_raw = row.get("detail")
+    detail_parsed: Optional[dict] = None
+    if isinstance(detail_raw, str):
+        try:
+            detail_parsed = json.loads(detail_raw)
+        except (json.JSONDecodeError, TypeError):
+            detail_parsed = None
+    elif isinstance(detail_raw, dict):
+        detail_parsed = detail_raw
+
+    return AuditEntry(
+        id=row["id"],
+        timestamp=row["timestamp"],
+        operation_id=row.get("operation_id"),
+        event=row["event"],
+        actor=row.get("actor"),
+        agent_id=row.get("agent_id"),
+        detail=detail_parsed,
+        # Joined fields from staged_operations (may be None if op was deleted)
+        op_description=row.get("op_description"),
+        op_type=row.get("op_type"),
+        op_protocol=row.get("op_protocol"),
+        op_status=row.get("op_status"),
+    )
+
+
+@router.get("/audit", response_model=AuditListResponse)
+async def list_audit(
+    limit: int = Query(default=50, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    event: Optional[str] = Query(default=None),
+    actor: Optional[str] = Query(default=None),
+    db_path: Path = Depends(get_db_path),
+) -> AuditListResponse:
+    """
+    List audit log entries, newest first, with joined operation context.
+
+    Paginates with limit/offset. Optional filters: event, actor.
+    """
+    conditions: list[str] = []
+    params: list[object] = []
+
+    if event is not None:
+        conditions.append("a.event = ?")
+        params.append(event)
+    if actor is not None:
+        conditions.append("a.actor = ?")
+        params.append(actor)
+
+    where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+
+    # Count total matching rows
+    count_sql = f"""
+        SELECT COUNT(*) FROM audit_log a
+        LEFT JOIN staged_operations op ON a.operation_id = op.id
+        {where}
+    """
+    # Fetch page
+    select_sql = f"""
+        SELECT
+            a.id,
+            a.timestamp,
+            a.operation_id,
+            a.event,
+            a.actor,
+            a.agent_id,
+            a.detail,
+            op.description   AS op_description,
+            op.op_type       AS op_type,
+            op.protocol      AS op_protocol,
+            op.status        AS op_status
+        FROM audit_log a
+        LEFT JOIN staged_operations op ON a.operation_id = op.id
+        {where}
+        ORDER BY a.id DESC
+        LIMIT ? OFFSET ?
+    """
+
+    async with get_db(db_path) as db:
+        async with db.execute(count_sql, params) as cur:
+            total_row = await cur.fetchone()
+            total = total_row[0] if total_row else 0
+
+        async with db.execute(select_sql, [*params, limit, offset]) as cur:
+            rows = [dict(r) for r in await cur.fetchall()]
+
+    entries = [_row_to_entry(r) for r in rows]
+    return AuditListResponse(entries=entries, total=total, limit=limit, offset=offset)
+
+
+@router.get("/audit/export")
+async def export_audit(
+    db_path: Path = Depends(get_db_path),
+) -> JSONResponse:
+    """
+    Export the complete audit log as a JSON download.
+
+    Returns all entries (no pagination limit) with full joined operation detail.
+    Suitable for compliance archival or external analysis.
+    """
+    select_sql = """
+        SELECT
+            a.id,
+            a.timestamp,
+            a.operation_id,
+            a.event,
+            a.actor,
+            a.agent_id,
+            a.detail,
+            op.description   AS op_description,
+            op.op_type       AS op_type,
+            op.protocol      AS op_protocol,
+            op.status        AS op_status
+        FROM audit_log a
+        LEFT JOIN staged_operations op ON a.operation_id = op.id
+        ORDER BY a.id ASC
+    """
+    async with get_db(db_path) as db:
+        async with db.execute(select_sql) as cur:
+            rows = [dict(r) for r in await cur.fetchall()]
+
+    entries = [_row_to_entry(r).model_dump() for r in rows]
+    return JSONResponse(
+        content={"audit_log": entries, "total": len(entries)},
+        headers={"Content-Disposition": "attachment; filename=nuvrail-audit.json"},
+    )
+
+
+@router.get("/audit/{entry_id}", response_model=AuditEntry)
+async def get_audit_entry(
+    entry_id: int,
+    db_path: Path = Depends(get_db_path),
+) -> AuditEntry:
+    """Retrieve a single audit log entry by its integer ID."""
+    select_sql = """
+        SELECT
+            a.id,
+            a.timestamp,
+            a.operation_id,
+            a.event,
+            a.actor,
+            a.agent_id,
+            a.detail,
+            op.description   AS op_description,
+            op.op_type       AS op_type,
+            op.protocol      AS op_protocol,
+            op.status        AS op_status
+        FROM audit_log a
+        LEFT JOIN staged_operations op ON a.operation_id = op.id
+        WHERE a.id = ?
+    """
+    async with get_db(db_path) as db:
+        async with db.execute(select_sql, (entry_id,)) as cur:
+            row = await cur.fetchone()
+
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"Audit entry {entry_id} not found")
+    return _row_to_entry(dict(row))

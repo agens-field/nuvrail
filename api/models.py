@@ -78,4 +78,17 @@ class AuditEntry(BaseModel):
     operation_id: Optional[str] = None
     event: str
     actor: Optional[str] = None
-    detail: Optional[str] = None
+    agent_id: Optional[str] = None
+    detail: Optional[dict] = None       # parsed JSON from audit_log.detail
+    # Joined from staged_operations (None if operation record no longer exists)
+    op_description: Optional[str] = None
+    op_type: Optional[str] = None
+    op_protocol: Optional[str] = None
+    op_status: Optional[str] = None
+
+
+class AuditListResponse(BaseModel):
+    entries: List[AuditEntry]
+    total: int
+    limit: int
+    offset: int

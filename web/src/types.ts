@@ -33,3 +33,25 @@ export interface DecisionResponse {
   id: string
   status: string
 }
+
+export interface AuditEntry {
+  id: number
+  timestamp: number
+  operation_id?: string
+  event: string
+  actor?: string
+  agent_id?: string
+  detail?: Record<string, unknown>
+  // Joined from staged_operations
+  op_description?: string
+  op_type?: string
+  op_protocol?: string
+  op_status?: string
+}
+
+export interface AuditListResponse {
+  entries: AuditEntry[]
+  total: number
+  limit: number
+  offset: number
+}
