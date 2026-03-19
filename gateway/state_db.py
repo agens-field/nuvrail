@@ -527,7 +527,12 @@ async def restore_from_snapshot(
             true_flags: list = state.get("flags", [])
             true_flags_json = json.dumps(true_flags)
 
-            # Restore the messages row to pre-op flag state
+            # Restore the messages row to pre-op flag state.
+            # If the row doesn't exist (message not yet synced through proxy),
+            # the UPDATE is a no-op — that's fine. We still queue a pending_revert
+            # so the proxy injects the unsolicited FETCH, which tells the AI
+            # the flag was not applied. seq_num may be None for unsynced messages;
+            # the proxy defaults to seq_num=1 in that case.
             await db.execute(
                 "UPDATE messages SET flags = ?, last_updated = ? WHERE folder_id = ? AND uid = ?",
                 (true_flags_json, now, folder_id, uid),

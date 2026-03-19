@@ -40,34 +40,74 @@ load_dotenv(_REPO_ROOT / ".env")
 
 
 def _patch_staging_db(db_path: Path) -> dict:
-    """Patch the db_path keyword default on all staging functions.
+    """Patch db_path defaults on staging and state_db functions, and the module-level DB_PATH.
 
-    staging.create_operation and related functions have:
-        async def create_operation(..., db_path: Path = DB_PATH)
-    where DB_PATH is captured at import time as a default argument value
-    stored in __kwdefaults__. We must patch those dicts directly.
+    Functions use 'db_path: Path = DB_PATH' as a keyword-only default.
+    DB_PATH is captured at import time, so we must also patch the module-level
+    attribute so that proxy code calling state_db functions with DB_PATH (the
+    constant, not the function default) also writes to the test DB.
 
-    Returns a dict of originals so the caller can restore them at teardown.
+    Returns a dict of originals for restoration at teardown.
     """
     import gateway.staging as _staging
+    import gateway.state_db as _state_db
+    import gateway.proxy as _proxy
 
-    fns = [
+    originals: dict = {}
+
+    # Patch staging functions
+    for fn in [
         _staging.create_operation,
         _staging.get_operation,
         _staging.list_operations,
         _staging.update_operation_status,
-    ]
-    originals = {}
-    for fn in fns:
+    ]:
         if fn.__kwdefaults__ is None:
             fn.__kwdefaults__ = {}
         originals[fn] = fn.__kwdefaults__.get("db_path")
         fn.__kwdefaults__["db_path"] = db_path
+
+    # Patch state_db functions used by proxy for revert injection and sync
+    for fn in [
+        _state_db.get_pending_reverts,
+        _state_db.mark_reverts_delivered,
+        _state_db.get_message,
+        _state_db.get_or_create_folder,
+        _state_db.update_folder_stats,
+        _state_db.upsert_folders_from_list,
+        _state_db.upsert_message,
+        _state_db.snapshot_messages,
+        _state_db.apply_optimistic_flag_update,
+        _state_db.restore_from_snapshot,
+        _state_db.insert_pending_reverts,
+    ]:
+        if fn.__kwdefaults__ is None:
+            fn.__kwdefaults__ = {}
+        originals[fn] = fn.__kwdefaults__.get("db_path")
+        fn.__kwdefaults__["db_path"] = db_path
+
+    # Patch the module-level DB_PATH constant so proxy's handle_client and
+    # start_proxy (which pass DB_PATH directly, not via __kwdefaults__) also
+    # use the test DB.
+    originals["_state_db_DB_PATH"] = _state_db.DB_PATH
+    originals["_proxy_DB_PATH"] = _proxy.DB_PATH
+    _state_db.DB_PATH = db_path
+    _proxy.DB_PATH = db_path
+
     return originals
 
 
 def _restore_staging_db(originals: dict) -> None:
     """Restore the original db_path defaults after test teardown."""
+    import gateway.state_db as _state_db
+    import gateway.proxy as _proxy
+
+    # Restore module-level DB_PATH constants
+    if "_state_db_DB_PATH" in originals:
+        _state_db.DB_PATH = originals.pop("_state_db_DB_PATH")
+    if "_proxy_DB_PATH" in originals:
+        _proxy.DB_PATH = originals.pop("_proxy_DB_PATH")
+
     for fn, orig in originals.items():
         if orig is None:
             fn.__kwdefaults__.pop("db_path", None)

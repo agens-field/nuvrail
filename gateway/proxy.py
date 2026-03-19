@@ -34,6 +34,7 @@ Upstream→client direction is still a raw byte pump.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import re
@@ -51,7 +52,10 @@ from gateway.staging import create_operation
 from gateway.state_db import (
     DB_PATH,
     apply_optimistic_flag_update,
+    get_message,
+    get_pending_reverts,
     init_db,
+    mark_reverts_delivered,
     snapshot_messages,
     update_folder_stats,
     upsert_folders_from_list,
@@ -107,26 +111,79 @@ def _build_parsed_op(parsed: ParsedCommand) -> Optional[ParsedOperation]:
     return None
 
 
+async def _inject_pending_reverts(
+    client_writer: asyncio.StreamWriter,
+    session: dict,
+    db_path: Path,
+    peer: str,
+) -> None:
+    """Inject unsolicited FETCH responses for any pending rejected operations.
+
+    Called after the tagged OK for SELECT/NOOP/FETCH is forwarded to the client.
+    The injected lines arrive after the tagged OK — valid per RFC 3501 §7 (unsolicited
+    responses may be sent at any time). From the AI's perspective, another client
+    modified the mailbox between commands — standard IMAP sync behavior.
+
+    Injection format:
+      * {seq_num} FETCH (UID {uid} FLAGS ({flags}))
+
+    Errors are always swallowed — never propagated to the byte pump.
+    """
+    folder_id = session.get("folder_id")
+    if folder_id is None:
+        return
+    try:
+        reverts = await get_pending_reverts(folder_id, db_path=db_path)
+        if not reverts:
+            return
+        lines: list[bytes] = []
+        ids_to_mark: list[int] = []
+        for r in reverts:
+            uid = r["uid"]
+            msg = await get_message(folder_id, uid, db_path=db_path)
+            seq_num = msg["sequence_num"] if msg and msg.get("sequence_num") else 1
+            true_flags = json.loads(r["true_flags"]) if r["true_flags"] else []
+            flags_str = " ".join(true_flags)
+            line = f"* {seq_num} FETCH (UID {uid} FLAGS ({flags_str}))\r\n"
+            lines.append(line.encode())
+            ids_to_mark.append(r["id"])
+        # Write all injected lines in one go
+        for line_bytes in lines:
+            client_writer.write(line_bytes)
+        await client_writer.drain()
+        await mark_reverts_delivered(ids_to_mark, db_path=db_path)
+        logger.info(
+            "[%s] Injected %d unsolicited FETCH revert(s) for folder_id=%s",
+            peer, len(lines), folder_id,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[%s] _inject_pending_reverts failed (non-fatal): %s", peer, exc)
+
+
 async def _sync_upstream_line(
     raw_line: str,
     session: dict,
     db_path: Path,
     peer: str,
 ) -> None:
-    """Inspect one upstream response line and update the local state DB if relevant.
+    """Inspect one upstream response line and update the local state DB.
 
     Session dict shape:
       {
-        'folder':       str | None,   # currently selected folder name
-        'folder_id':    int | None,   # cached DB id for current folder
-        'select_lines': list[str],    # untagged lines accumulated for SELECT
-        'in_select':    bool,         # True while accumulating SELECT lines
+        'folder':             str | None,   # currently selected folder name
+        'folder_id':          int | None,   # cached DB id for current folder
+        'select_lines':       list[str],    # untagged lines accumulated for SELECT
+        'in_select':          bool,         # True while accumulating SELECT lines
+        'revert_trigger_tag': str | None,   # tag of last SELECT/NOOP/FETCH sent by AI
       }
 
     Response handling:
       SELECT — accumulate untagged lines, flush when tagged OK [READ-WRITE/READ-ONLY]
       LIST   — parse folder name, upsert into folders table
       FETCH  — parse UID/flags/envelope, upsert into messages table
+
+    Revert injection is handled by _upstream_to_client BEFORE forwarding the tagged
+    OK line — so the AI receives [* N FETCH ...][tag OK] in the right order.
 
     Errors are logged at WARNING but never re-raised.
     """
@@ -312,6 +369,12 @@ async def _client_to_upstream(
                     session["select_lines"] = []
                     session["in_select"] = False
 
+            # Track which commands should trigger pending_reverts injection.
+            # The u2c pump will call _inject_pending_reverts when it sees
+            # the tagged OK for one of these commands.
+            if parsed.command.upper() in ("SELECT", "EXAMINE", "NOOP", "FETCH"):
+                session["revert_trigger_tag"] = parsed.tag.upper()
+
             # Pass through to upstream; the u2c pump returns the response.
             try:
                 upstream_writer.write(line_bytes)
@@ -333,12 +396,38 @@ async def _client_to_upstream(
                     is_flag_op = parsed.command.upper() in ("STORE",) and (
                         parsed_op.flags_add or parsed_op.flags_remove
                     )
+                    # If folder_id isn't cached yet (SELECT response still in flight),
+                    # look it up synchronously so we can still take a snapshot.
+                    if is_flag_op and folder_id is None and session.get("folder"):
+                        try:
+                            from gateway.state_db import get_or_create_folder
+                            folder_id = await get_or_create_folder(
+                                session["folder"], db_path=db_path
+                            )
+                            session["folder_id"] = folder_id
+                        except Exception:
+                            pass
                     if is_flag_op and folder_id is not None and parsed_op.message_ids:
                         uid_set_str = parsed_op.message_ids[0] if len(parsed_op.message_ids) == 1 else ",".join(parsed_op.message_ids)
                         try:
                             op_snapshot = await snapshot_messages(
                                 folder_id, uid_set_str, db_path=db_path
                             )
+                            # If the message isn't in the state DB yet (not yet FETCH'd
+                            # through the proxy), synthesize a minimal snapshot using the
+                            # known message_ids. For +FLAGS ops, pre-op state is "no flags"
+                            # for unknown messages — this ensures revert can still fire.
+                            if not op_snapshot:
+                                for uid_str in parsed_op.message_ids:
+                                    op_snapshot[uid_str] = {
+                                        "flags": [],
+                                        "seq_num": None,
+                                        "folder_id": folder_id,
+                                    }
+                                logger.debug(
+                                    "[%s] Messages not in state DB — synthesised snapshot for %s UIDs",
+                                    peer, len(op_snapshot),
+                                )
                             await apply_optimistic_flag_update(
                                 folder_id,
                                 uid_set_str,
@@ -400,6 +489,9 @@ async def _client_to_upstream(
             logger.info("[%s] BLOCKED: %s", peer, raw)
 
 
+_REVERT_TRIGGER_OK_RE = re.compile(r"^([A-Za-z0-9]+)\s+OK\b", re.IGNORECASE)
+
+
 async def _upstream_to_client(
     upstream_reader: asyncio.StreamReader,
     client_writer: asyncio.StreamWriter,
@@ -409,12 +501,20 @@ async def _upstream_to_client(
 ) -> None:
     """Forward upstream bytes to client, tapping each line for state sync.
 
-    Data flow:
-      chunk arrives → forwarded to client immediately
-                    → buffered for line extraction
-                    → complete lines passed to _sync_upstream_line (best-effort)
+    Data flow for most lines:
+      line arrives → forwarded to client immediately → _sync_upstream_line (best-effort)
 
-    Forwarding is NEVER delayed for parsing. DB errors never reach the client.
+    Data flow for tagged OK on revert-trigger commands (SELECT/NOOP/FETCH):
+      line arrives → _inject_pending_reverts (inject unsolicited FETCH lines first)
+                   → tagged OK forwarded to client
+                   → _sync_upstream_line for state sync
+
+    This ensures injected unsolicited FETCH lines arrive BEFORE the tagged OK that
+    the AI is waiting on. The AI sees: [* N FETCH ...][tag OK] — standard IMAP
+    unsolicited response ordering, no extensions required.
+
+    The line-buffering delay is minimal (~microseconds per line) because upstream
+    IMAP responses are line-terminated and we read in 4KB chunks.
     """
     buffer = b""
     while True:
@@ -425,22 +525,46 @@ async def _upstream_to_client(
         if not chunk:
             break
 
-        # Forward immediately — no buffering delay for the client.
-        try:
-            client_writer.write(chunk)
-            await client_writer.drain()
-        except (ConnectionResetError, BrokenPipeError, OSError):
-            break
-
-        # Extract complete lines for state sync (best-effort).
         buffer += chunk
+
         while b"\r\n" in buffer:
             line_bytes, buffer = buffer.split(b"\r\n", 1)
             line = line_bytes.decode("utf-8", errors="replace")
+            line_with_crlf = line_bytes + b"\r\n"
+
+            # Check if this is a tagged OK for a revert-trigger command.
+            # If so, inject pending reverts BEFORE forwarding the tagged OK,
+            # so the AI receives: [* N FETCH (UID M FLAGS (...))] then [tag OK].
+            revert_tag = session.get("revert_trigger_tag")
+            if revert_tag:
+                m = _REVERT_TRIGGER_OK_RE.match(line)
+                if m and m.group(1).upper() == revert_tag:
+                    session["revert_trigger_tag"] = None
+                    await _inject_pending_reverts(client_writer, session, db_path, peer)
+
+            # Forward this line to the client.
+            try:
+                client_writer.write(line_with_crlf)
+                await client_writer.drain()
+            except (ConnectionResetError, BrokenPipeError, OSError):
+                return
+
+            # State sync (best-effort, errors never propagate).
             try:
                 await _sync_upstream_line(line, session, db_path, peer)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("[%s] State sync error: %s", peer, exc)
+
+        # If there are buffered bytes that don't form a complete line yet
+        # (partial line from upstream), forward them immediately so the client
+        # doesn't stall. These partial bytes will be re-buffered on the next chunk.
+        if buffer:
+            try:
+                client_writer.write(buffer)
+                await client_writer.drain()
+                buffer = b""
+            except (ConnectionResetError, BrokenPipeError, OSError):
+                break
 
 
 async def handle_client(
@@ -486,24 +610,30 @@ async def handle_client(
 
     # Per-connection state shared between c2u (tracks SELECT) and u2c (syncs responses).
     session: dict = {
-        "folder": None,       # currently selected folder name
-        "folder_id": None,    # cached DB id for current folder
-        "select_lines": [],   # untagged lines accumulate during SELECT
-        "in_select": False,   # True while accumulating SELECT response lines
+        "folder": None,              # currently selected folder name
+        "folder_id": None,           # cached DB id for current folder
+        "select_lines": [],          # untagged lines accumulate during SELECT
+        "in_select": False,          # True while accumulating SELECT response lines
+        "revert_trigger_tag": None,  # tag of last SELECT/NOOP/FETCH (triggers revert injection)
     }
 
     # Safety net: init_db is idempotent; start_proxy already called it.
     try:
-        await init_db(db_path=DB_PATH)
+        await init_db(DB_PATH)
     except Exception as exc:  # noqa: BLE001
         logger.warning("[%s] init_db safety call failed: %s", peer_str, exc)
 
     # Start bidirectional pump.
+    # NOTE: db_path is read from the gateway.state_db module at call time so that
+    # test fixtures can patch gateway.state_db.DB_PATH / gateway.proxy.DB_PATH
+    # after import and have it take effect for in-flight connections.
+    import gateway.state_db as _state_db_mod
+    _db_path = _state_db_mod.DB_PATH
     c2u = asyncio.create_task(
-        _client_to_upstream(client_reader, upstream_writer, client_writer, session, peer_str, DB_PATH)
+        _client_to_upstream(client_reader, upstream_writer, client_writer, session, peer_str, _db_path)
     )
     u2c = asyncio.create_task(
-        _upstream_to_client(upstream_reader, client_writer, session, DB_PATH, peer_str)
+        _upstream_to_client(upstream_reader, client_writer, session, _db_path, peer_str)
     )
 
     done, pending = await asyncio.wait({c2u, u2c}, return_when=asyncio.FIRST_COMPLETED)
