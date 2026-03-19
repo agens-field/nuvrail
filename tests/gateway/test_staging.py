@@ -1,10 +1,166 @@
 """
-Integration tests for the staging engine.
+Unit tests for the staging engine (Milestone 1.0).
 
-Verifies: operations are inserted, local state updated optimistically,
-snapshots are correct for rollback.
-
-Sub-milestone: 1.1
+Uses a tmp_path-isolated SQLite DB so tests never touch ~/.nuvrail.
 """
+import re
+from pathlib import Path
+
 import pytest
-# TODO: add test cases in sub-milestone 1.1
+
+from gateway.staging import (
+    create_operation,
+    get_operation,
+    list_operations,
+    update_operation_status,
+)
+from gateway.state_db import get_db, init_db
+
+OP_ID_PATTERN = re.compile(r"^op_[A-Za-z0-9]{6}$")
+
+
+@pytest.fixture()
+async def db_path(tmp_path: Path) -> Path:
+    """Return a path to a freshly initialised test DB."""
+    path = tmp_path / "test.db"
+    await init_db(path)
+    return path
+
+
+async def test_create_operation_returns_id(db_path: Path) -> None:
+    """Operation ID must match op_XXXXXX pattern."""
+    op_id = await create_operation(
+        op_type="move",
+        protocol="imap",
+        description="Move 1 to Archive",
+        db_path=db_path,
+    )
+    assert OP_ID_PATTERN.match(op_id), f"ID {op_id!r} does not match op_XXXXXX"
+
+
+async def test_create_operation_inserts_db_row(db_path: Path) -> None:
+    """Row is present in staged_operations with correct fields."""
+    op_id = await create_operation(
+        op_type="move",
+        protocol="imap",
+        description="Move 1 to Archive",
+        imap_command="A001 MOVE 1 Archive",
+        message_ids=["1"],
+        folder_to="Archive",
+        db_path=db_path,
+    )
+    row = await get_operation(op_id, db_path=db_path)
+    assert row is not None
+    assert row["id"] == op_id
+    assert row["status"] == "pending"
+    assert row["op_type"] == "move"
+    assert row["protocol"] == "imap"
+    assert row["description"] == "Move 1 to Archive"
+    assert row["imap_command"] == "A001 MOVE 1 Archive"
+    assert row["folder_to"] == "Archive"
+    assert row["expires_at"] == row["created_at"] + 48 * 3600
+
+
+async def test_create_operation_inserts_audit_log(db_path: Path) -> None:
+    """A 'staged' audit_log row is inserted when an operation is created."""
+    op_id = await create_operation(
+        op_type="smtp_send",
+        protocol="smtp",
+        description="Send email",
+        db_path=db_path,
+    )
+    async with get_db(db_path) as db:
+        async with db.execute(
+            "SELECT * FROM audit_log WHERE operation_id = ?", (op_id,)
+        ) as cursor:
+            rows = await cursor.fetchall()
+    assert len(rows) == 1
+    row = dict(rows[0])
+    assert row["event"] == "staged"
+    assert row["actor"] == "ai_agent"
+    assert row["operation_id"] == op_id
+
+
+async def test_list_operations_filter_by_status(db_path: Path) -> None:
+    """Pending ops returned; executed ops excluded when filtering by 'pending'."""
+    pending_id = await create_operation(
+        op_type="move",
+        protocol="imap",
+        description="Pending op",
+        db_path=db_path,
+    )
+    executed_id = await create_operation(
+        op_type="copy",
+        protocol="imap",
+        description="Executed op",
+        db_path=db_path,
+    )
+    await update_operation_status(executed_id, "executed", db_path=db_path)
+
+    pending_ops = await list_operations(status="pending", db_path=db_path)
+    pending_ids = {op["id"] for op in pending_ops}
+    assert pending_id in pending_ids
+    assert executed_id not in pending_ids
+
+    all_ops = await list_operations(db_path=db_path)
+    all_ids = {op["id"] for op in all_ops}
+    assert pending_id in all_ids
+    assert executed_id in all_ids
+
+
+async def test_get_operation_not_found(db_path: Path) -> None:
+    """get_operation returns None for a non-existent ID."""
+    result = await get_operation("op_000000", db_path=db_path)
+    assert result is None
+
+
+async def test_update_status(db_path: Path) -> None:
+    """update_operation_status correctly transitions the status field."""
+    op_id = await create_operation(
+        op_type="move",
+        protocol="imap",
+        description="Test op",
+        db_path=db_path,
+    )
+    row = await get_operation(op_id, db_path=db_path)
+    assert row is not None
+    assert row["status"] == "pending"
+
+    await update_operation_status(op_id, "approved", db_path=db_path)
+    row = await get_operation(op_id, db_path=db_path)
+    assert row is not None
+    assert row["status"] == "approved"
+    assert row["decided_at"] is not None
+    assert row["decided_by"] == "human"
+
+
+async def test_update_status_executed_sets_executed_at(db_path: Path) -> None:
+    """Transitioning to 'executed' also sets executed_at."""
+    op_id = await create_operation(
+        op_type="smtp_send",
+        protocol="smtp",
+        description="SMTP op",
+        db_path=db_path,
+    )
+    await update_operation_status(op_id, "executed", db_path=db_path)
+    row = await get_operation(op_id, db_path=db_path)
+    assert row is not None
+    assert row["status"] == "executed"
+    assert row["executed_at"] is not None
+
+
+async def test_update_status_with_error(db_path: Path) -> None:
+    """Error string is stored when transitioning to 'failed'."""
+    op_id = await create_operation(
+        op_type="smtp_send",
+        protocol="smtp",
+        description="SMTP op",
+        db_path=db_path,
+    )
+    await update_operation_status(
+        op_id, "failed", error="Connection refused", db_path=db_path
+    )
+    row = await get_operation(op_id, db_path=db_path)
+    assert row is not None
+    assert row["status"] == "failed"
+    assert row["error"] == "Connection refused"

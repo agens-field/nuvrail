@@ -55,6 +55,8 @@ A single coroutine that reads one client line at a time and drives upstream
 responses inline is both simpler and correct for the SMTP protocol.
 """
 
+from __future__ import annotations
+
 import asyncio
 import base64
 import logging
@@ -64,6 +66,8 @@ import ssl
 from typing import Optional
 
 from dotenv import load_dotenv
+
+from gateway.staging import create_operation
 
 load_dotenv()
 
@@ -389,13 +393,34 @@ async def handle_smtp_client(
 
                 # 6. Do NOT forward body or terminating "." to upstream
 
-                # 7. Return STAGED response to client
-                client_writer.write(
-                    b"250 OK [STAGED] Send queued for approval \xe2\x80\x94 ID: pending\r\n"
-                )
-                await client_writer.drain()
+                # 7. Create Operation record in staging engine
+                body_text = b"".join(body_lines).decode("utf-8", errors="replace")
+                body_preview = body_text[:200]
+                try:
+                    op_id = await create_operation(
+                        op_type="smtp_send",
+                        protocol="smtp",
+                        description=(
+                            f"Send email to {', '.join(recipients or ['<unknown>'])} "
+                            f"— Subject: \"{subject}\""
+                        ),
+                        smtp_envelope={
+                            "from": sender or "",
+                            "to": recipients,
+                            "subject": subject,
+                            "body_preview": body_preview,
+                        },
+                    )
+                    staged_resp = (
+                        f"250 OK [STAGED] Send queued for approval — ID: {op_id}\r\n"
+                    )
+                except Exception as exc:
+                    logger.error("[%s] Failed to stage SMTP operation: %s", peer_str, exc)
+                    staged_resp = "250 OK [STAGED] Send queued for approval — ID: pending\r\n"
 
-                # TODO 1.0: create Operation record in staging engine
+                # 8. Return STAGED response to client
+                client_writer.write(staged_resp.encode())
+                await client_writer.drain()
 
                 # 9. Reset envelope tracking for potential next message
                 sender = None

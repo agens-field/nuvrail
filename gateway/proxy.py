@@ -31,16 +31,22 @@ Sub-milestone 0.1 LOGIN intercept is preserved; 0.3 will translate to XOAUTH2.
 Upstream→client direction is still a raw byte pump.
 """
 
+from __future__ import annotations
+
 import asyncio
 import logging
 import os
 import re
 import ssl
+from typing import Optional
 
 from dotenv import load_dotenv
 
 from gateway.command_router import classify
-from gateway.imap_parser import parse_line
+from gateway.imap_parser import ParsedCommand, parse_line
+from gateway.operation_parser import ParsedOperation, parse_append, parse_copy, parse_move, parse_store
+from gateway.staging import create_operation
+from gateway.state_db import DB_PATH, init_db
 
 load_dotenv()
 
@@ -53,6 +59,42 @@ _READ_CHUNK = 4096
 
 # Matches the literal size at end of an IMAP line: {N} or {N+}
 _LITERAL_RE = re.compile(r"\{(\d+)\+?\}$")
+
+
+def _build_parsed_op(parsed: ParsedCommand) -> Optional[ParsedOperation]:
+    """Convert a ParsedCommand into a ParsedOperation for staging.
+
+    Returns None for commands that should use generic staging (CREATE, RENAME, etc.).
+    """
+    cmd = parsed.command
+    args = parsed.args
+    uid_mode = parsed.uid
+
+    if cmd in ("STORE",):
+        # STORE uid_set flags_op flags_list
+        uid_set = args[0] if args else "?"
+        flags_op = args[1] if len(args) > 1 else "+FLAGS"
+        # flags may be in parentheses like (\Seen) or bare \Seen
+        raw_flags = args[2] if len(args) > 2 else "()"
+        if raw_flags.startswith("(") and raw_flags.endswith(")"):
+            flags = raw_flags[1:-1].split()
+        else:
+            flags = [raw_flags]
+        return parse_store(parsed.tag, uid_mode, uid_set, flags_op, flags)
+
+    if cmd in ("MOVE",):
+        uid_set = args[0] if args else "?"
+        destination = args[1] if len(args) > 1 else "?"
+        return parse_move(parsed.tag, uid_set, destination)
+
+    if cmd in ("COPY",):
+        uid_set = args[0] if args else "?"
+        destination = args[1] if len(args) > 1 else "?"
+        return parse_copy(parsed.tag, uid_set, destination)
+
+    # APPEND is handled via the literal path; if it somehow reaches here, generic staging
+    # CREATE, RENAME → return None (caller uses generic staging)
+    return None
 
 
 async def _client_to_upstream(
@@ -87,11 +129,20 @@ async def _client_to_upstream(
         parsed = parse_line(raw)
 
         if parsed is None:
-            # Sync literal: {N} at end of line — consume the literal bytes and
-            # respond with STAGED instead of forwarding to upstream.
-            tag = raw.split()[0] if raw.split() else "?"
+            # Sync literal: {N} at end of line — this is typically an APPEND command.
+            # Consume the literal bytes, stage the operation, respond with OK [STAGED].
+            parts = raw.split()
+            tag = parts[0] if parts else "?"
             m = _LITERAL_RE.search(raw)
             literal_size = int(m.group(1)) if m else 0
+
+            # Extract APPEND parameters from the raw command line before the literal
+            # Format: tag APPEND folder (flags) {size}
+            append_folder = parts[2] if len(parts) > 2 else "INBOX"
+            # Flags are in a parenthesised token — find it
+            import re as _re
+            flags_match = _re.search(r"\(([^)]*)\)", raw)
+            append_flags = flags_match.group(1).split() if flags_match else []
 
             try:
                 client_writer.write(b"+ Ready for literal data\r\n")
@@ -99,13 +150,30 @@ async def _client_to_upstream(
                 if literal_size > 0:
                     await client_reader.readexactly(literal_size)
                 await client_reader.readline()  # consume trailing CRLF after literal
-                client_writer.write(
-                    f"{tag} OK [STAGED] Operation queued for approval\r\n".encode()
+            except (asyncio.IncompleteReadError, ConnectionResetError, OSError):
+                break
+
+            try:
+                parsed_op = parse_append(tag, append_folder, append_flags, literal_size)
+                op_id = await create_operation(
+                    op_type=parsed_op.op_type,
+                    protocol="imap",
+                    description=parsed_op.description,
+                    imap_command=parsed_op.imap_command,
+                    folder_to=parsed_op.folder_to,
+                    flags_add=parsed_op.flags_add,
                 )
+                resp = f"{tag} OK [STAGED] Operation queued — ID: {op_id}\r\n"
+            except Exception as exc:
+                logger.error("[%s] Failed to stage APPEND: %s", peer, exc)
+                resp = f"{tag} OK [STAGED] Operation queued for approval\r\n"
+
+            try:
+                client_writer.write(resp.encode())
                 await client_writer.drain()
             except (asyncio.IncompleteReadError, ConnectionResetError, OSError):
                 break
-            logger.info("[%s] STAGED (literal): %s", peer, raw)
+            logger.info("[%s] STAGED (literal APPEND): %s", peer, raw)
             continue
 
         action = classify(parsed)
@@ -119,15 +187,41 @@ async def _client_to_upstream(
                 break
 
         elif action == "write":
-            # Intercept — don't forward, respond locally.
-            resp = f"{parsed.tag} OK [STAGED] Operation queued for approval\r\n"
+            # Intercept — don't forward, stage the operation, respond locally.
+            try:
+                parsed_op = _build_parsed_op(parsed)
+                if parsed_op is not None:
+                    op_id = await create_operation(
+                        op_type=parsed_op.op_type,
+                        protocol="imap",
+                        description=parsed_op.description,
+                        imap_command=parsed_op.imap_command,
+                        message_ids=parsed_op.message_ids if parsed_op.message_ids else None,
+                        folder_from=parsed_op.folder_from,
+                        folder_to=parsed_op.folder_to,
+                        flags_add=parsed_op.flags_add if parsed_op.flags_add else None,
+                        flags_remove=parsed_op.flags_remove if parsed_op.flags_remove else None,
+                    )
+                    resp = f"{parsed.tag} OK [STAGED] Operation queued — ID: {op_id}\r\n"
+                else:
+                    # CREATE / RENAME or unknown write — stage generically
+                    op_id = await create_operation(
+                        op_type=parsed.command.lower(),
+                        protocol="imap",
+                        description=f"{parsed.command} {' '.join(parsed.args)}".strip(),
+                        imap_command=raw,
+                    )
+                    resp = f"{parsed.tag} OK [STAGED] Operation queued — ID: {op_id}\r\n"
+            except Exception as exc:
+                logger.error("[%s] Failed to stage write command: %s", peer, exc)
+                resp = f"{parsed.tag} OK [STAGED] Operation queued for approval\r\n"
+
             try:
                 client_writer.write(resp.encode())
                 await client_writer.drain()
             except (ConnectionResetError, BrokenPipeError, OSError):
                 break
             logger.info("[%s] STAGED: %s", peer, raw)
-            # TODO 0.3+: create Operation record in staging engine
 
         else:  # blocked
             resp = f"{parsed.tag} OK Noted\r\n"
@@ -239,6 +333,7 @@ async def start_proxy(host: str, port: int) -> asyncio.AbstractServer:
     Exposed separately from main() so tests can bind to port 0 and retrieve the
     actual ephemeral port via server.sockets[0].getsockname()[1].
     """
+    await init_db(DB_PATH)
     server = await asyncio.start_server(handle_client, host, port)
     actual = server.sockets[0].getsockname()
     logger.info(

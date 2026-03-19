@@ -6,7 +6,6 @@ Handles automatic refresh when access token is expired.
 
 Sub-milestone: 0.3
 """
-import json
 from pathlib import Path
 
 NUVRAIL_DIR = Path.home() / ".nuvrail"
