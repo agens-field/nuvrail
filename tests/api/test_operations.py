@@ -168,22 +168,46 @@ async def test_approve_already_approved(
 async def test_approve_imap_operation(
     client: httpx.AsyncClient, db_path: Path
 ) -> None:
-    """POST approve on an IMAP op marks it executed (no upstream relay in 1.0)."""
+    """POST approve on an IMAP op executes against the upstream IMAP server.
+
+    Uses a CREATE op (creates a folder then immediately renames/deletes it)
+    so the test doesn't require real UIDs or an existing folder state.
+    Requires NUVRAIL_TEST_IMAP_* env vars. Skipped if not set.
+    """
+    imap_host = os.environ.get("NUVRAIL_TEST_IMAP_HOST", "")
+    if not imap_host:
+        pytest.skip("NUVRAIL_TEST_IMAP_HOST not set — skipping upstream IMAP test")
+
+    import time as _time
+    folder_name = f"NuvrailTest_{int(_time.time())}"
+
     op_id = await create_operation(
-        op_type="move",
+        op_type="create",
         protocol="imap",
-        description="Move 10 to Archive",
-        imap_command="A001 UID MOVE 10 Archive",
+        description=f"Create folder {folder_name}",
+        imap_command=f"A001 CREATE {folder_name}",
+        folder_to=folder_name,
         db_path=db_path,
     )
     resp = await client.post(f"/api/v1/operations/{op_id}/approve")
-    assert resp.status_code == 200
+    assert resp.status_code == 200, f"Approve failed: {resp.text}"
     data = resp.json()
     assert data["id"] == op_id
     assert data["status"] == "executed"
 
     detail = await client.get(f"/api/v1/operations/{op_id}")
     assert detail.json()["status"] == "executed"
+
+    # Cleanup: delete the test folder via direct IMAP
+    import aioimaplib
+    imap_port = int(os.environ.get("NUVRAIL_TEST_IMAP_PORT", "993"))
+    imap_user = os.environ.get("NUVRAIL_TEST_IMAP_USER", "")
+    imap_pass = os.environ.get("NUVRAIL_TEST_IMAP_PASS", "")
+    c = aioimaplib.IMAP4_SSL(host=imap_host, port=imap_port)
+    await c.wait_hello_from_server()
+    await c.login(imap_user, imap_pass)
+    await c.delete(folder_name)
+    await c.logout()
 
 
 async def test_approve_smtp_operation(
