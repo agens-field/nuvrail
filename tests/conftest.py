@@ -32,6 +32,18 @@ def proxy_config() -> dict:
     return {
         "host": os.environ.get("NUVRAIL_PROXY_HOST", "127.0.0.1"),
         "imap_port": int(os.environ.get("NUVRAIL_PROXY_IMAP_PORT", "10143")),
+        "smtp_port": int(os.environ.get("NUVRAIL_PROXY_SMTP_PORT", "10587")),
         "api_url": os.environ.get("NUVRAIL_PROXY_API_URL", "http://127.0.0.1:8000"),
         "api_key": os.environ.get("NUVRAIL_PROXY_API_KEY", ""),
+    }
+
+
+@pytest.fixture(scope="session")
+def upstream_smtp_config() -> dict:
+    """Return upstream SMTP server config from environment."""
+    return {
+        "host": os.environ["NUVRAIL_TEST_SMTP_HOST"],
+        "port": int(os.environ.get("NUVRAIL_TEST_SMTP_PORT", "587")),
+        "user": os.environ["NUVRAIL_TEST_SMTP_USER"],
+        "password": os.environ["NUVRAIL_TEST_SMTP_PASS"],
     }
