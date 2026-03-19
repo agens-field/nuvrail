@@ -1,0 +1,234 @@
+"""
+Unit tests for state_db sync functions (Milestone 0.4).
+
+Uses tmp_path-isolated SQLite DB — never touches ~/.nuvrail.
+"""
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+
+from gateway.state_db import (
+    get_message,
+    get_messages_by_uid_set,
+    get_or_create_folder,
+    init_db,
+    resolve_sequence_to_uid,
+    update_flags,
+    update_folder_stats,
+    upsert_folders_from_list,
+    upsert_message,
+)
+
+
+@pytest.fixture()
+async def db_path(tmp_path: Path) -> Path:
+    """Return a path to a freshly initialised test DB."""
+    path = tmp_path / "test.db"
+    await init_db(path)
+    return path
+
+
+# ---------------------------------------------------------------------------
+# Folder sync tests
+# ---------------------------------------------------------------------------
+
+
+async def test_get_or_create_folder_creates_new(db_path: Path) -> None:
+    """A new folder row is created and its id returned."""
+    folder_id = await get_or_create_folder("INBOX", db_path=db_path)
+    assert isinstance(folder_id, int)
+    assert folder_id > 0
+
+
+async def test_get_or_create_folder_idempotent(db_path: Path) -> None:
+    """Calling twice returns the same id."""
+    id1 = await get_or_create_folder("INBOX", db_path=db_path)
+    id2 = await get_or_create_folder("INBOX", db_path=db_path)
+    assert id1 == id2
+
+
+async def test_update_folder_stats(db_path: Path) -> None:
+    """EXISTS, UIDVALIDITY etc. are stored correctly."""
+    folder_id = await update_folder_stats(
+        "INBOX",
+        exists_count=47,
+        recent_count=2,
+        uidvalidity=1234567890,
+        uidnext=48,
+        unseen_count=5,
+        db_path=db_path,
+    )
+    assert isinstance(folder_id, int)
+
+    from gateway.state_db import get_db
+
+    async with get_db(db_path) as db:
+        async with db.execute("SELECT * FROM folders WHERE id = ?", (folder_id,)) as cur:
+            row = await cur.fetchone()
+
+    assert row is not None
+    assert row["name"] == "INBOX"
+    assert row["exists_count"] == 47
+    assert row["recent_count"] == 2
+    assert row["uidvalidity"] == 1234567890
+    assert row["uidnext"] == 48
+    assert row["unseen_count"] == 5
+
+
+async def test_upsert_folders_from_list(db_path: Path) -> None:
+    """Multiple folders are created idempotently."""
+    await upsert_folders_from_list(["INBOX", "Sent", "Archive"], db_path=db_path)
+    await upsert_folders_from_list(["INBOX", "Trash"], db_path=db_path)  # idempotent
+
+    from gateway.state_db import get_db
+
+    async with get_db(db_path) as db:
+        async with db.execute("SELECT name FROM folders ORDER BY name") as cur:
+            rows = await cur.fetchall()
+
+    names = {r["name"] for r in rows}
+    assert {"INBOX", "Sent", "Archive", "Trash"} <= names
+
+
+# ---------------------------------------------------------------------------
+# Message sync tests
+# ---------------------------------------------------------------------------
+
+
+async def _setup_folder(db_path: Path, name: str = "INBOX") -> int:
+    return await get_or_create_folder(name, db_path=db_path)
+
+
+async def test_upsert_message_creates_row(db_path: Path) -> None:
+    """A message row is created with uid, flags, and subject."""
+    folder_id = await _setup_folder(db_path)
+    await upsert_message(
+        folder_id,
+        uid=42,
+        seq_num=1,
+        flags=["\\Seen"],
+        subject="Hello world",
+        sender="alice@example.com",
+        db_path=db_path,
+    )
+    row = await get_message(folder_id, 42, db_path=db_path)
+    assert row is not None
+    assert row["uid"] == 42
+    assert row["subject"] == "Hello world"
+    assert json.loads(row["flags"]) == ["\\Seen"]
+
+
+async def test_upsert_message_updates_existing(db_path: Path) -> None:
+    """Second upsert updates flags but preserves subject."""
+    folder_id = await _setup_folder(db_path)
+    await upsert_message(folder_id, uid=42, flags=["\\Seen"], subject="Hi", db_path=db_path)
+    await upsert_message(folder_id, uid=42, flags=["\\Seen", "\\Answered"], db_path=db_path)
+
+    row = await get_message(folder_id, 42, db_path=db_path)
+    assert row is not None
+    assert json.loads(row["flags"]) == ["\\Seen", "\\Answered"]
+    # Subject preserved (second call passed None)
+    assert row["subject"] == "Hi"
+
+
+async def test_update_flags(db_path: Path) -> None:
+    """Flags column is updated to the new list."""
+    folder_id = await _setup_folder(db_path)
+    await upsert_message(folder_id, uid=10, flags=[], db_path=db_path)
+    await update_flags(folder_id, 10, ["\\Seen", "\\Flagged"], db_path=db_path)
+
+    row = await get_message(folder_id, 10, db_path=db_path)
+    assert row is not None
+    assert json.loads(row["flags"]) == ["\\Seen", "\\Flagged"]
+
+
+async def test_get_message_not_found(db_path: Path) -> None:
+    """Returns None for a UID that doesn't exist."""
+    folder_id = await _setup_folder(db_path)
+    result = await get_message(folder_id, 9999, db_path=db_path)
+    assert result is None
+
+
+# ---------------------------------------------------------------------------
+# UID set tests
+# ---------------------------------------------------------------------------
+
+
+async def _seed_messages(db_path: Path, folder_id: int, uids: "list[int]") -> None:
+    for i, uid in enumerate(uids, start=1):
+        await upsert_message(folder_id, uid=uid, seq_num=i, db_path=db_path)
+
+
+async def test_get_messages_by_uid_set_single(db_path: Path) -> None:
+    """Single UID string '42' returns exactly that row."""
+    folder_id = await _setup_folder(db_path)
+    await _seed_messages(db_path, folder_id, [40, 42, 45])
+
+    rows = await get_messages_by_uid_set(folder_id, "42", db_path=db_path)
+    assert len(rows) == 1
+    assert rows[0]["uid"] == 42
+
+
+async def test_get_messages_by_uid_set_range(db_path: Path) -> None:
+    """Range '1:3' returns 3 rows."""
+    folder_id = await _setup_folder(db_path)
+    await _seed_messages(db_path, folder_id, [1, 2, 3, 4, 5])
+
+    rows = await get_messages_by_uid_set(folder_id, "1:3", db_path=db_path)
+    assert len(rows) == 3
+    assert {r["uid"] for r in rows} == {1, 2, 3}
+
+
+async def test_get_messages_by_uid_set_list(db_path: Path) -> None:
+    """Comma list '1,3,5' returns exactly those 3 rows."""
+    folder_id = await _setup_folder(db_path)
+    await _seed_messages(db_path, folder_id, [1, 2, 3, 4, 5])
+
+    rows = await get_messages_by_uid_set(folder_id, "1,3,5", db_path=db_path)
+    assert len(rows) == 3
+    assert {r["uid"] for r in rows} == {1, 3, 5}
+
+
+async def test_get_messages_by_uid_set_star(db_path: Path) -> None:
+    """'*' returns only the highest UID."""
+    folder_id = await _setup_folder(db_path)
+    await _seed_messages(db_path, folder_id, [10, 20, 30])
+
+    rows = await get_messages_by_uid_set(folder_id, "*", db_path=db_path)
+    assert len(rows) == 1
+    assert rows[0]["uid"] == 30
+
+
+async def test_get_messages_by_uid_set_range_with_star(db_path: Path) -> None:
+    """'1:*' returns all rows."""
+    folder_id = await _setup_folder(db_path)
+    await _seed_messages(db_path, folder_id, [1, 2, 3])
+
+    rows = await get_messages_by_uid_set(folder_id, "1:*", db_path=db_path)
+    assert len(rows) == 3
+
+
+async def test_get_messages_by_uid_set_mixed(db_path: Path) -> None:
+    """'1:3,5,10:12' returns correct rows from the seeded set."""
+    folder_id = await _setup_folder(db_path)
+    await _seed_messages(db_path, folder_id, [1, 2, 3, 5, 9, 10, 11, 12, 15])
+
+    rows = await get_messages_by_uid_set(folder_id, "1:3,5,10:12", db_path=db_path)
+    uids = {r["uid"] for r in rows}
+    assert uids == {1, 2, 3, 5, 10, 11, 12}
+
+
+async def test_resolve_sequence_to_uid(db_path: Path) -> None:
+    """seq_num 2 resolves to uid 42."""
+    folder_id = await _setup_folder(db_path)
+    await upsert_message(folder_id, uid=10, seq_num=1, db_path=db_path)
+    await upsert_message(folder_id, uid=42, seq_num=2, db_path=db_path)
+
+    result = await resolve_sequence_to_uid(folder_id, 2, db_path=db_path)
+    assert result == 42
+
+    missing = await resolve_sequence_to_uid(folder_id, 99, db_path=db_path)
+    assert missing is None

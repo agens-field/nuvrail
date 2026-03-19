@@ -12,7 +12,9 @@ State transitions:
 Sub-milestone: 0.4 (mailbox mirror tables)
 Sub-milestone: 1.0 (staged_operations + audit_log tables)
 """
+import json
 import os
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncGenerator
@@ -123,3 +125,280 @@ async def get_db(path: Path = DB_PATH) -> AsyncGenerator[aiosqlite.Connection, N
     async with aiosqlite.connect(path) as db:
         db.row_factory = aiosqlite.Row
         yield db
+
+
+# ---------------------------------------------------------------------------
+# Folder sync helpers
+# ---------------------------------------------------------------------------
+
+
+async def get_or_create_folder(name: str, db_path: Path = DB_PATH) -> int:
+    """Return folder_id, creating a row if it doesn't exist."""
+    async with get_db(db_path) as db:
+        async with db.execute(
+            "SELECT id FROM folders WHERE name = ?", (name,)
+        ) as cur:
+            row = await cur.fetchone()
+        if row is not None:
+            return int(row["id"])
+        cur = await db.execute(
+            "INSERT INTO folders (name, last_synced) VALUES (?, ?)",
+            (name, int(time.time())),
+        )
+        await db.commit()
+        return cur.lastrowid  # type: ignore[return-value]
+
+
+async def update_folder_stats(
+    name: str,
+    *,
+    exists_count: "int | None" = None,
+    recent_count: "int | None" = None,
+    uidvalidity: "int | None" = None,
+    uidnext: "int | None" = None,
+    unseen_count: "int | None" = None,
+    db_path: Path = DB_PATH,
+) -> int:
+    """Upsert folder stats. Returns folder_id."""
+    folder_id = await get_or_create_folder(name, db_path=db_path)
+
+    # Build UPDATE only for non-None fields
+    updates: "list[tuple[str, object]]" = [("last_synced", int(time.time()))]
+    if exists_count is not None:
+        updates.append(("exists_count", exists_count))
+    if recent_count is not None:
+        updates.append(("recent_count", recent_count))
+    if uidvalidity is not None:
+        updates.append(("uidvalidity", uidvalidity))
+    if uidnext is not None:
+        updates.append(("uidnext", uidnext))
+    if unseen_count is not None:
+        updates.append(("unseen_count", unseen_count))
+
+    set_clause = ", ".join(f"{col} = ?" for col, _ in updates)
+    values = [v for _, v in updates]
+    values.append(folder_id)
+
+    async with get_db(db_path) as db:
+        await db.execute(
+            f"UPDATE folders SET {set_clause} WHERE id = ?",  # noqa: S608
+            values,
+        )
+        await db.commit()
+
+    return folder_id
+
+
+async def upsert_folders_from_list(
+    folder_names: "list[str]",
+    db_path: Path = DB_PATH,
+) -> None:
+    """Create folder rows for all names returned by LIST. Idempotent."""
+    for name in folder_names:
+        await get_or_create_folder(name, db_path=db_path)
+
+
+# ---------------------------------------------------------------------------
+# Message sync helpers
+# ---------------------------------------------------------------------------
+
+
+async def upsert_message(
+    folder_id: int,
+    uid: int,
+    *,
+    seq_num: "int | None" = None,
+    flags: "list[str] | None" = None,
+    subject: "str | None" = None,
+    sender: "str | None" = None,
+    date_sent: "int | None" = None,
+    size: "int | None" = None,
+    message_id: "str | None" = None,
+    db_path: Path = DB_PATH,
+) -> None:
+    """Insert or update a message row. Only updates non-None fields."""
+    now = int(time.time())
+    async with get_db(db_path) as db:
+        async with db.execute(
+            "SELECT id FROM messages WHERE folder_id = ? AND uid = ?",
+            (folder_id, uid),
+        ) as cur:
+            row = await cur.fetchone()
+
+        if row is None:
+            # INSERT with whatever we have
+            await db.execute(
+                """
+                INSERT INTO messages
+                    (folder_id, uid, sequence_num, flags, subject, sender,
+                     date_sent, size, message_id, last_updated)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    folder_id,
+                    uid,
+                    seq_num,
+                    json.dumps(flags if flags is not None else []),
+                    subject,
+                    sender,
+                    date_sent,
+                    size,
+                    message_id,
+                    now,
+                ),
+            )
+        else:
+            # UPDATE only non-None fields
+            updates: "list[tuple[str, object]]" = [("last_updated", now)]
+            if seq_num is not None:
+                updates.append(("sequence_num", seq_num))
+            if flags is not None:
+                updates.append(("flags", json.dumps(flags)))
+            if subject is not None:
+                updates.append(("subject", subject))
+            if sender is not None:
+                updates.append(("sender", sender))
+            if date_sent is not None:
+                updates.append(("date_sent", date_sent))
+            if size is not None:
+                updates.append(("size", size))
+            if message_id is not None:
+                updates.append(("message_id", message_id))
+
+            set_clause = ", ".join(f"{col} = ?" for col, _ in updates)
+            values: "list[object]" = [v for _, v in updates]
+            values.append(folder_id)
+            values.append(uid)
+            await db.execute(
+                f"UPDATE messages SET {set_clause} WHERE folder_id = ? AND uid = ?",  # noqa: S608
+                values,
+            )
+
+        await db.commit()
+
+
+async def update_flags(
+    folder_id: int,
+    uid: int,
+    flags: "list[str]",
+    db_path: Path = DB_PATH,
+) -> None:
+    """Update the flags column for a specific UID."""
+    now = int(time.time())
+    async with get_db(db_path) as db:
+        await db.execute(
+            "UPDATE messages SET flags = ?, last_updated = ? WHERE folder_id = ? AND uid = ?",
+            (json.dumps(flags), now, folder_id, uid),
+        )
+        await db.commit()
+
+
+async def get_message(
+    folder_id: int,
+    uid: int,
+    db_path: Path = DB_PATH,
+) -> "dict | None":
+    """Fetch a single message row by UID. Returns dict or None."""
+    async with get_db(db_path) as db:
+        async with db.execute(
+            "SELECT * FROM messages WHERE folder_id = ? AND uid = ?",
+            (folder_id, uid),
+        ) as cur:
+            row = await cur.fetchone()
+    if row is None:
+        return None
+    return dict(row)
+
+
+def _expand_uid_set(uid_set_str: str, known_uids: "list[int]") -> "list[int]":
+    """Expand an IMAP UID set string into a list of matching UIDs.
+
+    UID set grammar (simplified):
+      uid-set = uid-range *("," uid-range)
+      uid-range = uid / uid ":" uid
+      uid = nz-number / "*"
+
+    "*" means the highest known UID in the folder.
+    """
+    if not known_uids:
+        return []
+
+    max_uid = max(known_uids)
+    known_set = set(known_uids)
+    result: "set[int]" = set()
+
+    for part in uid_set_str.split(","):
+        part = part.strip()
+        if ":" in part:
+            low_str, high_str = part.split(":", 1)
+            low = max_uid if low_str == "*" else int(low_str)
+            high = max_uid if high_str == "*" else int(high_str)
+            if low > high:
+                low, high = high, low
+            result.update(u for u in known_set if low <= u <= high)
+        elif part == "*":
+            result.add(max_uid)
+        else:
+            uid = int(part)
+            if uid in known_set:
+                result.add(uid)
+
+    return sorted(result)
+
+
+async def get_messages_by_uid_set(
+    folder_id: int,
+    uid_set_str: str,
+    db_path: Path = DB_PATH,
+) -> "list[dict]":
+    """Resolve a UID set string to message rows.
+
+    uid_set_str formats:
+      "42"          — single UID
+      "1:10"        — range
+      "1,3,5"       — comma list
+      "1:5,10,20"   — mixed
+      "*"           — highest known UID in folder
+      "1:*"         — all from 1 to highest known UID
+
+    Pulls all known UIDs for the folder from DB, then filters to the set.
+    Returns [] if no messages match.
+    """
+    async with get_db(db_path) as db:
+        async with db.execute(
+            "SELECT uid FROM messages WHERE folder_id = ? ORDER BY uid",
+            (folder_id,),
+        ) as cur:
+            rows = await cur.fetchall()
+
+    known_uids = [int(r["uid"]) for r in rows]
+    target_uids = _expand_uid_set(uid_set_str, known_uids)
+
+    if not target_uids:
+        return []
+
+    placeholders = ",".join("?" * len(target_uids))
+    async with get_db(db_path) as db:
+        async with db.execute(
+            f"SELECT * FROM messages WHERE folder_id = ? AND uid IN ({placeholders})"  # noqa: S608
+            " ORDER BY uid",
+            [folder_id, *target_uids],
+        ) as cur:
+            rows2 = await cur.fetchall()
+
+    return [dict(r) for r in rows2]
+
+
+async def resolve_sequence_to_uid(
+    folder_id: int,
+    seq_num: int,
+    db_path: Path = DB_PATH,
+) -> "int | None":
+    """Return the UID for a given sequence number, or None if not found."""
+    async with get_db(db_path) as db:
+        async with db.execute(
+            "SELECT uid FROM messages WHERE folder_id = ? AND sequence_num = ?",
+            (folder_id, seq_num),
+        ) as cur:
+            row = await cur.fetchone()
+    return int(row["uid"]) if row is not None else None

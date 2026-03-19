@@ -38,15 +38,23 @@ import logging
 import os
 import re
 import ssl
+from pathlib import Path
 from typing import Optional
 
 from dotenv import load_dotenv
 
 from gateway.command_router import classify
 from gateway.imap_parser import ParsedCommand, parse_line
+from gateway.imap_response_parser import parse_fetch_line, parse_list_response, parse_select_response
 from gateway.operation_parser import ParsedOperation, parse_append, parse_copy, parse_move, parse_store
 from gateway.staging import create_operation
-from gateway.state_db import DB_PATH, init_db
+from gateway.state_db import (
+    DB_PATH,
+    init_db,
+    update_folder_stats,
+    upsert_folders_from_list,
+    upsert_message,
+)
 
 load_dotenv()
 
@@ -97,10 +105,123 @@ def _build_parsed_op(parsed: ParsedCommand) -> Optional[ParsedOperation]:
     return None
 
 
+async def _sync_upstream_line(
+    raw_line: str,
+    session: dict,
+    db_path: Path,
+    peer: str,
+) -> None:
+    """Inspect one upstream response line and update the local state DB if relevant.
+
+    Session dict shape:
+      {
+        'folder':       str | None,   # currently selected folder name
+        'folder_id':    int | None,   # cached DB id for current folder
+        'select_lines': list[str],    # untagged lines accumulated for SELECT
+        'in_select':    bool,         # True while accumulating SELECT lines
+      }
+
+    Response handling:
+      SELECT — accumulate untagged lines, flush when tagged OK [READ-WRITE/READ-ONLY]
+      LIST   — parse folder name, upsert into folders table
+      FETCH  — parse UID/flags/envelope, upsert into messages table
+
+    Errors are logged at WARNING but never re-raised.
+    """
+    stripped = raw_line.rstrip("\r\n")
+
+    # ------------------------------------------------------------------
+    # SELECT accumulation
+    # ------------------------------------------------------------------
+    if stripped.startswith("* ") and session.get("in_select"):
+        session["select_lines"].append(stripped)
+        return
+
+    # Untagged lines that signal we're in a SELECT response
+    _select_untagged = re.compile(
+        r"^\* (?:\d+ (?:EXISTS|RECENT)|OK \[(?:UIDVALIDITY|UIDNEXT|UNSEEN|PERMANENTFLAGS|FLAGS))",
+        re.IGNORECASE,
+    )
+    if _select_untagged.match(stripped):
+        session["select_lines"].append(stripped)
+        session["in_select"] = True
+        return
+
+    # Tagged OK ending a SELECT (e.g. "A001 OK [READ-WRITE] SELECT completed")
+    _select_ok = re.compile(r"^[A-Za-z0-9]+ OK \[READ-(?:WRITE|ONLY)\]", re.IGNORECASE)
+    if _select_ok.match(stripped) and session.get("in_select") and session.get("folder"):
+        lines = session.pop("select_lines", [])
+        session["select_lines"] = []
+        session["in_select"] = False
+        try:
+            info = parse_select_response(lines)
+            folder_id = await update_folder_stats(
+                session["folder"],
+                exists_count=info.exists,
+                recent_count=info.recent,
+                uidvalidity=info.uidvalidity,
+                uidnext=info.uidnext,
+                unseen_count=info.unseen,
+                db_path=db_path,
+            )
+            session["folder_id"] = folder_id
+            logger.debug(
+                "[%s] Synced folder %r: exists=%s uidvalidity=%s",
+                peer, session["folder"], info.exists, info.uidvalidity,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[%s] Failed to sync SELECT stats: %s", peer, exc)
+        return
+
+    # ------------------------------------------------------------------
+    # LIST handling
+    # ------------------------------------------------------------------
+    if re.match(r"^\* LIST\b", stripped, re.IGNORECASE):
+        try:
+            names = parse_list_response([stripped])
+            if names:
+                await upsert_folders_from_list(names, db_path=db_path)
+                logger.debug("[%s] LIST: upserted folders %s", peer, names)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[%s] Failed to sync LIST line: %s", peer, exc)
+        return
+
+    # ------------------------------------------------------------------
+    # FETCH handling — only single-line FETCH with FLAGS/UID/ENVELOPE
+    # ------------------------------------------------------------------
+    if re.match(r"^\* \d+ FETCH\b", stripped, re.IGNORECASE):
+        # Skip if it looks like a literal continuation {N}
+        if re.search(r"\{\d+\}$", stripped):
+            return
+        folder_id = session.get("folder_id")
+        if folder_id is None:
+            return
+        try:
+            info = parse_fetch_line(stripped)
+            if info is None or info.uid is None:
+                return
+            await upsert_message(
+                folder_id,
+                info.uid,
+                seq_num=info.seq_num,
+                flags=info.flags,
+                subject=info.subject,
+                sender=info.sender,
+                size=info.size,
+                db_path=db_path,
+            )
+            logger.debug(
+                "[%s] FETCH synced uid=%s flags=%s", peer, info.uid, info.flags
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[%s] Failed to sync FETCH line: %s", peer, exc)
+
+
 async def _client_to_upstream(
     client_reader: asyncio.StreamReader,
     upstream_writer: asyncio.StreamWriter,
     client_writer: asyncio.StreamWriter,
+    session: dict,
     peer: str,
 ) -> None:
     """Parse each client line and route: read→upstream, write/blocked→intercept.
@@ -179,6 +300,15 @@ async def _client_to_upstream(
         action = classify(parsed)
 
         if action == "read":
+            # Track SELECT so the u2c pump knows which folder we're in.
+            if parsed.command.upper() in ("SELECT", "EXAMINE"):
+                folder_name = parsed.args[0].strip('"') if parsed.args else None
+                if folder_name:
+                    session["folder"] = folder_name
+                    session["folder_id"] = None
+                    session["select_lines"] = []
+                    session["in_select"] = False
+
             # Pass through to upstream; the u2c pump returns the response.
             try:
                 upstream_writer.write(line_bytes)
@@ -236,22 +366,44 @@ async def _client_to_upstream(
 async def _upstream_to_client(
     upstream_reader: asyncio.StreamReader,
     client_writer: asyncio.StreamWriter,
+    session: dict,
+    db_path: Path,
     peer: str,
 ) -> None:
-    """Pump raw bytes from upstream → client."""
+    """Forward upstream bytes to client, tapping each line for state sync.
+
+    Data flow:
+      chunk arrives → forwarded to client immediately
+                    → buffered for line extraction
+                    → complete lines passed to _sync_upstream_line (best-effort)
+
+    Forwarding is NEVER delayed for parsing. DB errors never reach the client.
+    """
+    buffer = b""
     while True:
         try:
-            data = await upstream_reader.read(_READ_CHUNK)
+            chunk = await upstream_reader.read(_READ_CHUNK)
         except (asyncio.IncompleteReadError, ConnectionResetError, OSError):
             break
-        if not data:
+        if not chunk:
             break
 
+        # Forward immediately — no buffering delay for the client.
         try:
-            client_writer.write(data)
+            client_writer.write(chunk)
             await client_writer.drain()
         except (ConnectionResetError, BrokenPipeError, OSError):
             break
+
+        # Extract complete lines for state sync (best-effort).
+        buffer += chunk
+        while b"\r\n" in buffer:
+            line_bytes, buffer = buffer.split(b"\r\n", 1)
+            line = line_bytes.decode("utf-8", errors="replace")
+            try:
+                await _sync_upstream_line(line, session, db_path, peer)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[%s] State sync error: %s", peer, exc)
 
 
 async def handle_client(
@@ -295,12 +447,26 @@ async def handle_client(
         upstream_writer.close()
         return
 
+    # Per-connection state shared between c2u (tracks SELECT) and u2c (syncs responses).
+    session: dict = {
+        "folder": None,       # currently selected folder name
+        "folder_id": None,    # cached DB id for current folder
+        "select_lines": [],   # untagged lines accumulate during SELECT
+        "in_select": False,   # True while accumulating SELECT response lines
+    }
+
+    # Safety net: init_db is idempotent; start_proxy already called it.
+    try:
+        await init_db(db_path=DB_PATH)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[%s] init_db safety call failed: %s", peer_str, exc)
+
     # Start bidirectional pump.
     c2u = asyncio.create_task(
-        _client_to_upstream(client_reader, upstream_writer, client_writer, peer_str)
+        _client_to_upstream(client_reader, upstream_writer, client_writer, session, peer_str)
     )
     u2c = asyncio.create_task(
-        _upstream_to_client(upstream_reader, client_writer, peer_str)
+        _upstream_to_client(upstream_reader, client_writer, session, DB_PATH, peer_str)
     )
 
     done, pending = await asyncio.wait({c2u, u2c}, return_when=asyncio.FIRST_COMPLETED)
