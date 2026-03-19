@@ -108,6 +108,16 @@ CREATE TABLE IF NOT EXISTS audit_log (
     agent_id     TEXT,
     detail       TEXT                       -- JSON
 );
+
+CREATE TABLE IF NOT EXISTS pending_reverts (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    operation_id TEXT NOT NULL REFERENCES staged_operations(id),
+    folder_id    INTEGER NOT NULL,
+    uid          INTEGER NOT NULL,
+    true_flags   TEXT NOT NULL,             -- JSON array: actual flags after revert
+    created_at   INTEGER NOT NULL,
+    delivered_at INTEGER                    -- NULL until proxy injects the unsolicited FETCH
+);
 """
 
 
@@ -406,7 +416,7 @@ async def resolve_sequence_to_uid(
 
 
 # ---------------------------------------------------------------------------
-# Snapshot and optimistic update (milestone 1.2 — rejection revert)
+# Snapshot, optimistic update, and revert (milestone 1.2 — rejection revert)
 # ---------------------------------------------------------------------------
 
 
@@ -476,4 +486,129 @@ async def apply_optimistic_flag_update(
                 "UPDATE messages SET flags = ?, last_updated = ? WHERE folder_id = ? AND uid = ?",
                 (new_flags, now, folder_id, uid),
             )
+        await db.commit()
+
+
+async def restore_from_snapshot(
+    operation_id: str,
+    db_path: Path = DB_PATH,
+) -> "list[dict]":
+    """Read snapshot from staged_operations, restore messages table.
+
+    For each UID in the snapshot:
+      - Restores the flags column in the messages table to the pre-op value.
+      - Returns a list of {operation_id, folder_id, uid, true_flags} dicts
+        for insertion into pending_reverts.
+
+    If snapshot is NULL or empty (operation had no snapshot — e.g. CREATE,
+    RENAME, or APPEND), returns an empty list (no-op revert).
+    """
+    async with get_db(db_path) as db:
+        async with db.execute(
+            "SELECT snapshot FROM staged_operations WHERE id = ?",
+            (operation_id,),
+        ) as cur:
+            row = await cur.fetchone()
+
+    if row is None or row["snapshot"] is None:
+        return []
+
+    snapshot: dict = json.loads(row["snapshot"])
+    if not snapshot:
+        return []
+
+    now = int(time.time())
+    reverts: list[dict] = []
+
+    async with get_db(db_path) as db:
+        for uid_str, state in snapshot.items():
+            uid = int(uid_str)
+            folder_id: int = state["folder_id"]
+            true_flags: list = state.get("flags", [])
+            true_flags_json = json.dumps(true_flags)
+
+            # Restore the messages row to pre-op flag state
+            await db.execute(
+                "UPDATE messages SET flags = ?, last_updated = ? WHERE folder_id = ? AND uid = ?",
+                (true_flags_json, now, folder_id, uid),
+            )
+            reverts.append({
+                "operation_id": operation_id,
+                "folder_id": folder_id,
+                "uid": uid,
+                "true_flags": true_flags_json,
+            })
+        await db.commit()
+
+    return reverts
+
+
+async def insert_pending_reverts(
+    operation_id: str,
+    reverts: "list[dict]",
+    db_path: Path = DB_PATH,
+) -> None:
+    """Insert pending_reverts rows (one per affected UID).
+
+    Each row will be picked up by the proxy on the AI's next SELECT/NOOP/FETCH
+    and injected as an unsolicited FETCH response so the AI re-syncs to true state.
+
+    reverts: list of {operation_id, folder_id, uid, true_flags} dicts as
+    returned by restore_from_snapshot().
+    """
+    if not reverts:
+        return
+
+    now = int(time.time())
+    async with get_db(db_path) as db:
+        for r in reverts:
+            await db.execute(
+                """
+                INSERT INTO pending_reverts
+                    (operation_id, folder_id, uid, true_flags, created_at, delivered_at)
+                VALUES (?, ?, ?, ?, ?, NULL)
+                """,
+                (r["operation_id"], r["folder_id"], r["uid"], r["true_flags"], now),
+            )
+        await db.commit()
+
+
+async def get_pending_reverts(
+    folder_id: int,
+    db_path: Path = DB_PATH,
+) -> "list[dict]":
+    """Return undelivered pending_reverts rows for a folder.
+
+    Only returns rows where delivered_at IS NULL.
+    Ordered by creation time so the proxy injects them in staging order.
+    """
+    async with get_db(db_path) as db:
+        async with db.execute(
+            """
+            SELECT id, operation_id, folder_id, uid, true_flags, created_at, delivered_at
+            FROM pending_reverts
+            WHERE folder_id = ? AND delivered_at IS NULL
+            ORDER BY created_at ASC
+            """,
+            (folder_id,),
+        ) as cur:
+            rows = await cur.fetchall()
+    return [dict(r) for r in rows]
+
+
+async def mark_reverts_delivered(
+    revert_ids: "list[int]",
+    db_path: Path = DB_PATH,
+) -> None:
+    """Set delivered_at = now for the given pending_reverts ids."""
+    if not revert_ids:
+        return
+
+    now = int(time.time())
+    placeholders = ",".join("?" * len(revert_ids))
+    async with get_db(db_path) as db:
+        await db.execute(
+            f"UPDATE pending_reverts SET delivered_at = ? WHERE id IN ({placeholders})",  # noqa: S608
+            [now, *revert_ids],
+        )
         await db.commit()

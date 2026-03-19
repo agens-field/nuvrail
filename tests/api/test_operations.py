@@ -255,3 +255,75 @@ async def test_approve_not_found(client: httpx.AsyncClient) -> None:
     """POST approve on nonexistent op returns 404."""
     resp = await client.post("/api/v1/operations/op_000000/approve")
     assert resp.status_code == 404
+
+
+async def test_reject_restores_snapshot_and_queues_pending_reverts(
+    client: httpx.AsyncClient, db_path: Path
+) -> None:
+    """
+    POST /reject on a STORE op with snapshot:
+      - restores messages table flags to pre-op state
+      - inserts pending_reverts rows for the proxy to inject
+    """
+    import json
+    from gateway.state_db import (
+        apply_optimistic_flag_update,
+        get_message,
+        get_or_create_folder,
+        get_pending_reverts,
+        upsert_message,
+    )
+
+    # Set up: folder + message with no flags
+    folder_id = await get_or_create_folder("INBOX", db_path=db_path)
+    await upsert_message(folder_id, 99, seq_num=1, flags=[], db_path=db_path)
+
+    # Stage the op with a snapshot of the pre-op state
+    snap = {"99": {"flags": [], "seq_num": 1, "folder_id": folder_id}}
+    op_id = await create_operation(
+        op_type="mark_read",
+        protocol="imap",
+        description="Mark 99 as read",
+        imap_command="A001 UID STORE 99 +FLAGS (\\Seen)",
+        message_ids=["99"],
+        flags_add=[r"\Seen"],
+        snapshot=snap,
+        db_path=db_path,
+    )
+
+    # Simulate optimistic update: message now shows \Seen
+    await apply_optimistic_flag_update(
+        folder_id, "99", flags_add=[r"\Seen"], flags_remove=[], db_path=db_path
+    )
+    msg = await get_message(folder_id, 99, db_path=db_path)
+    assert r"\Seen" in json.loads(msg["flags"]), "Pre-reject: optimistic update should be applied"
+
+    # Reject via API
+    resp = await client.post(f"/api/v1/operations/{op_id}/reject")
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "rejected"
+
+    # Messages table should be restored to empty flags
+    msg_after = await get_message(folder_id, 99, db_path=db_path)
+    assert json.loads(msg_after["flags"]) == [], "After reject: flags should be restored to []"
+
+    # pending_reverts should have 1 row for UID 99
+    reverts = await get_pending_reverts(folder_id, db_path=db_path)
+    assert len(reverts) == 1
+    assert reverts[0]["uid"] == 99
+    assert reverts[0]["delivered_at"] is None
+
+
+async def test_reject_without_snapshot_does_not_raise(
+    client: httpx.AsyncClient, db_path: Path
+) -> None:
+    """POST /reject on an op without snapshot succeeds without error."""
+    op_id = await create_operation(
+        op_type="move",
+        protocol="imap",
+        description="Move to Archive",
+        db_path=db_path,
+    )
+    resp = await client.post(f"/api/v1/operations/{op_id}/reject")
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "rejected"

@@ -52,7 +52,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from api.models import ApproveResponse, OperationListResponse, OperationResponse, RejectResponse
 from gateway.staging import get_operation, list_operations, update_operation_status
-from gateway.state_db import DB_PATH, get_db
+from gateway.state_db import DB_PATH, get_db, insert_pending_reverts, restore_from_snapshot
 
 logger = logging.getLogger(__name__)
 
@@ -368,5 +368,18 @@ async def reject_op(
             (int(time.time()), op_id),
         )
         await db.commit()
+
+    # Restore local state DB from snapshot and queue unsolicited FETCH responses.
+    # Non-fatal: if revert fails (e.g. no snapshot), rejection still succeeds.
+    try:
+        reverts = await restore_from_snapshot(op_id, db_path=db_path)
+        await insert_pending_reverts(op_id, reverts, db_path=db_path)
+        if reverts:
+            logger.info(
+                "[reject] Restored snapshot and queued %d pending_reverts for op %s",
+                len(reverts), op_id,
+            )
+    except Exception as exc:
+        logger.warning("[reject] Snapshot revert failed for op %s (non-fatal): %s", op_id, exc)
 
     return RejectResponse(id=op_id, status="rejected")

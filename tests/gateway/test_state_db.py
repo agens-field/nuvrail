@@ -321,3 +321,133 @@ async def test_snapshot_preserves_seq_num(db_path: Path) -> None:
 
     snap = await snapshot_messages(folder_id, "7", db_path=db_path)
     assert snap["7"]["seq_num"] == 3
+
+
+# ---------------------------------------------------------------------------
+# pending_reverts tests (milestone 1.2 — rejection revert)
+# ---------------------------------------------------------------------------
+
+
+async def test_restore_from_snapshot_restores_flags(db_path: Path) -> None:
+    """restore_from_snapshot reverts messages table to pre-op flags."""
+    import json
+    from gateway.staging import create_operation
+
+    folder_id = await get_or_create_folder("INBOX", db_path=db_path)
+    # Message starts with no flags
+    await upsert_message(folder_id, 42, seq_num=1, flags=[], db_path=db_path)
+
+    # Stage a mark-as-read with a snapshot capturing the empty flags
+    snap = {"42": {"flags": [], "seq_num": 1, "folder_id": folder_id}}
+    op_id = await create_operation(
+        op_type="mark_read",
+        protocol="imap",
+        description="Mark as read",
+        snapshot=snap,
+        db_path=db_path,
+    )
+
+    # Simulate optimistic update: set \Seen
+    await apply_optimistic_flag_update(folder_id, "42", flags_add=[r"\Seen"], flags_remove=[], db_path=db_path)
+    msg_after_stage = await get_message(folder_id, 42, db_path=db_path)
+    assert r"\Seen" in json.loads(msg_after_stage["flags"])
+
+    # Now restore from snapshot (simulates reject)
+    from gateway.state_db import restore_from_snapshot
+    reverts = await restore_from_snapshot(op_id, db_path=db_path)
+
+    assert len(reverts) == 1
+    assert reverts[0]["uid"] == 42
+    assert reverts[0]["folder_id"] == folder_id
+
+    # Messages table should be back to empty flags
+    msg_after_revert = await get_message(folder_id, 42, db_path=db_path)
+    assert json.loads(msg_after_revert["flags"]) == []
+
+
+async def test_restore_from_snapshot_no_snapshot_returns_empty(db_path: Path) -> None:
+    """restore_from_snapshot returns [] for ops without a snapshot."""
+    from gateway.staging import create_operation
+    from gateway.state_db import restore_from_snapshot
+
+    op_id = await create_operation(
+        op_type="move", protocol="imap", description="Move", db_path=db_path
+    )
+    reverts = await restore_from_snapshot(op_id, db_path=db_path)
+    assert reverts == []
+
+
+async def test_insert_and_get_pending_reverts(db_path: Path) -> None:
+    """insert_pending_reverts creates rows; get_pending_reverts returns undelivered."""
+    import json
+    from gateway.staging import create_operation
+    from gateway.state_db import get_pending_reverts, insert_pending_reverts
+
+    folder_id = await get_or_create_folder("INBOX", db_path=db_path)
+    op_id = await create_operation(
+        op_type="mark_read", protocol="imap", description="x", db_path=db_path
+    )
+
+    reverts = [
+        {"operation_id": op_id, "folder_id": folder_id, "uid": 10, "true_flags": json.dumps([])},
+        {"operation_id": op_id, "folder_id": folder_id, "uid": 11, "true_flags": json.dumps([r"\Seen"])},
+    ]
+    await insert_pending_reverts(op_id, reverts, db_path=db_path)
+
+    rows = await get_pending_reverts(folder_id, db_path=db_path)
+    assert len(rows) == 2
+    uids = {r["uid"] for r in rows}
+    assert uids == {10, 11}
+    # All undelivered
+    assert all(r.get("delivered_at") is None for r in rows)
+
+
+async def test_mark_reverts_delivered(db_path: Path) -> None:
+    """mark_reverts_delivered sets delivered_at; get_pending_reverts excludes them."""
+    import json
+    from gateway.staging import create_operation
+    from gateway.state_db import get_pending_reverts, insert_pending_reverts, mark_reverts_delivered
+
+    folder_id = await get_or_create_folder("INBOX", db_path=db_path)
+    op_id = await create_operation(
+        op_type="mark_read", protocol="imap", description="x", db_path=db_path
+    )
+    reverts = [
+        {"operation_id": op_id, "folder_id": folder_id, "uid": 20, "true_flags": json.dumps([])},
+    ]
+    await insert_pending_reverts(op_id, reverts, db_path=db_path)
+
+    pending = await get_pending_reverts(folder_id, db_path=db_path)
+    assert len(pending) == 1
+
+    await mark_reverts_delivered([pending[0]["id"]], db_path=db_path)
+
+    # Should now be empty (delivered)
+    still_pending = await get_pending_reverts(folder_id, db_path=db_path)
+    assert still_pending == []
+
+
+async def test_get_pending_reverts_different_folder_not_returned(db_path: Path) -> None:
+    """get_pending_reverts only returns rows for the requested folder_id."""
+    import json
+    from gateway.staging import create_operation
+    from gateway.state_db import get_pending_reverts, insert_pending_reverts
+
+    inbox_id = await get_or_create_folder("INBOX", db_path=db_path)
+    sent_id = await get_or_create_folder("Sent", db_path=db_path)
+
+    op_id = await create_operation(
+        op_type="mark_read", protocol="imap", description="x", db_path=db_path
+    )
+    reverts = [
+        {"operation_id": op_id, "folder_id": inbox_id, "uid": 1, "true_flags": json.dumps([])},
+    ]
+    await insert_pending_reverts(op_id, reverts, db_path=db_path)
+
+    # Querying for Sent should return nothing
+    sent_rows = await get_pending_reverts(sent_id, db_path=db_path)
+    assert sent_rows == []
+
+    # Querying for INBOX should return 1
+    inbox_rows = await get_pending_reverts(inbox_id, db_path=db_path)
+    assert len(inbox_rows) == 1
