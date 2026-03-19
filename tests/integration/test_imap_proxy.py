@@ -37,7 +37,7 @@ _TIMEOUT = 15  # seconds — generous for CI and slow upstreams
 # ---------------------------------------------------------------------------
 
 
-@pytest_asyncio.fixture()
+@pytest_asyncio.fixture(loop_scope="session")
 async def proxy_server():
     """Start the proxy on an ephemeral port; yield (host, port); tear down."""
     server = await asyncio.start_server(handle_client, "127.0.0.1", 0)
@@ -98,7 +98,7 @@ async def _close(writer: asyncio.StreamWriter) -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
+@pytest.mark.asyncio(loop_scope="session")
 async def test_proxy_forwards_greeting(proxy_server: tuple[str, int]) -> None:
     """Proxy must forward the upstream IMAP greeting (contains OK or PREAUTH)."""
     host, port = proxy_server
@@ -112,7 +112,7 @@ async def test_proxy_forwards_greeting(proxy_server: tuple[str, int]) -> None:
         await _close(writer)
 
 
-@pytest.mark.asyncio
+@pytest.mark.asyncio(loop_scope="session")
 async def test_login_valid_credentials(
     proxy_server: tuple[str, int],
     upstream_imap_config: dict,
@@ -138,7 +138,7 @@ async def test_login_valid_credentials(
         await _close(writer)
 
 
-@pytest.mark.asyncio
+@pytest.mark.asyncio(loop_scope="session")
 async def test_login_bad_credentials(proxy_server: tuple[str, int]) -> None:
     """LOGIN with bad credentials must return NO/BAD — proxy must not crash."""
     host, port = proxy_server
@@ -156,7 +156,7 @@ async def test_login_bad_credentials(proxy_server: tuple[str, int]) -> None:
         await _close(writer)
 
 
-@pytest.mark.asyncio
+@pytest.mark.asyncio(loop_scope="session")
 async def test_select_inbox_after_login(
     proxy_server: tuple[str, int],
     upstream_imap_config: dict,
@@ -187,7 +187,7 @@ async def test_select_inbox_after_login(
         await _close(writer)
 
 
-@pytest.mark.asyncio
+@pytest.mark.asyncio(loop_scope="session")
 async def test_logout_clean(
     proxy_server: tuple[str, int],
     upstream_imap_config: dict,

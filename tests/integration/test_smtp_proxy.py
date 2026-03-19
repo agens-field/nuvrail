@@ -38,7 +38,7 @@ _TIMEOUT = 20  # seconds — generous for slow upstreams and TLS handshake overh
 # ---------------------------------------------------------------------------
 
 
-@pytest_asyncio.fixture()
+@pytest_asyncio.fixture(loop_scope="session")
 async def smtp_proxy_server():
     """Start SMTP proxy on an ephemeral port; yield (host, port); tear down."""
     server = await asyncio.start_server(handle_smtp_client, "127.0.0.1", 0)
@@ -112,7 +112,7 @@ def _auth_plain_b64(user: str, password: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
+@pytest.mark.asyncio(loop_scope="session")
 async def test_smtp_proxy_forwards_greeting(
     smtp_proxy_server: tuple[str, int],
 ) -> None:
@@ -128,7 +128,7 @@ async def test_smtp_proxy_forwards_greeting(
         await _close(writer)
 
 
-@pytest.mark.asyncio
+@pytest.mark.asyncio(loop_scope="session")
 async def test_smtp_ehlo(
     smtp_proxy_server: tuple[str, int],
 ) -> None:
@@ -148,7 +148,7 @@ async def test_smtp_ehlo(
         await _close(writer)
 
 
-@pytest.mark.asyncio
+@pytest.mark.asyncio(loop_scope="session")
 async def test_smtp_auth_valid_credentials(
     smtp_proxy_server: tuple[str, int],
     upstream_smtp_config: dict,
@@ -177,7 +177,7 @@ async def test_smtp_auth_valid_credentials(
         await _close(writer)
 
 
-@pytest.mark.asyncio
+@pytest.mark.asyncio(loop_scope="session")
 async def test_smtp_auth_bad_credentials(
     smtp_proxy_server: tuple[str, int],
 ) -> None:
@@ -199,7 +199,7 @@ async def test_smtp_auth_bad_credentials(
         await _close(writer)
 
 
-@pytest.mark.asyncio
+@pytest.mark.asyncio(loop_scope="session")
 async def test_smtp_data_returns_staged(
     smtp_proxy_server: tuple[str, int],
     upstream_smtp_config: dict,
@@ -259,7 +259,7 @@ async def test_smtp_data_returns_staged(
         await _close(writer)
 
 
-@pytest.mark.asyncio
+@pytest.mark.asyncio(loop_scope="session")
 async def test_smtp_quit_clean(
     smtp_proxy_server: tuple[str, int],
     upstream_smtp_config: dict,
