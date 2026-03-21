@@ -34,6 +34,33 @@ export interface DecisionResponse {
   status: string
 }
 
+export interface BatchApproveResult {
+  id: string
+  status: string
+  executed_at?: number
+  error?: string
+}
+
+export interface BatchApproveResponse {
+  approved: BatchApproveResult[]
+  failed: BatchApproveResult[]
+  skipped: BatchApproveResult[]
+  total: number
+}
+
+export interface BatchRejectResult {
+  id: string
+  status: string
+  error?: string
+}
+
+export interface BatchRejectResponse {
+  rejected: BatchRejectResult[]
+  failed: BatchRejectResult[]
+  skipped: BatchRejectResult[]
+  total: number
+}
+
 export interface AuditEntry {
   id: number
   timestamp: number

@@ -10,6 +10,8 @@ import ConfirmDialog from './ConfirmDialog'
 
 interface OperationCardProps {
   operation: Operation
+  selected?: boolean
+  onToggleSelect?: (id: string) => void
 }
 
 const WARN_OP_TYPES = new Set(['smtp_send', 'trash'])
@@ -22,7 +24,7 @@ function formatExpiry(expiresAt: number): string {
   return `in ${formatDuration(duration, { format: ['hours', 'minutes'] }) || 'seconds'}`
 }
 
-export default function OperationCard({ operation }: OperationCardProps) {
+export default function OperationCard({ operation, selected, onToggleSelect }: OperationCardProps) {
   const qc = useQueryClient()
   const [showConfirm, setShowConfirm] = useState(false)
 
@@ -81,6 +83,23 @@ export default function OperationCard({ operation }: OperationCardProps) {
       >
         {/* Header */}
         <div className="flex items-start gap-2 flex-wrap">
+          {onToggleSelect && (
+            <span
+              title={
+                operation.op_type === 'smtp_send'
+                  ? 'SMTP sends are approved individually'
+                  : undefined
+              }
+            >
+              <input
+                type="checkbox"
+                checked={selected ?? false}
+                onChange={() => onToggleSelect(operation.id)}
+                className="mt-0.5 w-4 h-4 rounded border-slate-600 bg-slate-700 accent-emerald-500 cursor-pointer flex-shrink-0"
+                aria-label={`Select operation ${operation.id}`}
+              />
+            </span>
+          )}
           <ProtocolBadge protocol={operation.protocol} />
           {isWarn && (
             <AlertTriangle className="w-4 h-4 text-orange-400 flex-shrink-0 mt-0.5" />

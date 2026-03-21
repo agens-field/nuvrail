@@ -336,3 +336,259 @@ async def test_reject_without_snapshot_does_not_raise(
     resp = await client.post(f"/api/v1/operations/{op_id}/reject")
     assert resp.status_code == 200
     assert resp.json()["status"] == "rejected"
+
+
+# ---------------------------------------------------------------------------
+# Batch approve/reject tests
+# ---------------------------------------------------------------------------
+
+
+async def test_batch_approve_multiple(
+    client: httpx.AsyncClient, db_path: Path
+) -> None:
+    """POST /operations/batch/approve with 3 IMAP ops → all in approved list, status=executed.
+
+    Uses op_type='append' which has a no-op early return in _execute_imap_upstream,
+    so no upstream IMAP connection is needed.
+    """
+    op_ids = []
+    for i in range(3):
+        op_id = await create_operation(
+            op_type="append",
+            protocol="imap",
+            description=f"Append op {i}",
+            db_path=db_path,
+        )
+        op_ids.append(op_id)
+
+    resp = await client.post("/api/v1/operations/batch/approve", json={"operation_ids": op_ids})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] == 3
+    assert len(data["approved"]) == 3
+    assert len(data["failed"]) == 0
+    assert len(data["skipped"]) == 0
+    approved_ids = {r["id"] for r in data["approved"]}
+    assert approved_ids == set(op_ids)
+    for r in data["approved"]:
+        assert r["status"] == "executed"
+
+
+async def test_batch_approve_skips_non_pending(
+    client: httpx.AsyncClient, db_path: Path
+) -> None:
+    """Batch approve with one already-approved op → goes to skipped."""
+    op_id_pending = await create_operation(
+        op_type="append",
+        protocol="imap",
+        description="Pending op",
+        db_path=db_path,
+    )
+    op_id_already = await create_operation(
+        op_type="append",
+        protocol="imap",
+        description="Already approved op",
+        db_path=db_path,
+    )
+    # Approve op_id_already first so it's no longer pending
+    pre = await client.post(f"/api/v1/operations/{op_id_already}/approve")
+    assert pre.status_code == 200
+
+    resp = await client.post(
+        "/api/v1/operations/batch/approve",
+        json={"operation_ids": [op_id_pending, op_id_already]},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] == 2
+    assert len(data["approved"]) == 1
+    assert data["approved"][0]["id"] == op_id_pending
+    assert len(data["skipped"]) == 1
+    assert data["skipped"][0]["id"] == op_id_already
+    assert len(data["failed"]) == 0
+
+
+async def test_batch_approve_skips_not_found(
+    client: httpx.AsyncClient, db_path: Path
+) -> None:
+    """Batch approve with an unknown op_id → goes to skipped."""
+    op_id = await create_operation(
+        op_type="append",
+        protocol="imap",
+        description="Real op",
+        db_path=db_path,
+    )
+    fake_id = "op_000000nonexistent"
+
+    resp = await client.post(
+        "/api/v1/operations/batch/approve",
+        json={"operation_ids": [op_id, fake_id]},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] == 2
+    assert len(data["approved"]) == 1
+    assert data["approved"][0]["id"] == op_id
+    assert len(data["skipped"]) == 1
+    assert data["skipped"][0]["id"] == fake_id
+    assert len(data["failed"]) == 0
+
+
+async def test_batch_approve_continues_after_failure(
+    client: httpx.AsyncClient, db_path: Path
+) -> None:
+    """Batch approve: one fails (mocked _do_approve raises), others still processed."""
+    from unittest.mock import patch
+    from api.models import ApproveResponse
+
+    op_ids = []
+    for i in range(3):
+        op_id = await create_operation(
+            op_type="append",
+            protocol="imap",
+            description=f"Op {i}",
+            db_path=db_path,
+        )
+        op_ids.append(op_id)
+
+    call_count = 0
+
+    async def _mock_do_approve(op_id: str, row: dict, db_path_arg: Path) -> ApproveResponse:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 2:
+            raise RuntimeError("simulated upstream failure")
+        return ApproveResponse(id=op_id, status="executed", executed_at=None)
+
+    with patch("api.routes.operations._do_approve", side_effect=_mock_do_approve):
+        resp = await client.post(
+            "/api/v1/operations/batch/approve",
+            json={"operation_ids": op_ids},
+        )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] == 3
+    assert len(data["approved"]) == 2
+    assert len(data["failed"]) == 1
+    assert data["failed"][0]["id"] == op_ids[1]
+    assert "simulated upstream failure" in data["failed"][0]["error"]
+    assert len(data["skipped"]) == 0
+
+
+async def test_batch_reject_multiple(
+    client: httpx.AsyncClient, db_path: Path
+) -> None:
+    """POST /operations/batch/reject with 3 ops → all in rejected list."""
+    op_ids = []
+    for i in range(3):
+        op_id = await create_operation(
+            op_type="move",
+            protocol="imap",
+            description=f"Move op {i}",
+            db_path=db_path,
+        )
+        op_ids.append(op_id)
+
+    resp = await client.post("/api/v1/operations/batch/reject", json={"operation_ids": op_ids})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] == 3
+    assert len(data["rejected"]) == 3
+    assert len(data["failed"]) == 0
+    assert len(data["skipped"]) == 0
+    rejected_ids = {r["id"] for r in data["rejected"]}
+    assert rejected_ids == set(op_ids)
+    for r in data["rejected"]:
+        assert r["status"] == "rejected"
+
+
+async def test_batch_reject_skips_non_pending(
+    client: httpx.AsyncClient, db_path: Path
+) -> None:
+    """Batch reject with one already-rejected op → goes to skipped."""
+    op_id_pending = await create_operation(
+        op_type="move",
+        protocol="imap",
+        description="Pending op",
+        db_path=db_path,
+    )
+    op_id_already = await create_operation(
+        op_type="move",
+        protocol="imap",
+        description="Already rejected op",
+        db_path=db_path,
+    )
+    pre = await client.post(f"/api/v1/operations/{op_id_already}/reject")
+    assert pre.status_code == 200
+
+    resp = await client.post(
+        "/api/v1/operations/batch/reject",
+        json={"operation_ids": [op_id_pending, op_id_already]},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] == 2
+    assert len(data["rejected"]) == 1
+    assert data["rejected"][0]["id"] == op_id_pending
+    assert len(data["skipped"]) == 1
+    assert data["skipped"][0]["id"] == op_id_already
+    assert len(data["failed"]) == 0
+
+
+async def test_batch_approve_max_100(client: httpx.AsyncClient) -> None:
+    """POST batch/approve with 101 ids → 400."""
+    ids = [f"op_{i:06d}" for i in range(101)]
+    resp = await client.post("/api/v1/operations/batch/approve", json={"operation_ids": ids})
+    assert resp.status_code == 400
+    assert "100" in resp.json()["detail"]
+
+
+async def test_batch_approve_empty(client: httpx.AsyncClient) -> None:
+    """POST batch/approve with empty list → 400."""
+    resp = await client.post("/api/v1/operations/batch/approve", json={"operation_ids": []})
+    assert resp.status_code == 400
+    assert "empty" in resp.json()["detail"].lower()
+
+
+async def test_single_approve_still_works(
+    client: httpx.AsyncClient, db_path: Path
+) -> None:
+    """Refactored approve_op still works correctly via single-op endpoint.
+
+    Uses op_type='append' which is a no-op at the upstream IMAP level.
+    """
+    op_id = await create_operation(
+        op_type="append",
+        protocol="imap",
+        description="Single approve test",
+        db_path=db_path,
+    )
+    resp = await client.post(f"/api/v1/operations/{op_id}/approve")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["id"] == op_id
+    assert data["status"] == "executed"
+
+    detail = await client.get(f"/api/v1/operations/{op_id}")
+    assert detail.json()["status"] == "executed"
+
+
+async def test_single_reject_still_works(
+    client: httpx.AsyncClient, db_path: Path
+) -> None:
+    """Refactored reject_op still works correctly via single-op endpoint."""
+    op_id = await create_operation(
+        op_type="move",
+        protocol="imap",
+        description="Single reject test",
+        db_path=db_path,
+    )
+    resp = await client.post(f"/api/v1/operations/{op_id}/reject")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["id"] == op_id
+    assert data["status"] == "rejected"
+
+    detail = await client.get(f"/api/v1/operations/{op_id}")
+    assert detail.json()["status"] == "rejected"

@@ -72,6 +72,46 @@ class RejectResponse(BaseModel):
     status: str
 
 
+# ---------------------------------------------------------------------------
+# Batch operation models
+# ---------------------------------------------------------------------------
+
+
+class BatchApproveRequest(BaseModel):
+    operation_ids: List[str]
+
+
+class BatchRejectRequest(BaseModel):
+    operation_ids: List[str]
+
+
+class BatchApproveResult(BaseModel):
+    id: str
+    status: str  # 'executed' | 'failed' | 'skipped'
+    executed_at: Optional[int] = None
+    error: Optional[str] = None  # set if status='failed'
+
+
+class BatchRejectResult(BaseModel):
+    id: str
+    status: str  # 'rejected' | 'failed' | 'skipped'
+    error: Optional[str] = None
+
+
+class BatchApproveResponse(BaseModel):
+    approved: List[BatchApproveResult]
+    failed: List[BatchApproveResult]
+    skipped: List[BatchApproveResult]  # not pending (already decided) or not found
+    total: int
+
+
+class BatchRejectResponse(BaseModel):
+    rejected: List[BatchRejectResult]
+    failed: List[BatchRejectResult]
+    skipped: List[BatchRejectResult]  # not pending (already decided) or not found
+    total: int
+
+
 class AuditEntry(BaseModel):
     id: int
     timestamp: int

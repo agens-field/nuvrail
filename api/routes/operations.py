@@ -3,6 +3,8 @@
 
 GET    /operations              — list (optional ?status= filter)
 GET    /operations/{op_id}      — single operation detail
+POST   /operations/batch/approve — approve multiple operations
+POST   /operations/batch/reject  — reject multiple operations
 POST   /operations/{op_id}/approve  — approve + execute against upstream
 POST   /operations/{op_id}/reject   — reject
 
@@ -34,6 +36,10 @@ Execution flow for IMAP:
   update staged_operations status → 'executed'
   insert audit_log event='executed'
 
+Route ordering note: batch routes (/operations/batch/approve and
+/operations/batch/reject) are registered BEFORE the parameterised route
+/operations/{op_id}/approve so FastAPI does not treat 'batch' as an op_id.
+
 Sub-milestone: 1.0 (IMAP execution added)
 """
 from __future__ import annotations
@@ -51,7 +57,18 @@ import aiosmtplib
 from fastapi import APIRouter, Depends, HTTPException
 
 from api.auth import get_current_user
-from api.models import ApproveResponse, OperationListResponse, OperationResponse, RejectResponse
+from api.models import (
+    ApproveResponse,
+    BatchApproveRequest,
+    BatchApproveResponse,
+    BatchApproveResult,
+    BatchRejectRequest,
+    BatchRejectResponse,
+    BatchRejectResult,
+    OperationListResponse,
+    OperationResponse,
+    RejectResponse,
+)
 from gateway.staging import get_operation, list_operations, update_operation_status
 from gateway.state_db import DB_PATH, get_db, insert_pending_reverts, restore_from_snapshot
 
@@ -188,7 +205,8 @@ async def _execute_imap_upstream(row: dict) -> None:
             # Unknown/unsupported op type — log and treat as no-op
             logger.warning(
                 "[imap_execute] Unrecognised op_type %r for op %s — skipping upstream exec",
-                op_type, row["id"],
+                op_type,
+                row["id"],
             )
 
         logger.info("[imap_execute] Op %s (%s) executed successfully", row["id"], op_type)
@@ -205,56 +223,23 @@ def _row_to_response(row: dict) -> OperationResponse:
     return OperationResponse(**row)
 
 
-# ---------------------------------------------------------------------------
-# Endpoints
-# ---------------------------------------------------------------------------
+async def _do_approve(op_id: str, row: dict, db_path: Path) -> ApproveResponse:
+    """Core approve logic for a single operation.
 
+    Executes the operation against the upstream server (SMTP relay or IMAP replay),
+    updates status to 'executed', inserts audit log entry.
 
-@router.get("/operations", response_model=OperationListResponse)
-async def list_ops(
-    status: Optional[str] = None,
-    db_path: Path = Depends(get_db_path),
-    current_user: dict = Depends(get_current_user),
-) -> OperationListResponse:
-    """List staged operations, optionally filtered by status."""
-    rows = await list_operations(status=status, db_path=db_path)
-    ops = [_row_to_response(r) for r in rows]
-    return OperationListResponse(operations=ops, total=len(ops))
+    Args:
+        op_id: The operation ID.
+        row: The raw DB row dict (must have status='pending').
+        db_path: Path to the SQLite DB.
 
+    Returns:
+        ApproveResponse on success.
 
-@router.get("/operations/{op_id}", response_model=OperationResponse)
-async def get_op(
-    op_id: str,
-    db_path: Path = Depends(get_db_path),
-    current_user: dict = Depends(get_current_user),
-) -> OperationResponse:
-    """Retrieve a single operation by ID."""
-    row = await get_operation(op_id, db_path=db_path)
-    if row is None:
-        raise HTTPException(status_code=404, detail=f"Operation {op_id!r} not found")
-    return _row_to_response(row)
-
-
-@router.post("/operations/{op_id}/approve", response_model=ApproveResponse)
-async def approve_op(
-    op_id: str,
-    db_path: Path = Depends(get_db_path),
-    current_user: dict = Depends(get_current_user),
-) -> ApproveResponse:
-    """Approve and execute an operation.
-
-    - SMTP ops: relays the message to the upstream SMTP server via aiosmtplib.
-    - IMAP ops: marks as executed (upstream execution deferred to milestone 1.1).
+    Raises:
+        HTTPException(500) if upstream execution fails.
     """
-    row = await get_operation(op_id, db_path=db_path)
-    if row is None:
-        raise HTTPException(status_code=404, detail=f"Operation {op_id!r} not found")
-    if row["status"] != "pending":
-        raise HTTPException(
-            status_code=409,
-            detail=f"Operation {op_id!r} is already in status '{row['status']}'",
-        )
-
     protocol = row.get("protocol", "imap")
 
     if protocol == "smtp":
@@ -295,7 +280,6 @@ async def approve_op(
         except Exception as exc:
             logger.error("[approve] SMTP relay failed for %s: %s", op_id, exc)
             await update_operation_status(op_id, "failed", error=str(exc), db_path=db_path)
-            # Insert execution_failed audit log entry
             async with get_db(db_path) as db:
                 await db.execute(
                     """
@@ -347,22 +331,20 @@ async def approve_op(
     )
 
 
-@router.post("/operations/{op_id}/reject", response_model=RejectResponse)
-async def reject_op(
-    op_id: str,
-    db_path: Path = Depends(get_db_path),
-    current_user: dict = Depends(get_current_user),
-) -> RejectResponse:
-    """Reject a pending operation."""
-    row = await get_operation(op_id, db_path=db_path)
-    if row is None:
-        raise HTTPException(status_code=404, detail=f"Operation {op_id!r} not found")
-    if row["status"] != "pending":
-        raise HTTPException(
-            status_code=409,
-            detail=f"Operation {op_id!r} is already in status '{row['status']}'",
-        )
+async def _do_reject(op_id: str, row: dict, db_path: Path) -> RejectResponse:  # noqa: ARG001
+    """Core reject logic for a single operation.
 
+    Updates status to 'rejected', inserts audit log entry, attempts snapshot
+    revert (non-fatal).
+
+    Args:
+        op_id: The operation ID.
+        row: The raw DB row dict (must have status='pending').
+        db_path: Path to the SQLite DB.
+
+    Returns:
+        RejectResponse on success.
+    """
     await update_operation_status(op_id, "rejected", db_path=db_path)
     async with get_db(db_path) as db:
         await db.execute(
@@ -382,9 +364,208 @@ async def reject_op(
         if reverts:
             logger.info(
                 "[reject] Restored snapshot and queued %d pending_reverts for op %s",
-                len(reverts), op_id,
+                len(reverts),
+                op_id,
             )
     except Exception as exc:
         logger.warning("[reject] Snapshot revert failed for op %s (non-fatal): %s", op_id, exc)
 
     return RejectResponse(id=op_id, status="rejected")
+
+
+# ---------------------------------------------------------------------------
+# Endpoints — batch routes FIRST (before parameterised /{op_id} routes)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/operations", response_model=OperationListResponse)
+async def list_ops(
+    status: Optional[str] = None,
+    db_path: Path = Depends(get_db_path),
+    current_user: dict = Depends(get_current_user),
+) -> OperationListResponse:
+    """List staged operations, optionally filtered by status."""
+    rows = await list_operations(status=status, db_path=db_path)
+    ops = [_row_to_response(r) for r in rows]
+    return OperationListResponse(operations=ops, total=len(ops))
+
+
+@router.post("/operations/batch/approve", response_model=BatchApproveResponse)
+async def batch_approve(
+    body: BatchApproveRequest,
+    db_path: Path = Depends(get_db_path),
+    current_user: dict = Depends(get_current_user),
+) -> BatchApproveResponse:
+    """Approve multiple operations by ID.
+
+    Processing rules:
+    - Operations are approved in the order provided.
+    - SMTP sends are approved individually in sequence (no special handling needed).
+    - If an op is not found: added to skipped list.
+    - If an op is not 'pending': added to skipped list (already decided).
+    - If approve execution fails: added to failed list with error; processing continues.
+    - Empty list: returns 400.
+    - More than 100 IDs: returns 400.
+    """
+    if not body.operation_ids:
+        raise HTTPException(status_code=400, detail="operation_ids must not be empty")
+    if len(body.operation_ids) > 100:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Too many operation IDs: {len(body.operation_ids)} (max 100)",
+        )
+
+    approved: list[BatchApproveResult] = []
+    failed: list[BatchApproveResult] = []
+    skipped: list[BatchApproveResult] = []
+
+    for op_id in body.operation_ids:
+        row = await get_operation(op_id, db_path=db_path)
+        if row is None:
+            skipped.append(BatchApproveResult(id=op_id, status="skipped", error="not found"))
+            continue
+        if row["status"] != "pending":
+            skipped.append(
+                BatchApproveResult(
+                    id=op_id,
+                    status="skipped",
+                    error=f"already in status '{row['status']}'",
+                )
+            )
+            continue
+        try:
+            result = await _do_approve(op_id, row, db_path)
+            approved.append(
+                BatchApproveResult(
+                    id=op_id,
+                    status="executed",
+                    executed_at=result.executed_at,
+                )
+            )
+        except Exception as exc:
+            error_msg = str(exc)
+            logger.error("[batch_approve] Failed to approve op %s: %s", op_id, error_msg)
+            failed.append(BatchApproveResult(id=op_id, status="failed", error=error_msg))
+
+    return BatchApproveResponse(
+        approved=approved,
+        failed=failed,
+        skipped=skipped,
+        total=len(body.operation_ids),
+    )
+
+
+@router.post("/operations/batch/reject", response_model=BatchRejectResponse)
+async def batch_reject(
+    body: BatchRejectRequest,
+    db_path: Path = Depends(get_db_path),
+    current_user: dict = Depends(get_current_user),
+) -> BatchRejectResponse:
+    """Reject multiple operations by ID.
+
+    Processing rules:
+    - Operations are rejected in the order provided.
+    - If an op is not found: added to skipped list.
+    - If an op is not 'pending': added to skipped list (already decided).
+    - If reject execution fails: added to failed list with error; processing continues.
+    - Empty list: returns 400.
+    - More than 100 IDs: returns 400.
+    """
+    if not body.operation_ids:
+        raise HTTPException(status_code=400, detail="operation_ids must not be empty")
+    if len(body.operation_ids) > 100:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Too many operation IDs: {len(body.operation_ids)} (max 100)",
+        )
+
+    rejected: list[BatchRejectResult] = []
+    failed: list[BatchRejectResult] = []
+    skipped: list[BatchRejectResult] = []
+
+    for op_id in body.operation_ids:
+        row = await get_operation(op_id, db_path=db_path)
+        if row is None:
+            skipped.append(BatchRejectResult(id=op_id, status="skipped", error="not found"))
+            continue
+        if row["status"] != "pending":
+            skipped.append(
+                BatchRejectResult(
+                    id=op_id,
+                    status="skipped",
+                    error=f"already in status '{row['status']}'",
+                )
+            )
+            continue
+        try:
+            await _do_reject(op_id, row, db_path)
+            rejected.append(BatchRejectResult(id=op_id, status="rejected"))
+        except Exception as exc:
+            error_msg = str(exc)
+            logger.error("[batch_reject] Failed to reject op %s: %s", op_id, error_msg)
+            failed.append(BatchRejectResult(id=op_id, status="failed", error=error_msg))
+
+    return BatchRejectResponse(
+        rejected=rejected,
+        failed=failed,
+        skipped=skipped,
+        total=len(body.operation_ids),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Single-op endpoints — AFTER batch routes to avoid /batch matching as op_id
+# ---------------------------------------------------------------------------
+
+
+@router.get("/operations/{op_id}", response_model=OperationResponse)
+async def get_op(
+    op_id: str,
+    db_path: Path = Depends(get_db_path),
+    current_user: dict = Depends(get_current_user),
+) -> OperationResponse:
+    """Retrieve a single operation by ID."""
+    row = await get_operation(op_id, db_path=db_path)
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"Operation {op_id!r} not found")
+    return _row_to_response(row)
+
+
+@router.post("/operations/{op_id}/approve", response_model=ApproveResponse)
+async def approve_op(
+    op_id: str,
+    db_path: Path = Depends(get_db_path),
+    current_user: dict = Depends(get_current_user),
+) -> ApproveResponse:
+    """Approve and execute an operation.
+
+    - SMTP ops: relays the message to the upstream SMTP server via aiosmtplib.
+    - IMAP ops: replays the stored command against the upstream IMAP server.
+    """
+    row = await get_operation(op_id, db_path=db_path)
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"Operation {op_id!r} not found")
+    if row["status"] != "pending":
+        raise HTTPException(
+            status_code=409,
+            detail=f"Operation {op_id!r} is already in status '{row['status']}'",
+        )
+    return await _do_approve(op_id, row, db_path)
+
+
+@router.post("/operations/{op_id}/reject", response_model=RejectResponse)
+async def reject_op(
+    op_id: str,
+    db_path: Path = Depends(get_db_path),
+    current_user: dict = Depends(get_current_user),
+) -> RejectResponse:
+    """Reject a pending operation."""
+    row = await get_operation(op_id, db_path=db_path)
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"Operation {op_id!r} not found")
+    if row["status"] != "pending":
+        raise HTTPException(
+            status_code=409,
+            detail=f"Operation {op_id!r} is already in status '{row['status']}'",
+        )
+    return await _do_reject(op_id, row, db_path)

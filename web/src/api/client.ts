@@ -1,4 +1,11 @@
-import type { AuditListResponse, Operation, OperationsResponse, DecisionResponse } from '../types'
+import type {
+  AuditListResponse,
+  BatchApproveResponse,
+  BatchRejectResponse,
+  DecisionResponse,
+  Operation,
+  OperationsResponse,
+} from '../types'
 
 const BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:8080'
 
@@ -180,6 +187,20 @@ export async function approveOperation(id: string): Promise<DecisionResponse> {
 export async function rejectOperation(id: string): Promise<DecisionResponse> {
   return apiFetch<DecisionResponse>(`/api/v1/operations/${encodeURIComponent(id)}/reject`, {
     method: 'POST',
+  })
+}
+
+export async function batchApproveOperations(ids: string[]): Promise<BatchApproveResponse> {
+  return apiFetch<BatchApproveResponse>('/api/v1/operations/batch/approve', {
+    method: 'POST',
+    body: JSON.stringify({ operation_ids: ids }),
+  })
+}
+
+export async function batchRejectOperations(ids: string[]): Promise<BatchRejectResponse> {
+  return apiFetch<BatchRejectResponse>('/api/v1/operations/batch/reject', {
+    method: 'POST',
+    body: JSON.stringify({ operation_ids: ids }),
   })
 }
 
