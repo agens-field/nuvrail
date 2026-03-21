@@ -18,6 +18,8 @@ import time
 from pathlib import Path
 from typing import Optional
 
+import asyncio
+
 from gateway.state_db import DB_PATH, get_db
 
 OP_ID_PREFIX = "op_"
@@ -99,6 +101,17 @@ async def create_operation(
             (now, op_id),
         )
         await db.commit()
+
+    # Fire-and-forget Web Push notification. Non-fatal — staging always succeeds.
+    try:
+        from gateway.push import notify_staged as _notify
+        asyncio.create_task(
+            _notify(op_id, description, is_urgent=bool(is_urgent), db_path=db_path),
+            name=f"push-notify-{op_id}",
+        )
+    except Exception as _exc:
+        import logging as _logging
+        _logging.getLogger(__name__).debug("push notify skipped: %s", _exc)
 
     return op_id
 

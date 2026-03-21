@@ -7,7 +7,7 @@ import AuditView from './views/AuditView'
 import AgentsView from './views/AgentsView'
 import LoginView from './views/LoginView'
 import SetupView from './views/SetupView'
-import { getToken } from './api/client'
+import { getToken, setupPushNotifications } from './api/client'
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -36,6 +36,11 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
     const isPublic = publicRoutes.some((r) => location.pathname === r)
     if (!isPublic && !getToken()) {
       navigate('/login', { replace: true })
+    }
+    // After auth, silently attempt to set up push notifications.
+    // No-op if permission already granted, browser unsupported, or denied.
+    if (getToken() && !isPublic) {
+      void setupPushNotifications()
     }
   }, [location.pathname, navigate])
 

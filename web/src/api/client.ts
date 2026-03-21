@@ -5,6 +5,8 @@ import type {
   DecisionResponse,
   Operation,
   OperationsResponse,
+  PushSubscribeResponse,
+  VapidKeyResponse,
 } from '../types'
 
 const BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:8080'
@@ -233,4 +235,65 @@ export async function exportAuditLog(): Promise<void> {
   a.download = 'nuvrail-audit.json'
   a.click()
   URL.revokeObjectURL(url)
+}
+
+// ---------------------------------------------------------------------------
+// Web Push
+// ---------------------------------------------------------------------------
+
+export async function fetchVapidKey(): Promise<VapidKeyResponse> {
+  return apiFetch<VapidKeyResponse>('/api/v1/push/vapid-key')
+}
+
+export async function registerPushSubscription(
+  subscription: PushSubscriptionJSON
+): Promise<PushSubscribeResponse> {
+  const { endpoint, keys } = subscription
+  if (!endpoint || !keys?.p256dh || !keys?.auth) {
+    throw new Error('Invalid push subscription: missing endpoint or keys')
+  }
+  return apiFetch<PushSubscribeResponse>('/api/v1/push/subscribe', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ endpoint, p256dh: keys.p256dh, auth: keys.auth }),
+  })
+}
+
+/**
+ * Request notification permission, subscribe to push, and register with the API.
+ * Returns true if subscription was established, false if permission denied or unavailable.
+ */
+export async function setupPushNotifications(): Promise<boolean> {
+  if (!('Notification' in window) || !('serviceWorker' in navigator) || !('PushManager' in window)) {
+    console.warn('[push] Web Push not supported in this browser')
+    return false
+  }
+
+  const permission = await Notification.requestPermission()
+  if (permission !== 'granted') {
+    console.info('[push] Notification permission denied')
+    return false
+  }
+
+  try {
+    const { public_key } = await fetchVapidKey()
+
+    // Convert base64url to Uint8Array for applicationServerKey
+    const padding = '='.repeat((4 - (public_key.length % 4)) % 4)
+    const base64 = (public_key + padding).replace(/-/g, '+').replace(/_/g, '/')
+    const rawKey = Uint8Array.from(atob(base64), (c) => c.charCodeAt(0))
+
+    const reg = await navigator.serviceWorker.ready
+    const subscription = await reg.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: rawKey,
+    })
+
+    await registerPushSubscription(subscription.toJSON())
+    console.info('[push] Push subscription registered')
+    return true
+  } catch (err) {
+    console.error('[push] Failed to set up push notifications:', err)
+    return false
+  }
 }

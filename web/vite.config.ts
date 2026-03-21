@@ -7,6 +7,10 @@ export default defineConfig({
     react(),
     VitePWA({
       registerType: 'autoUpdate',
+      injectRegister: 'auto',
+      strategies: 'injectManifest',
+      srcDir: 'src',
+      filename: 'sw.ts',
       manifest: {
         name: 'Nuvrail Approval',
         short_name: 'Nuvrail',
@@ -18,6 +22,9 @@ export default defineConfig({
           { src: '/icon-192.png', sizes: '192x192', type: 'image/png' },
           { src: '/icon-512.png', sizes: '512x512', type: 'image/png' },
         ],
+      },
+      injectManifest: {
+        injectionPoint: 'self.__WB_MANIFEST',
       },
     }),
   ],

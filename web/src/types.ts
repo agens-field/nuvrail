@@ -83,3 +83,13 @@ export interface AuditListResponse {
   limit: number
   offset: number
 }
+
+// Web Push
+export interface VapidKeyResponse {
+  public_key: string
+}
+
+export interface PushSubscribeResponse {
+  subscribed: boolean
+  endpoint: string
+}

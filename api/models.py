@@ -191,3 +191,23 @@ class AgentResponse(BaseModel):
     upstream_user: str
     created_at: int
     revoked_at: Optional[int] = None
+
+
+# ---------------------------------------------------------------------------
+# Web Push models
+# ---------------------------------------------------------------------------
+
+
+class VapidKeyResponse(BaseModel):
+    public_key: str
+
+
+class PushSubscribeRequest(BaseModel):
+    endpoint: str
+    p256dh: str
+    auth: str
+
+
+class PushSubscribeResponse(BaseModel):
+    subscribed: bool
+    endpoint: str
