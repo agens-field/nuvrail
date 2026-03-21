@@ -92,6 +92,7 @@ CREATE TABLE IF NOT EXISTS staged_operations (
     flags_add       TEXT,                   -- JSON array
     flags_remove    TEXT,                   -- JSON array
     snapshot        TEXT,                   -- JSON {uid: {flags, seq_num, folder_id}} pre-op state
+    is_urgent       INTEGER NOT NULL DEFAULT 0,  -- 1 for smtp_send and trash ops (always show at top)
     decided_at      INTEGER,
     decided_by      TEXT,
     executed_at     INTEGER,

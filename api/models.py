@@ -34,6 +34,7 @@ class OperationResponse(BaseModel):
     folder_to: Optional[str] = None
     flags_add: List[str] = []
     flags_remove: List[str] = []
+    is_urgent: int = 0
     error: Optional[str] = None
 
     @field_validator("smtp_envelope", mode="before")

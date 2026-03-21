@@ -30,6 +30,7 @@ export default function OperationCard({ operation, selected, onToggleSelect }: O
 
   const isSmtp = operation.protocol.toLowerCase() === 'smtp'
   const isWarn = WARN_OP_TYPES.has(operation.op_type)
+  const isUrgent = (operation.is_urgent ?? 0) === 1
 
   const invalidate = () => {
     void qc.invalidateQueries({ queryKey: ['operations'] })
@@ -75,8 +76,10 @@ export default function OperationCard({ operation, selected, onToggleSelect }: O
   return (
     <>
       <div
-        className={`bg-slate-800 rounded-lg border p-4 flex flex-col gap-3 ${
-          isSmtp
+        className={`bg-slate-800 rounded-lg border p-4 flex flex-col gap-3 transition-all ${
+          isUrgent
+            ? 'border-red-500/60 border-l-4 border-l-red-500 shadow-lg shadow-red-900/20'
+            : isSmtp
             ? 'border-orange-500/40 border-l-2 border-l-orange-500'
             : 'border-slate-700'
         }`}
@@ -100,8 +103,14 @@ export default function OperationCard({ operation, selected, onToggleSelect }: O
               />
             </span>
           )}
+          {isUrgent && (
+            <span className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-red-900/60 border border-red-500/40 text-red-300 text-xs font-semibold uppercase tracking-wide flex-shrink-0">
+              <span className="w-1.5 h-1.5 rounded-full bg-red-400 animate-pulse inline-block" />
+              Urgent
+            </span>
+          )}
           <ProtocolBadge protocol={operation.protocol} />
-          {isWarn && (
+          {isWarn && !isUrgent && (
             <AlertTriangle className="w-4 h-4 text-orange-400 flex-shrink-0 mt-0.5" />
           )}
           <span className="font-medium text-slate-100 text-sm flex-1 min-w-0">

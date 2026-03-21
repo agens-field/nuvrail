@@ -21,6 +21,7 @@ export interface Operation {
   folder_to?: string
   flags_add?: string[]
   flags_remove?: string[]
+  is_urgent?: number   // 1 = urgent (smtp_send, trash); show at top with red styling
   error?: string
 }
 

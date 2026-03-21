@@ -18,7 +18,13 @@ export default function PendingView() {
   const [isBatchApproving, setIsBatchApproving] = useState(false)
   const [isBatchRejecting, setIsBatchRejecting] = useState(false)
 
-  const pendingOps = data?.operations ?? []
+  // Sort urgent ops (is_urgent=1) to the top, then by created_at ascending
+  const pendingOps = [...(data?.operations ?? [])].sort((a, b) => {
+    const urgentA = (a.is_urgent ?? 0) === 1 ? 1 : 0
+    const urgentB = (b.is_urgent ?? 0) === 1 ? 1 : 0
+    if (urgentB !== urgentA) return urgentB - urgentA  // urgent first
+    return a.created_at - b.created_at                 // then oldest first
+  })
   const allPendingIds = pendingOps.map((op) => op.id)
   const allSelected =
     allPendingIds.length > 0 && allPendingIds.every((id) => selectedIds.has(id))

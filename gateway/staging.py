@@ -31,6 +31,9 @@ def _generate_op_id() -> str:
     return f"{OP_ID_PREFIX}{suffix}"
 
 
+_URGENT_OP_TYPES = {"smtp_send", "trash"}
+
+
 async def create_operation(
     *,
     op_type: str,
@@ -44,17 +47,21 @@ async def create_operation(
     flags_add: Optional[list] = None,
     flags_remove: Optional[list] = None,
     snapshot: Optional[dict] = None,
+    is_urgent: Optional[int] = None,
     db_path: Path = DB_PATH,
 ) -> str:
     """Insert a staged_operations row + audit_log entry. Returns operation ID.
 
-    snapshot: pre-operation state dict from snapshot_messages(), stored as JSON.
-    Used by the rejection revert mechanism (milestone 1.2) to restore messages
-    table and generate unsolicited FETCH responses.
+    snapshot:   pre-op state dict for rejection revert (milestone 1.2).
+    is_urgent:  1 = show at top of Pending view with urgent styling.
+                Defaults to 1 for smtp_send and trash ops, 0 otherwise.
+                Pass explicitly to override.
     """
     op_id = _generate_op_id()
     now = int(time.time())
     expires_at = now + 48 * 3600
+    if is_urgent is None:
+        is_urgent = 1 if op_type in _URGENT_OP_TYPES else 0
 
     async with get_db(db_path) as db:
         await db.execute(
@@ -63,8 +70,8 @@ async def create_operation(
                 id, created_at, expires_at, status, op_type, protocol,
                 imap_command, smtp_envelope, description, agent_id,
                 message_ids, folder_from, folder_to, flags_add, flags_remove,
-                snapshot
-            ) VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?)
+                snapshot, is_urgent
+            ) VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 op_id,
@@ -81,6 +88,7 @@ async def create_operation(
                 json.dumps(flags_add) if flags_add is not None else None,
                 json.dumps(flags_remove) if flags_remove is not None else None,
                 json.dumps(snapshot) if snapshot is not None else None,
+                is_urgent,
             ),
         )
         await db.execute(
