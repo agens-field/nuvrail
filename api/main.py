@@ -65,9 +65,21 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
 app = FastAPI(title="Nuvrail Approval API", version="0.1.0", lifespan=lifespan)
 
+_CORS_ORIGINS_RAW = os.environ.get("NUVRAIL_CORS_ORIGINS", "")
+if _CORS_ORIGINS_RAW.strip():
+    _CORS_ORIGINS = [o.strip() for o in _CORS_ORIGINS_RAW.split(",") if o.strip()]
+else:
+    # Default: allow all origins in dev (no env var set).
+    # Always set NUVRAIL_CORS_ORIGINS in production.
+    logger.warning(
+        "NUVRAIL_CORS_ORIGINS is not set — allowing all origins (*). "
+        "Set it to your deployed URL (e.g. https://test.nuvrail.com) in production."
+    )
+    _CORS_ORIGINS = ["*"]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_CORS_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
 )

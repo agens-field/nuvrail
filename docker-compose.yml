@@ -6,8 +6,9 @@ services:
       context: .
       dockerfile: Dockerfile.gateway
     ports:
-      - "1143:1143"   # IMAP proxy
-      - "8080:8080"   # REST API
+      - "10143:10143"   # IMAP proxy (AI agent connects here)
+      - "10587:10587"   # SMTP proxy (AI agent connects here)
+      - "8080:8080"     # REST API (internal; fronted by web service in prod)
     volumes:
       - nuvrail_data:/data
     env_file: .env
@@ -18,7 +19,7 @@ services:
       context: web
       dockerfile: Dockerfile.web
     ports:
-      - "3000:80"
+      - "3000:80"       # Web app (put a TLS-terminating reverse proxy in front)
     depends_on:
       - gateway
     restart: unless-stopped

@@ -1,13 +1,27 @@
 FROM python:3.11-slim
 
 WORKDIR /app
+
+# Install dependencies first (better layer caching)
 COPY pyproject.toml .
 RUN pip install --no-cache-dir -e .
 
 COPY gateway/ ./gateway/
 COPY api/ ./api/
+COPY docker-entrypoint.sh ./docker-entrypoint.sh
 
 ENV NUVRAIL_DATA_DIR=/data
+# Bind proxies to 0.0.0.0 so they're reachable from outside the container.
+# Overrides the default 127.0.0.1 used in local dev.
+ENV NUVRAIL_PROXY_HOST=0.0.0.0
+ENV NUVRAIL_PROXY_IMAP_PORT=10143
+ENV NUVRAIL_PROXY_SMTP_PORT=10587
+
 VOLUME ["/data"]
 
-CMD ["python", "-m", "gateway.proxy"]
+# 10143 — IMAP proxy
+# 10587 — SMTP proxy
+# 8080  — REST API (FastAPI/uvicorn)
+EXPOSE 10143 10587 8080
+
+ENTRYPOINT ["sh", "docker-entrypoint.sh"]
