@@ -49,6 +49,7 @@ from gateway.imap_parser import ParsedCommand, parse_line
 from gateway.imap_response_parser import parse_fetch_line, parse_list_response, parse_select_response
 from gateway.operation_parser import ParsedOperation, parse_append, parse_copy, parse_move, parse_store
 from gateway.credentials import decrypt_credential
+from gateway.credentials import decrypt_credential
 from gateway.staging import create_operation
 from gateway.state_db import (
     DB_PATH,

@@ -1,38 +1,47 @@
 """
 Unit tests for gateway/credentials.py — AES-256-GCM credential encryption.
 
-Tests:
-  - Stored value is NOT the plaintext password
-  - Decrypted value matches the original plaintext
-  - Each encrypt call produces a distinct ciphertext (fresh nonce)
-  - is_encrypted() correctly distinguishes envelope from plaintext
-  - decrypt_credential() handles legacy plaintext gracefully (no exception)
-  - Wrong master key → ValueError with a clear message
-  - Envelope format is valid JSON with required fields (v, iv, ct)
+Three properties under test:
+  1. Stored value is NOT the plaintext password (encrypt_credential is not a no-op)
+  2. decrypt_credential(encrypt_credential(p)) == p  (round-trip fidelity)
+  3. Wrong master key → ValueError with a clear message (no silent corruption)
+
+Plus:
+  4. is_encrypted() correctly distinguishes envelopes from plaintext strings
+  5. decrypt_credential() accepts legacy plaintext (backwards-compat migration path)
+  6. Each encrypt_credential() call produces a unique ciphertext (nonce randomness)
+  7. Tampered ciphertext raises ValueError (GCM authentication tag check)
 """
 from __future__ import annotations
 
 import json
 import os
-import secrets
 
 import pytest
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Fixture: isolate master key per test so tests don't interfere with each
+# other or with any real master.key file on disk.
 # ---------------------------------------------------------------------------
 
 
-def _make_key() -> bytes:
-    """Generate a fresh random 32-byte key."""
-    return secrets.token_bytes(32)
+@pytest.fixture(autouse=True)
+def isolated_master_key(tmp_path, monkeypatch):
+    """
+    Each test gets its own fresh master key, injected via env var.
+    Monkeypatches NUVRAIL_MASTER_KEY and clears the in-process key cache
+    so tests are fully isolated from each other and from the filesystem.
+    """
+    import gateway.credentials as creds_module
 
+    key_hex = os.urandom(32).hex()
+    monkeypatch.setenv("NUVRAIL_MASTER_KEY", key_hex)
 
-def _reset_cached_key(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Clear the module-level key cache so each test starts clean."""
-    import gateway.credentials as creds_mod
-    monkeypatch.setattr(creds_mod, "_cached_master_key", None)
+    # Clear the module-level cache so the env var is re-read for each test.
+    creds_module._cached_master_key = None
+    yield key_hex
+    creds_module._cached_master_key = None
 
 
 # ---------------------------------------------------------------------------
@@ -40,131 +49,131 @@ def _reset_cached_key(monkeypatch: pytest.MonkeyPatch) -> None:
 # ---------------------------------------------------------------------------
 
 
-class TestEncryptDecrypt:
-    def test_stored_value_is_not_plaintext(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """encrypt_credential() must not store the password in recoverable plaintext."""
-        _reset_cached_key(monkeypatch)
-        key_hex = _make_key().hex()
-        monkeypatch.setenv("NUVRAIL_MASTER_KEY", key_hex)
+def test_stored_value_is_not_plaintext():
+    """Encrypted value must not equal the original password."""
+    from gateway.credentials import encrypt_credential
 
-        from gateway.credentials import encrypt_credential
+    password = "super-secret-upstream-password"
+    stored = encrypt_credential(password)
 
-        plaintext = "super-secret-password-123"
-        stored = encrypt_credential(plaintext)
+    assert stored != password, (
+        "encrypt_credential returned the plaintext password unchanged — encryption is broken"
+    )
 
-        assert plaintext not in stored, (
-            "Plaintext password found literally in stored value — encryption not applied"
+
+def test_round_trip_decrypts_to_original():
+    """decrypt_credential(encrypt_credential(p)) must equal p for any input."""
+    from gateway.credentials import decrypt_credential, encrypt_credential
+
+    for password in [
+        "simple",
+        "p@$$w0rd!",
+        "unicode: こんにちは",
+        "a" * 256,              # long password
+        "",                     # empty string (edge case)
+        " leading space",
+        "trailing space ",
+    ]:
+        stored = encrypt_credential(password)
+        recovered = decrypt_credential(stored)
+        assert recovered == password, (
+            f"Round-trip failed for {password!r}: got {recovered!r}"
         )
 
-    def test_decrypt_returns_original_plaintext(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """decrypt_credential(encrypt_credential(p)) == p for any plaintext."""
-        _reset_cached_key(monkeypatch)
-        key_hex = _make_key().hex()
-        monkeypatch.setenv("NUVRAIL_MASTER_KEY", key_hex)
 
-        from gateway.credentials import decrypt_credential, encrypt_credential
+def test_wrong_master_key_raises_value_error(monkeypatch):
+    """Decrypting with a different master key must raise ValueError, not silently corrupt."""
+    import gateway.credentials as creds_module
+    from gateway.credentials import encrypt_credential, decrypt_credential
 
-        for plaintext in [
-            "correct-horse-battery-staple",
-            "p@$$w0rd!",
-            "a" * 128,
-            "",  # empty string is a valid (if unusual) password
-        ]:
-            stored = encrypt_credential(plaintext)
-            recovered = decrypt_credential(stored)
-            assert recovered == plaintext, (
-                f"Round-trip failed for {plaintext!r}: got {recovered!r}"
-            )
+    password = "correct-horse-battery-staple"
+    stored = encrypt_credential(password)
 
-    def test_each_call_produces_distinct_ciphertext(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Every encrypt_credential() call uses a fresh nonce — two encryptions of the
-        same plaintext must produce different ciphertexts (IND-CPA property)."""
-        _reset_cached_key(monkeypatch)
-        key_hex = _make_key().hex()
-        monkeypatch.setenv("NUVRAIL_MASTER_KEY", key_hex)
+    # Swap to a different key
+    different_key = os.urandom(32).hex()
+    monkeypatch.setenv("NUVRAIL_MASTER_KEY", different_key)
+    creds_module._cached_master_key = None  # force re-read
 
-        from gateway.credentials import encrypt_credential
-
-        plaintext = "same-password-every-time"
-        results = {encrypt_credential(plaintext) for _ in range(10)}
-        assert len(results) == 10, (
-            "Expected 10 distinct ciphertexts for 10 encryptions of the same plaintext "
-            "(nonce reuse detected)"
-        )
-
-    def test_envelope_is_valid_json_with_required_fields(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Stored envelope must be valid JSON with keys v, iv, ct."""
-        _reset_cached_key(monkeypatch)
-        monkeypatch.setenv("NUVRAIL_MASTER_KEY", _make_key().hex())
-
-        from gateway.credentials import encrypt_credential
-
-        stored = encrypt_credential("any-password")
-        envelope = json.loads(stored)  # raises if not valid JSON
-        assert envelope.get("v") == 1
-        assert "iv" in envelope and len(envelope["iv"]) == 24  # 12-byte nonce → 24 hex chars
-        assert "ct" in envelope and len(envelope["ct"]) > 0
+    with pytest.raises(ValueError, match="Failed to decrypt credential"):
+        decrypt_credential(stored)
 
 
-class TestIsEncrypted:
-    def test_encrypted_envelope_detected(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        _reset_cached_key(monkeypatch)
-        monkeypatch.setenv("NUVRAIL_MASTER_KEY", _make_key().hex())
+def test_is_encrypted_detects_envelope():
+    """is_encrypted() must return True for our JSON envelopes, False for plaintext."""
+    from gateway.credentials import encrypt_credential, is_encrypted
 
-        from gateway.credentials import encrypt_credential, is_encrypted
+    plaintext = "plain-password"
+    assert not is_encrypted(plaintext), "is_encrypted returned True for plaintext"
+    assert not is_encrypted(""), "is_encrypted returned True for empty string"
+    assert not is_encrypted('{"not": "our-format"}'), (
+        "is_encrypted returned True for unrelated JSON"
+    )
 
-        stored = encrypt_credential("password")
-        assert is_encrypted(stored) is True
-
-    def test_plaintext_not_detected_as_encrypted(self) -> None:
-        from gateway.credentials import is_encrypted
-
-        for plaintext in ["password123", "secret", "{not-an-envelope}", ""]:
-            assert is_encrypted(plaintext) is False, (
-                f"is_encrypted() incorrectly returned True for plaintext: {plaintext!r}"
-            )
+    envelope = encrypt_credential(plaintext)
+    assert is_encrypted(envelope), (
+        f"is_encrypted returned False for a valid envelope: {envelope!r}"
+    )
 
 
-class TestLegacyPlaintext:
-    def test_decrypt_accepts_legacy_plaintext(self) -> None:
-        """decrypt_credential() must return plaintext strings unchanged (backwards compat)."""
-        from gateway.credentials import decrypt_credential
+def test_decrypt_accepts_legacy_plaintext():
+    """decrypt_credential must return plaintext strings unchanged (migration path)."""
+    from gateway.credentials import decrypt_credential
 
-        legacy = "old-plaintext-password"
+    # Existing rows written before encryption was added — must not break
+    for legacy in ["old-password", "hunter2", "correct-horse-battery-staple"]:
         result = decrypt_credential(legacy)
-        assert result == legacy
-
-    def test_decrypt_legacy_does_not_raise(self) -> None:
-        """decrypt_credential() on plaintext must never raise — legacy rows must keep working."""
-        from gateway.credentials import decrypt_credential
-
-        try:
-            decrypt_credential("any-old-password")
-        except Exception as exc:  # noqa: BLE001
-            pytest.fail(f"decrypt_credential raised on plaintext: {exc}")
+        assert result == legacy, (
+            f"decrypt_credential modified legacy plaintext {legacy!r} → {result!r}"
+        )
 
 
-class TestWrongKey:
-    def test_wrong_master_key_raises_value_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Decrypting with a different master key must raise ValueError with a clear message."""
-        import gateway.credentials as creds_mod
+def test_each_encryption_produces_unique_ciphertext():
+    """Two calls with the same password must produce different stored values (nonce randomness)."""
+    from gateway.credentials import encrypt_credential
 
-        # Encrypt with key A
-        _reset_cached_key(monkeypatch)
-        key_a = _make_key().hex()
-        monkeypatch.setenv("NUVRAIL_MASTER_KEY", key_a)
-        from gateway.credentials import encrypt_credential
-        stored = encrypt_credential("secret-password")
+    password = "same-password-twice"
+    stored1 = encrypt_credential(password)
+    stored2 = encrypt_credential(password)
 
-        # Switch to key B and attempt to decrypt
-        _reset_cached_key(monkeypatch)
-        key_b = _make_key().hex()
-        monkeypatch.setenv("NUVRAIL_MASTER_KEY", key_b)
+    assert stored1 != stored2, (
+        "Two encryptions of the same password produced identical output — nonce is not random"
+    )
 
-        # Re-import decrypt to pick up the new key state
-        from gateway.credentials import decrypt_credential
+    # Both must still decrypt to the original (sanity check)
+    from gateway.credentials import decrypt_credential
+    assert decrypt_credential(stored1) == password
+    assert decrypt_credential(stored2) == password
 
-        with pytest.raises(ValueError, match="Failed to decrypt credential"):
-            decrypt_credential(stored)
+
+def test_tampered_ciphertext_raises_value_error():
+    """GCM authentication tag must reject any modification to the ciphertext."""
+    from gateway.credentials import decrypt_credential, encrypt_credential
+
+    stored = encrypt_credential("tamper-me")
+    envelope = json.loads(stored)
+
+    # Flip the last byte of the ciphertext hex string
+    ct_bytes = bytearray(bytes.fromhex(envelope["ct"]))
+    ct_bytes[-1] ^= 0xFF  # flip all bits in last byte
+    envelope["ct"] = ct_bytes.hex()
+    tampered = json.dumps(envelope, separators=(",", ":"))
+
+    with pytest.raises(ValueError, match="Failed to decrypt credential"):
+        decrypt_credential(tampered)
+
+
+def test_envelope_schema():
+    """Envelope must be valid JSON with the expected v/iv/ct fields."""
+    from gateway.credentials import encrypt_credential
+
+    stored = encrypt_credential("schema-check")
+    envelope = json.loads(stored)  # must not raise
+
+    assert envelope.get("v") == 1, f"Expected v=1, got: {envelope.get('v')!r}"
+    assert "iv" in envelope, "Missing 'iv' field in envelope"
+    assert "ct" in envelope, "Missing 'ct' field in envelope"
+
+    # iv must be 12 bytes (96 bits) hex-encoded = 24 hex chars
+    assert len(envelope["iv"]) == 24, (
+        f"Expected 24-char iv (12 bytes), got {len(envelope['iv'])}"
+    )

@@ -68,6 +68,7 @@ from typing import Optional
 from dotenv import load_dotenv
 
 from gateway.credentials import decrypt_credential
+from gateway.credentials import decrypt_credential
 from gateway.staging import create_operation
 from gateway.state_db import DB_PATH, get_db
 

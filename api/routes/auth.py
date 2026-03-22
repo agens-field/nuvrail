@@ -29,6 +29,7 @@ from api.auth import (
     verify_password,
 )
 from gateway.credentials import encrypt_credential
+from gateway.credentials import encrypt_credential
 from api.models import (
     AgentCreateRequest,
     AgentCreateResponse,
