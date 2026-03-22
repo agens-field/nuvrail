@@ -220,6 +220,46 @@ async def test_create_agent(client: httpx.AsyncClient) -> None:
     assert data["agent_token"] != ""
 
 
+async def test_agent_password_stored_encrypted(
+    client: httpx.AsyncClient, db_path: Path
+) -> None:
+    """POST /agents must store upstream_password as an AES-256-GCM envelope, not plaintext."""
+    from gateway.credentials import is_encrypted
+    from gateway.state_db import get_db
+
+    token = await _register_and_login(client)
+    plaintext_password = "my-upstream-password"
+
+    resp = await client.post(
+        "/api/v1/agents",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "upstream_host": "imap.example.com",
+            "upstream_user": "user@example.com",
+            "upstream_password": plaintext_password,
+        },
+    )
+    assert resp.status_code == 201
+    agent_id = resp.json()["id"]
+
+    # Read the raw stored value directly from the DB
+    async with get_db(db_path) as db:
+        async with db.execute(
+            "SELECT upstream_password FROM agent_credentials WHERE id = ?", (agent_id,)
+        ) as cur:
+            row = await cur.fetchone()
+
+    assert row is not None, "Agent credential row not found in DB"
+    stored = row[0]
+
+    assert stored != plaintext_password, (
+        "upstream_password was stored as plaintext — encrypt_credential() not called"
+    )
+    assert is_encrypted(stored), (
+        f"upstream_password does not look like an AES-GCM envelope: {stored!r}"
+    )
+
+
 async def test_agent_token_not_repeated(client: httpx.AsyncClient) -> None:
     """GET /agents does NOT include the agent_token field."""
     token = await _register_and_login(client)

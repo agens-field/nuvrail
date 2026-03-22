@@ -48,6 +48,7 @@ from gateway.command_router import classify
 from gateway.imap_parser import ParsedCommand, parse_line
 from gateway.imap_response_parser import parse_fetch_line, parse_list_response, parse_select_response
 from gateway.operation_parser import ParsedOperation, parse_append, parse_copy, parse_move, parse_store
+from gateway.credentials import decrypt_credential
 from gateway.staging import create_operation
 from gateway.state_db import (
     DB_PATH,
@@ -360,7 +361,7 @@ async def _client_to_upstream(
             # Phase 0: use env-var upstream (same host/port). Agent token is
             # never forwarded. Passwords never logged.
             upstream_user = credential["upstream_user"]
-            upstream_password = credential["upstream_password"]
+            upstream_password = decrypt_credential(credential["upstream_password"])
             tag = parts[0]
             rewritten = f"{tag} LOGIN {upstream_user} {upstream_password}\r\n"
             line_bytes = rewritten.encode()

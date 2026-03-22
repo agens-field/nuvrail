@@ -28,6 +28,7 @@ from api.auth import (
     hash_password,
     verify_password,
 )
+from gateway.credentials import encrypt_credential
 from api.models import (
     AgentCreateRequest,
     AgentCreateResponse,
@@ -177,7 +178,7 @@ async def create_agent(
                 body.upstream_imap_port,
                 body.upstream_smtp_port,
                 body.upstream_user,
-                body.upstream_password,
+                encrypt_credential(body.upstream_password),
                 now,
             ),
         )

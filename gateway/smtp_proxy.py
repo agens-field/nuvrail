@@ -67,6 +67,7 @@ from typing import Optional
 
 from dotenv import load_dotenv
 
+from gateway.credentials import decrypt_credential
 from gateway.staging import create_operation
 from gateway.state_db import DB_PATH, get_db
 
@@ -367,7 +368,7 @@ async def handle_smtp_client(
                     import base64 as _b64r  # noqa: PLC0415
 
                     up_user = upstream_credential["upstream_user"]
-                    up_pass = upstream_credential["upstream_password"]
+                    up_pass = decrypt_credential(upstream_credential["upstream_password"])
                     rewritten_b64 = _b64r.b64encode(
                         f"\x00{up_user}\x00{up_pass}".encode()
                     ).decode()
