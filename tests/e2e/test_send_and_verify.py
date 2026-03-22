@@ -175,8 +175,11 @@ async def test_smtp_send_staged_then_approved_arrives(
         # Step 1–3: Send via proxy, get staged op_id
         op_id = await _smtp_send_via_proxy(smtp_host, smtp_port, user, password, subject)
 
-        # Step 4: Verify op appears in API as pending
-        resp = await api_client.get("/api/v1/operations?status=pending")
+        # Step 4: Verify op appears in API as pending (Bearer auth required)
+        resp = await api_client.get(
+            "/api/v1/operations?status=pending",
+            headers=e2e_setup["auth_headers"],
+        )
         assert resp.status_code == 200
         ops = resp.json()["operations"]
         op_ids = [op["id"] for op in ops]
@@ -184,8 +187,11 @@ async def test_smtp_send_staged_then_approved_arrives(
         op = next(op for op in ops if op["id"] == op_id)
         assert op["protocol"] == "smtp", f"Expected smtp, got: {op['protocol']!r}"
 
-        # Step 5: Approve via API
-        approve_resp = await api_client.post(f"/api/v1/operations/{op_id}/approve")
+        # Step 5: Approve via API (Bearer auth required)
+        approve_resp = await api_client.post(
+            f"/api/v1/operations/{op_id}/approve",
+            headers=e2e_setup["auth_headers"],
+        )
         assert approve_resp.status_code == 200, (
             f"Approve failed: {approve_resp.status_code} {approve_resp.text}"
         )
@@ -230,16 +236,22 @@ async def test_smtp_send_staged_multiple_then_approve_all(
             op_id = await _smtp_send_via_proxy(smtp_host, smtp_port, user, password, subject)
             op_ids.append(op_id)
 
-        # Step 2: Verify all 3 appear as pending
-        resp = await api_client.get("/api/v1/operations?status=pending")
+        # Step 2: Verify all 3 appear as pending (Bearer auth required)
+        resp = await api_client.get(
+            "/api/v1/operations?status=pending",
+            headers=e2e_setup["auth_headers"],
+        )
         assert resp.status_code == 200
         pending_ids = [op["id"] for op in resp.json()["operations"]]
         for op_id in op_ids:
             assert op_id in pending_ids, f"op_id {op_id!r} not in pending ops"
 
-        # Step 3: Approve all 3
+        # Step 3: Approve all 3 (Bearer auth required)
         for op_id in op_ids:
-            approve_resp = await api_client.post(f"/api/v1/operations/{op_id}/approve")
+            approve_resp = await api_client.post(
+                f"/api/v1/operations/{op_id}/approve",
+                headers=e2e_setup["auth_headers"],
+            )
             assert approve_resp.status_code == 200
             assert approve_resp.json()["status"] == "executed"
 

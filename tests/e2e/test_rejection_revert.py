@@ -154,8 +154,11 @@ async def test_rejection_injects_unsolicited_fetch_on_noop(
         assert op_id_match, f"Could not extract op_id from: {store_text!r}"
         op_id = op_id_match.group(1)
 
-        # Step 4: Reject via API
-        reject_resp = await api_client.post(f"/api/v1/operations/{op_id}/reject")
+        # Step 4: Reject via API (Bearer auth required)
+        reject_resp = await api_client.post(
+            f"/api/v1/operations/{op_id}/reject",
+            headers=e2e_setup["auth_headers"],
+        )
         assert reject_resp.status_code == 200, f"Reject failed: {reject_resp.text}"
         assert reject_resp.json()["status"] == "rejected"
 
@@ -233,14 +236,17 @@ async def test_rejection_revert_does_not_fire_for_write_commands(
         await _read_until_tagged(reader, "U02")
         await asyncio.sleep(0.05)  # let SELECT sync settle
 
-        # Stage op 1 and reject it
+        # Stage op 1 and reject it (Bearer auth required)
         writer.write(f"U03 UID STORE {uid} +FLAGS (\\Seen)\r\n".encode())
         await writer.drain()
         store1 = await _read_until_tagged(reader, "U03")
         import re as _re
         m = _re.search(r"(op_[A-Za-z0-9]+)", " ".join(store1))
         assert m, "No op_id in first STORE response"
-        await api_client.post(f"/api/v1/operations/{m.group(1)}/reject")
+        await api_client.post(
+            f"/api/v1/operations/{m.group(1)}/reject",
+            headers=e2e_setup["auth_headers"],
+        )
 
         # Stage op 2 (pending revert is now queued from op 1)
         writer.write(f"U04 UID STORE {uid} +FLAGS (\\Flagged)\r\n".encode())

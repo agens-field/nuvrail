@@ -17,11 +17,8 @@ Test topology:
 These tests require live network access to blizzard.mxrouting.net.
 Credentials come from .env via the e2e conftest.
 
-NOTE: In Milestone 1.0, the approve endpoint for IMAP ops marks the operation
-as "executed" but does NOT replay the STORE command against upstream (that
-capability lands in Milestone 1.1). Tests that verify post-approval upstream
-state are therefore marked xfail with reason=
-"IMAP upstream execution deferred to milestone 1.1".
+All API calls pass auth_headers (Bearer token) from e2e_setup, exercising
+the full Lane 3 authentication stack on every approve/reject call.
 """
 from __future__ import annotations
 
@@ -155,20 +152,21 @@ async def test_imap_archive_staged_not_yet_executed(
     upstream_smtp_cfg: dict,
 ) -> None:
     """
-    KEY TEST: Staging must gate execution — the STORE flag must NOT be applied
-    to the upstream server until the operation is approved.
+    Full IMAP approve cycle: staging must gate execution, then approval must
+    apply the flag change to the upstream server.
 
     Flow:
       1. Send a message directly to INBOX (bypass proxy)
       2. Wait for it to arrive
       3. STORE \\Deleted via IMAP proxy → assert STAGED + op_id
-      4. Direct IMAP: assert message is STILL PRESENT (flag not applied)
-      5. Approve via API
-      6. (xfail) Direct IMAP: assert message is flagged \\Deleted upstream
+      4. Direct IMAP: assert message is STILL PRESENT and flag NOT applied
+      5. Approve via API (with auth)
+      6. Direct IMAP: assert \\Deleted flag IS now applied upstream
       7. Cleanup
     """
     subject = f"Archive Test {time.time():.0f}"
     api_client = e2e_setup["api_client"]
+    auth_headers = e2e_setup["auth_headers"]
     imap_proxy_host = e2e_setup["imap_host"]
     imap_proxy_port = e2e_setup["imap_port"]
     user = upstream_smtp_cfg["user"]
@@ -195,36 +193,32 @@ async def test_imap_archive_staged_not_yet_executed(
         )
         assert op_id, f"Could not extract op_id from: {store_response!r}"
 
-        # Step 4: KEY ASSERTION — message must still be present, not flagged
+        # Step 4: KEY ASSERTION — message must still be present, flag not applied
         still_present = await check_message_exists(upstream_imap_cfg, uid)
         assert still_present, (
             "Message was NOT found via direct IMAP immediately after proxy STORE "
             "— staging failed to gate execution. UID may have been expunged or "
             "the flag applied prematurely."
         )
-
-        # Double-check: \\Deleted flag must NOT be on the message yet
         flags_before = await get_message_flags(upstream_imap_cfg, uid)
         assert r"\Deleted" not in flags_before and "\\Deleted" not in flags_before, (
             f"\\Deleted flag was applied before approval! flags={flags_before!r}"
         )
 
-        # Step 5: Approve via API
-        approve_resp = await api_client.post(f"/api/v1/operations/{op_id}/approve")
+        # Step 5: Approve via API (Bearer auth required)
+        approve_resp = await api_client.post(
+            f"/api/v1/operations/{op_id}/approve",
+            headers=auth_headers,
+        )
         assert approve_resp.status_code == 200, (
             f"Approve failed: {approve_resp.status_code} {approve_resp.text}"
         )
         assert approve_resp.json()["status"] == "executed"
 
-        # Step 6: Verify upstream execution (xfail — deferred to Milestone 1.1)
-        # In 1.0, approve marks the op as executed but does NOT replay the IMAP
-        # STORE command against upstream. The assertion below is expected to fail
-        # until upstream IMAP execution lands in Milestone 1.1.
+        # Step 6: Verify upstream execution — flag must now be applied
         flags_after = await get_message_flags(upstream_imap_cfg, uid)
-        # This line will xfail until 1.1 ships:
         assert r"\Deleted" in flags_after or "\\Deleted" in flags_after, (
-            "\\Deleted flag was NOT applied upstream after approval "
-            "(IMAP upstream execution deferred to milestone 1.1)"
+            f"\\Deleted flag was NOT applied upstream after approval. flags={flags_after!r}"
         )
 
     finally:
@@ -232,31 +226,20 @@ async def test_imap_archive_staged_not_yet_executed(
             await delete_message_by_uid(upstream_imap_cfg, uid)
 
 
-# Mark the last assertion in test_imap_archive_staged_not_yet_executed as
-# expected to fail. Since the assertion is inside the test body (not a
-# separate test), we wrap the whole test in xfail for the upstream-check part.
-# The cleaner approach: split into two tests, one for the staging gate
-# (must pass) and one for upstream execution (xfail until 1.1).
-
-
 @pytest.mark.asyncio(loop_scope="session")
-@pytest.mark.xfail(
-    reason="IMAP upstream execution deferred to milestone 1.1",
-    strict=False,
-)
 async def test_imap_upstream_flag_applied_after_approve(
     e2e_setup: dict,
     upstream_imap_cfg: dict,
     upstream_smtp_cfg: dict,
 ) -> None:
     """
-    (xfail until Milestone 1.1) After approving an IMAP STORE op, the flag
-    must be applied to the upstream server.
-
-    Separated from the staging gate test so the xfail is precisely scoped.
+    After approving an IMAP STORE op, the flag must be applied to the
+    upstream server. Separated from the staging gate test so each concern
+    has a single focused assertion.
     """
-    subject = f"Archive Xfail Test {time.time():.0f}"
+    subject = f"Archive Upstream Test {time.time():.0f}"
     api_client = e2e_setup["api_client"]
+    auth_headers = e2e_setup["auth_headers"]
     imap_proxy_host = e2e_setup["imap_host"]
     imap_proxy_port = e2e_setup["imap_port"]
     user = upstream_smtp_cfg["user"]
@@ -274,13 +257,15 @@ async def test_imap_upstream_flag_applied_after_approve(
         )
         assert op_id, "No op_id in STAGED response"
 
-        approve_resp = await api_client.post(f"/api/v1/operations/{op_id}/approve")
+        approve_resp = await api_client.post(
+            f"/api/v1/operations/{op_id}/approve",
+            headers=auth_headers,
+        )
         assert approve_resp.status_code == 200
 
-        # This assertion is expected to fail in Milestone 1.0:
         flags = await get_message_flags(upstream_imap_cfg, uid)
         assert r"\Seen" in flags or "\\Seen" in flags, (
-            f"\\Seen not applied upstream. flags={flags!r}"
+            f"\\Seen not applied upstream after approval. flags={flags!r}"
         )
     finally:
         if uid is not None:
@@ -336,8 +321,11 @@ async def test_imap_archive_staging_gate(
             f"\\Deleted flag was applied before approval! flags={flags_before!r}"
         )
 
-        # Verify op is visible and pending via API
-        op_resp = await api_client.get(f"/api/v1/operations/{op_id}")
+        # Verify op is visible and pending via API (auth required)
+        op_resp = await api_client.get(
+            f"/api/v1/operations/{op_id}",
+            headers=e2e_setup["auth_headers"],
+        )
         assert op_resp.status_code == 200
         assert op_resp.json()["status"] == "pending"
         assert op_resp.json()["protocol"] == "imap"
@@ -379,8 +367,11 @@ async def test_imap_archive_rejected_state_unchanged(
         assert "STAGED" in store_response.upper()
         assert op_id
 
-        # Step 3: Reject via API
-        reject_resp = await api_client.post(f"/api/v1/operations/{op_id}/reject")
+        # Step 3: Reject via API (Bearer auth required)
+        reject_resp = await api_client.post(
+            f"/api/v1/operations/{op_id}/reject",
+            headers=e2e_setup["auth_headers"],
+        )
         assert reject_resp.status_code == 200
         assert reject_resp.json()["status"] == "rejected"
 

@@ -19,9 +19,20 @@ to the API and vice versa.
 
 DB injection strategy:
   - FastAPI: app.dependency_overrides[get_db_path] = lambda: db_path
+             app.dependency_overrides[get_auth_db_path] = lambda: db_path
+             Both overrides are required: get_db_path covers operations/audit
+             routes; get_auth_db_path covers the get_current_user dependency
+             in api/auth.py which runs on every authenticated endpoint.
   - Proxies: gateway.staging functions use keyword-only default db_path.
     We patch __kwdefaults__['db_path'] on each staging function so proxy
     calls (which omit db_path) write to the tmp DB.
+
+Auth in e2e tests:
+  The e2e_setup fixture registers a test user, logs in, and includes the
+  bearer token in the returned dict under key "auth_headers". Tests pass
+  this to every api_client call that hits an authenticated endpoint.
+  This exercises the full auth stack (register → login → bearer token →
+  get_current_user validation) rather than bypassing it.
 """
 from __future__ import annotations
 
@@ -156,13 +167,44 @@ async def e2e_setup(tmp_path_factory: pytest.TempPathFactory) -> dict:
     smtp_host, smtp_port = smtp_server.sockets[0].getsockname()
     smtp_task = asyncio.create_task(smtp_server.serve_forever())
 
-    # 7. Set up FastAPI with dependency override for get_db_path.
+    # 7. Set up FastAPI with dependency overrides for both DB-path dependencies.
+    #    get_db_path  — used by operations, audit, and agents routes
+    #    get_auth_db_path — used by get_current_user (api/auth.py) which runs
+    #                       on every authenticated endpoint; must point to the
+    #                       same test DB or bearer token lookups will fail.
     from api.main import app
+    from api.auth import get_auth_db_path
     from api.routes.operations import get_db_path
 
     app.dependency_overrides[get_db_path] = lambda: db_path
+    app.dependency_overrides[get_auth_db_path] = lambda: db_path
     transport = httpx.ASGITransport(app=app)
     api_client = httpx.AsyncClient(transport=transport, base_url="http://test")
+
+    # 8. Register a test user and log in to obtain a bearer token.
+    #    This exercises the full Lane 3 auth stack. The token is included in
+    #    every e2e API call via auth_headers so all authenticated endpoints work.
+    register_resp = await api_client.post(
+        "/api/v1/auth/register",
+        json={
+            "email": "e2e-test@nuvrail.com",
+            "password": "e2e-test-password",
+            "display_name": "E2E Test User",
+        },
+    )
+    assert register_resp.status_code == 201, (
+        f"e2e_setup: failed to register test user: {register_resp.status_code} {register_resp.text}"
+    )
+
+    login_resp = await api_client.post(
+        "/api/v1/auth/login",
+        json={"email": "e2e-test@nuvrail.com", "password": "e2e-test-password"},
+    )
+    assert login_resp.status_code == 200, (
+        f"e2e_setup: failed to log in test user: {login_resp.status_code} {login_resp.text}"
+    )
+    bearer_token = login_resp.json()["token"]
+    auth_headers = {"Authorization": f"Bearer {bearer_token}"}
 
     yield {
         "imap_host": imap_host,
@@ -171,9 +213,10 @@ async def e2e_setup(tmp_path_factory: pytest.TempPathFactory) -> dict:
         "smtp_port": smtp_port,
         "api_client": api_client,
         "db_path": db_path,
+        "auth_headers": auth_headers,
     }
 
-    # 8. Teardown — close everything and restore patches.
+    # 9. Teardown — close everything and restore patches.
     await api_client.aclose()
     app.dependency_overrides.clear()
 

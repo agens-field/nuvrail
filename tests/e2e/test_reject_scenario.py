@@ -251,8 +251,11 @@ async def test_smtp_send_rejected_never_arrives(
     # Step 1: Send via proxy → STAGED
     op_id = await _smtp_send_via_proxy(smtp_host, smtp_port, user, password, subject)
 
-    # Step 2: Reject via API
-    reject_resp = await api_client.post(f"/api/v1/operations/{op_id}/reject")
+    # Step 2: Reject via API (Bearer auth required)
+    reject_resp = await api_client.post(
+        f"/api/v1/operations/{op_id}/reject",
+        headers=e2e_setup["auth_headers"],
+    )
     assert reject_resp.status_code == 200
     assert reject_resp.json()["status"] == "rejected"
 
@@ -308,8 +311,11 @@ async def test_imap_write_rejected_flag_unchanged(
         )
         assert op_id, f"No op_id in STAGED response: {store_response!r}"
 
-        # Step 3: Reject via API
-        reject_resp = await api_client.post(f"/api/v1/operations/{op_id}/reject")
+        # Step 3: Reject via API (Bearer auth required)
+        reject_resp = await api_client.post(
+            f"/api/v1/operations/{op_id}/reject",
+            headers=e2e_setup["auth_headers"],
+        )
         assert reject_resp.status_code == 200
         assert reject_resp.json()["status"] == "rejected"
 
