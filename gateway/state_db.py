@@ -315,22 +315,6 @@ async def upsert_message(
         await db.commit()
 
 
-async def update_flags(
-    folder_id: int,
-    uid: int,
-    flags: "list[str]",
-    db_path: Path = DB_PATH,
-) -> None:
-    """Update the flags column for a specific UID."""
-    now = int(time.time())
-    async with get_db(db_path) as db:
-        await db.execute(
-            "UPDATE messages SET flags = ?, last_updated = ? WHERE folder_id = ? AND uid = ?",
-            (json.dumps(flags), now, folder_id, uid),
-        )
-        await db.commit()
-
-
 async def get_message(
     folder_id: int,
     uid: int,
@@ -425,21 +409,6 @@ async def get_messages_by_uid_set(
             rows2 = await cur.fetchall()
 
     return [dict(r) for r in rows2]
-
-
-async def resolve_sequence_to_uid(
-    folder_id: int,
-    seq_num: int,
-    db_path: Path = DB_PATH,
-) -> "int | None":
-    """Return the UID for a given sequence number, or None if not found."""
-    async with get_db(db_path) as db:
-        async with db.execute(
-            "SELECT uid FROM messages WHERE folder_id = ? AND sequence_num = ?",
-            (folder_id, seq_num),
-        ) as cur:
-            row = await cur.fetchone()
-    return int(row["uid"]) if row is not None else None
 
 
 # ---------------------------------------------------------------------------

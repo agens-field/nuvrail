@@ -11,13 +11,6 @@ from typing import List, Optional
 from pydantic import BaseModel, field_validator
 
 
-class MessagePreview(BaseModel):
-    uid: int
-    subject: Optional[str] = None
-    sender: Optional[str] = None
-    date_sent: Optional[int] = None
-
-
 class OperationResponse(BaseModel):
     id: str
     status: str

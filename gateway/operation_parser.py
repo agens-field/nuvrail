@@ -143,20 +143,4 @@ def parse_append(tag: str, folder: str, flags: List[str], message_size: int) -> 
     )
 
 
-def parse_expunge(tag: str, deleted_uids: List[str]) -> List[ParsedOperation]:
-    """Parse EXPUNGE into one 'trash' operation per \\Deleted-flagged message.
 
-    EXPUNGE is never forwarded upstream — each deleted UID becomes a staged
-    'trash' operation.
-    """
-    cmd_str = "EXPUNGE"
-    return [
-        ParsedOperation(
-            tag=tag,
-            op_type="trash",
-            imap_command=cmd_str,
-            description=f"Move to Trash: {uid}",
-            message_ids=[uid],
-        )
-        for uid in deleted_uids
-    ]

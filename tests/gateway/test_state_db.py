@@ -16,9 +16,9 @@ from gateway.state_db import (
     get_messages_by_uid_set,
     get_or_create_folder,
     init_db,
-    resolve_sequence_to_uid,
+
     snapshot_messages,
-    update_flags,
+
     update_folder_stats,
     upsert_folders_from_list,
     upsert_message,
@@ -136,17 +136,6 @@ async def test_upsert_message_updates_existing(db_path: Path) -> None:
     assert row["subject"] == "Hi"
 
 
-async def test_update_flags(db_path: Path) -> None:
-    """Flags column is updated to the new list."""
-    folder_id = await _setup_folder(db_path)
-    await upsert_message(folder_id, uid=10, flags=[], db_path=db_path)
-    await update_flags(folder_id, 10, ["\\Seen", "\\Flagged"], db_path=db_path)
-
-    row = await get_message(folder_id, 10, db_path=db_path)
-    assert row is not None
-    assert json.loads(row["flags"]) == ["\\Seen", "\\Flagged"]
-
-
 async def test_get_message_not_found(db_path: Path) -> None:
     """Returns None for a UID that doesn't exist."""
     folder_id = await _setup_folder(db_path)
@@ -221,19 +210,6 @@ async def test_get_messages_by_uid_set_mixed(db_path: Path) -> None:
     rows = await get_messages_by_uid_set(folder_id, "1:3,5,10:12", db_path=db_path)
     uids = {r["uid"] for r in rows}
     assert uids == {1, 2, 3, 5, 10, 11, 12}
-
-
-async def test_resolve_sequence_to_uid(db_path: Path) -> None:
-    """seq_num 2 resolves to uid 42."""
-    folder_id = await _setup_folder(db_path)
-    await upsert_message(folder_id, uid=10, seq_num=1, db_path=db_path)
-    await upsert_message(folder_id, uid=42, seq_num=2, db_path=db_path)
-
-    result = await resolve_sequence_to_uid(folder_id, 2, db_path=db_path)
-    assert result == 42
-
-    missing = await resolve_sequence_to_uid(folder_id, 99, db_path=db_path)
-    assert missing is None
 
 
 # ---------------------------------------------------------------------------

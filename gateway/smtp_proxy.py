@@ -159,18 +159,6 @@ def _strip_starttls(lines: list[bytes]) -> list[bytes]:
     return filtered
 
 
-def _extract_auth_user_plain(credentials_b64: str) -> str:
-    """Extract username from AUTH PLAIN base64 payload (\\x00user\\x00pass)."""
-    try:
-        decoded = base64.b64decode(credentials_b64)
-        parts = decoded.split(b"\x00")
-        if len(parts) >= 3:
-            return parts[1].decode("utf-8", errors="replace")
-    except Exception:
-        pass
-    return "<unknown>"
-
-
 def _extract_subject(body_lines: list[bytes]) -> str:
     """Extract the Subject header value from a list of message body lines."""
     for line in body_lines:
