@@ -55,8 +55,11 @@ export default function WaitlistForm() {
           <h2 className="text-2xl md:text-3xl font-bold text-white mb-2">
             Be first when we open the doors.
           </h2>
-          <p className="text-gray-400 mb-8">
+          <p className="text-gray-400 mb-2">
             We&apos;re building with a small group of early-access teams. If you&apos;re deploying AI agents on email infrastructure, we want to hear from you.
+          </p>
+          <p className="text-sm text-gray-500 mb-8">
+            Early access + architecture notes from the team.
           </p>
 
           {status === 'success' ? (
@@ -100,10 +103,10 @@ export default function WaitlistForm() {
                   disabled={status === 'loading'}
                   className="w-full bg-[#1a1a1a] border border-[#2a2a2a] text-gray-400 rounded px-4 py-3 text-sm focus:outline-none focus:border-[#2dd4bf] focus:ring-1 focus:ring-[#2dd4bf] transition-colors appearance-none"
                 >
-                  <option value="">Are you deploying AI agents that touch email today?</option>
+                  <option value="">Deploying AI agents that touch email today?</option>
                   <option value="yes-actively">Yes, actively</option>
-                  <option value="evaluating">Evaluating options</option>
-                  <option value="not-yet">Not yet, but planning to</option>
+                  <option value="planning-to">Planning to</option>
+                  <option value="not-yet">Not yet</option>
                 </select>
               </div>
 

@@ -37,11 +37,18 @@ export default function Hero() {
           </span>
         </div>
 
-        {/* Headline — A/B variant A active; variant B in comment below */}
-        {/* B: "AI agents for email. With a human in the loop." */}
-        <h1 className="text-4xl md:text-5xl lg:text-6xl font-bold leading-tight tracking-tight text-white mb-6">
-          The approval layer between AI agents and your inbox.
+        {/* Problem hook — leads with the fear, then names the solution */}
+        <h1 className="text-4xl md:text-5xl lg:text-6xl font-bold leading-tight tracking-tight text-white mb-4">
+          Your AI agent is about to send that email. Are you sure?
         </h1>
+
+        <p className="text-xl md:text-2xl font-semibold text-[#2dd4bf] mb-4">
+          The approval layer between AI agents and your inbox.
+        </p>
+
+        <p className="text-base md:text-lg text-gray-500 font-medium mb-6">
+          Email has no git. Until now.
+        </p>
 
         <p className="text-lg md:text-xl text-gray-400 leading-relaxed max-w-2xl mb-10">
           Nuvrail sits between your AI agent and your inbox. Every proposed action is staged for human review, logged immutably, and held until you approve the diff.
