@@ -16,6 +16,8 @@ services:
     build:
       context: web
       dockerfile: Dockerfile.web
+      args:
+        VITE_API_URL: https://test.nuvrail.com
     ports:
       - "3000:80"       # Web app (put a TLS-terminating reverse proxy in front)
     depends_on:
