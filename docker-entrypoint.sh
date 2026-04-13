@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 # Nuvrail gateway entrypoint — starts all three processes:
 #   1. IMAP proxy       (gateway.proxy)
 #   2. SMTP proxy       (gateway.smtp_proxy)

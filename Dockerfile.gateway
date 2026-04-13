@@ -24,4 +24,4 @@ VOLUME ["/data"]
 # 8080  — REST API (FastAPI/uvicorn)
 EXPOSE 10143 10587 8080
 
-ENTRYPOINT ["sh", "docker-entrypoint.sh"]
+ENTRYPOINT ["bash", "docker-entrypoint.sh"]
