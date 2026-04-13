@@ -43,10 +43,14 @@ function AccountStep({ onDone }: { onDone: () => void }) {
 
   return (
     <div>
-      <h2 className="text-lg font-semibold text-slate-200 mb-4">Step 1 — Create your account</h2>
+      <h2 className="text-lg font-semibold text-slate-200 mb-2">Step 1 — Create your Nuvrail account</h2>
+      <p className="text-slate-400 text-sm mb-4">
+        This is your <strong className="text-slate-200">Nuvrail login</strong> — not your email account credentials.
+        You'll connect your actual email in the next step.
+      </p>
       <form onSubmit={handleCreate} className="space-y-4">
         <div>
-          <label className="block text-sm font-medium text-slate-300 mb-1">Email</label>
+          <label className="block text-sm font-medium text-slate-300 mb-1">Your Nuvrail email address</label>
           <input
             type="email"
             value={email}
@@ -57,7 +61,7 @@ function AccountStep({ onDone }: { onDone: () => void }) {
           />
         </div>
         <div>
-          <label className="block text-sm font-medium text-slate-300 mb-1">Password</label>
+          <label className="block text-sm font-medium text-slate-300 mb-1">Choose a Nuvrail password</label>
           <input
             type="password"
             value={password}
@@ -185,7 +189,12 @@ function AgentStep() {
 
   return (
     <div>
-      <h2 className="text-lg font-semibold text-slate-200 mb-4">Step 2 — Connect your email</h2>
+      <h2 className="text-lg font-semibold text-slate-200 mb-2">Step 2 — Connect your email account</h2>
+      <p className="text-slate-400 text-sm mb-4">
+        Now enter your <strong className="text-slate-200">actual email account credentials</strong> —
+        the IMAP/SMTP server and login for the mailbox your AI agent will access.
+        These are stored encrypted and used only to connect to your mail server.
+      </p>
       <form onSubmit={handleGenerate} className="space-y-4">
         <div>
           <label className="block text-sm font-medium text-slate-300 mb-1">
