@@ -433,7 +433,16 @@ async def handle_smtp_client(
                 if m:
                     sender = m.group(1)
                     logger.debug("[%s] MAIL FROM: %s", peer_str, sender)
-                upstream_writer.write(line_bytes)
+                # Rewrite MAIL FROM with the upstream user's real address.
+                # The agent may send any From address (e.g. nuvrail_xxx@test.nuvrail.com);
+                # upstream will reject it unless it matches the authenticated account.
+                if upstream_credential is not None:
+                    real_from = upstream_credential["upstream_user"]
+                    rewritten_mail = f"MAIL FROM:<{real_from}>\r\n"
+                    upstream_writer.write(rewritten_mail.encode())
+                    logger.debug("[%s] MAIL FROM rewritten: %s → %s", peer_str, sender, real_from)
+                else:
+                    upstream_writer.write(line_bytes)
                 await upstream_writer.drain()
                 resp_lines = await _read_smtp_response(upstream_reader)
                 client_writer.write(b"".join(resp_lines))
