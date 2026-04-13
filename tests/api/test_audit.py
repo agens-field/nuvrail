@@ -20,12 +20,29 @@ from gateway.staging import create_operation, update_operation_status
 from gateway.state_db import get_db, init_db
 
 _FAKE_USER = {"id": 1, "email": "test@test.com", "display_name": None, "created_at": 0, "api_token": "testtoken"}
+_FAKE_AGENT_ID = 1  # agent_credentials.id for the fake user
 
 
 @pytest_asyncio.fixture(loop_scope="session")
 async def db_path(tmp_path_factory: pytest.TempPathFactory) -> Path:
     path = tmp_path_factory.mktemp("audit_test") / "nuvrail.db"
     await init_db(path)
+    # Insert the fake user and a fake agent credential so audit scoping works
+    async with get_db(path) as db:
+        await db.execute(
+            "INSERT OR IGNORE INTO users (id, email, hashed_password, api_token, created_at) VALUES (?, ?, ?, ?, ?)",
+            (_FAKE_USER["id"], _FAKE_USER["email"], "x", _FAKE_USER["api_token"], 0),
+        )
+        await db.execute(
+            """INSERT OR IGNORE INTO agent_credentials
+               (id, user_id, label, agent_username, hashed_token,
+                upstream_host, upstream_imap_port, upstream_smtp_port,
+                upstream_user, upstream_password, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (_FAKE_AGENT_ID, _FAKE_USER["id"], "test", "nuvrail_test", "x",
+             "imap.example.com", 993, 587, "test@example.com", "pass", 0),
+        )
+        await db.commit()
     return path
 
 
@@ -50,6 +67,7 @@ async def _create_op_with_audit(db_path: Path, op_type: str = "mark_read") -> st
     return await create_operation(
         op_type=op_type,
         protocol="imap",
+        agent_id=_FAKE_AGENT_ID,
         description=f"Test op ({op_type})",
         db_path=db_path,
     )
@@ -181,14 +199,20 @@ async def test_audit_list_joined_fields_after_approve(
 
 
 async def test_audit_get_single_entry(client: httpx.AsyncClient, db_path: Path) -> None:
-    """GET /audit/{id} returns the correct entry."""
-    raw_id = await _insert_raw_audit(db_path, event="staged", actor="ai_agent")
+    """GET /audit/{id} returns the correct entry (scoped to current user)."""
+    # Create an operation so there's a user-scoped audit entry to look up
+    await _create_op_with_audit(db_path)
+    # Get the latest entry id via the list endpoint
+    list_resp = await client.get("/api/v1/audit?limit=1")
+    assert list_resp.status_code == 200
+    entries = list_resp.json()["entries"]
+    assert entries, "Expected at least one audit entry"
+    entry_id = entries[0]["id"]
 
-    resp = await client.get(f"/api/v1/audit/{raw_id}")
+    resp = await client.get(f"/api/v1/audit/{entry_id}")
     assert resp.status_code == 200
     entry = resp.json()
-    assert entry["id"] == raw_id
-    assert entry["event"] == "staged"
+    assert entry["id"] == entry_id
 
 
 async def test_audit_get_not_found(client: httpx.AsyncClient) -> None:

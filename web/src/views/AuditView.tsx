@@ -176,7 +176,7 @@ export default function AuditView() {
       {/* Header */}
       <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
         <div>
-          <h1 className="text-xl font-semibold text-slate-100">Audit Log</h1>
+          <h1 className="text-xl font-semibold text-slate-100">Audit</h1>
           {data && (
             <p className="text-sm text-slate-400 mt-0.5">
               {data.total.toLocaleString()} total entries

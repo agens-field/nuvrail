@@ -74,8 +74,19 @@ async def list_audit(
 
     Paginates with limit/offset. Optional filters: event, actor.
     """
-    conditions: list[str] = []
-    params: list[object] = []
+    user_id = current_user["id"]
+    conditions: list[str] = [
+        # Scope to operations belonging to the current user's agents.
+        # audit_log.agent_id → agent_credentials.id → agent_credentials.user_id
+        # Also include system/expiry events where agent_id is NULL but the
+        # operation itself belongs to this user.
+        "(ac.user_id = ? OR (a.agent_id IS NULL AND op.id IS NOT NULL AND EXISTS ("
+        "  SELECT 1 FROM staged_operations op2"
+        "  JOIN agent_credentials ac2 ON op2.agent_id = ac2.id"
+        "  WHERE op2.id = a.operation_id AND ac2.user_id = ?"
+        ")))"
+    ]
+    params: list[object] = [user_id, user_id]
 
     if event is not None:
         conditions.append("a.event = ?")
@@ -84,15 +95,17 @@ async def list_audit(
         conditions.append("a.actor = ?")
         params.append(actor)
 
-    where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+    where = "WHERE " + " AND ".join(conditions)
 
-    # Count total matching rows
-    count_sql = f"""
-        SELECT COUNT(*) FROM audit_log a
+    # Both queries join agent_credentials so we can filter by user_id.
+    # LEFT JOIN keeps entries where agent_id is NULL (system events).
+    join_clause = """
+        FROM audit_log a
         LEFT JOIN staged_operations op ON a.operation_id = op.id
-        {where}
+        LEFT JOIN agent_credentials ac ON a.agent_id = ac.id
     """
-    # Fetch page
+
+    count_sql = f"SELECT COUNT(*) {join_clause} {where}"
     select_sql = f"""
         SELECT
             a.id,
@@ -106,8 +119,7 @@ async def list_audit(
             op.op_type       AS op_type,
             op.protocol      AS op_protocol,
             op.status        AS op_status
-        FROM audit_log a
-        LEFT JOIN staged_operations op ON a.operation_id = op.id
+        {join_clause}
         {where}
         ORDER BY a.id DESC
         LIMIT ? OFFSET ?
@@ -136,6 +148,7 @@ async def export_audit(
     Returns all entries (no pagination limit) with full joined operation detail.
     Suitable for compliance archival or external analysis.
     """
+    user_id = current_user["id"]
     select_sql = """
         SELECT
             a.id,
@@ -151,10 +164,16 @@ async def export_audit(
             op.status        AS op_status
         FROM audit_log a
         LEFT JOIN staged_operations op ON a.operation_id = op.id
+        LEFT JOIN agent_credentials ac ON a.agent_id = ac.id
+        WHERE (ac.user_id = ? OR (a.agent_id IS NULL AND op.id IS NOT NULL AND EXISTS (
+            SELECT 1 FROM staged_operations op2
+            JOIN agent_credentials ac2 ON op2.agent_id = ac2.id
+            WHERE op2.id = a.operation_id AND ac2.user_id = ?
+        )))
         ORDER BY a.id ASC
     """
     async with get_db(db_path) as db:
-        async with db.execute(select_sql) as cur:
+        async with db.execute(select_sql, (user_id, user_id)) as cur:
             rows = [dict(r) for r in await cur.fetchall()]
 
     entries = [_row_to_entry(r).model_dump() for r in rows]
@@ -171,6 +190,7 @@ async def get_audit_entry(
     current_user: dict = Depends(get_current_user),
 ) -> AuditEntry:
     """Retrieve a single audit log entry by its integer ID."""
+    user_id = current_user["id"]
     select_sql = """
         SELECT
             a.id,
@@ -186,10 +206,16 @@ async def get_audit_entry(
             op.status        AS op_status
         FROM audit_log a
         LEFT JOIN staged_operations op ON a.operation_id = op.id
+        LEFT JOIN agent_credentials ac ON a.agent_id = ac.id
         WHERE a.id = ?
+          AND (ac.user_id = ? OR (a.agent_id IS NULL AND op.id IS NOT NULL AND EXISTS (
+              SELECT 1 FROM staged_operations op2
+              JOIN agent_credentials ac2 ON op2.agent_id = ac2.id
+              WHERE op2.id = a.operation_id AND ac2.user_id = ?
+          )))
     """
     async with get_db(db_path) as db:
-        async with db.execute(select_sql, (entry_id,)) as cur:
+        async with db.execute(select_sql, (entry_id, user_id, user_id)) as cur:
             row = await cur.fetchone()
 
     if row is None:
