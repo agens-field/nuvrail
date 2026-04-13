@@ -518,6 +518,7 @@ async def handle_smtp_client(
                     op_id = await create_operation(
                         op_type="smtp_send",
                         protocol="smtp",
+                        agent_id=upstream_credential["id"] if upstream_credential else None,
                         description=(
                             f"Send email to {', '.join(recipients or ['<unknown>'])} "
                             f"— Subject: \"{subject}\""

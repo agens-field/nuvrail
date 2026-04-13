@@ -359,6 +359,7 @@ async def _client_to_upstream(
                 op_id = await create_operation(
                     op_type=parsed_op.op_type,
                     protocol="imap",
+                    agent_id=session.get("agent_id"),
                     description=parsed_op.description,
                     imap_command=parsed_op.imap_command,
                     folder_to=parsed_op.folder_to,
@@ -469,6 +470,7 @@ async def _client_to_upstream(
                     op_id = await create_operation(
                         op_type=parsed_op.op_type,
                         protocol="imap",
+                        agent_id=session.get("agent_id"),
                         description=parsed_op.description,
                         imap_command=parsed_op.imap_command,
                         message_ids=parsed_op.message_ids if parsed_op.message_ids else None,
@@ -484,6 +486,7 @@ async def _client_to_upstream(
                     op_id = await create_operation(
                         op_type=parsed.command.lower(),
                         protocol="imap",
+                        agent_id=session.get("agent_id"),
                         description=f"{parsed.command} {' '.join(parsed.args)}".strip(),
                         imap_command=raw,
                     )
@@ -795,6 +798,7 @@ async def handle_client(
         "select_lines": [],          # untagged lines accumulate during SELECT
         "in_select": False,          # True while accumulating SELECT response lines
         "revert_trigger_tag": None,  # tag of last SELECT/NOOP/FETCH (triggers revert injection)
+        "agent_id": credential["id"],  # agent_credentials.id for staging
     }
     c2u = asyncio.create_task(
         _client_to_upstream(client_reader, upstream_writer, client_writer, session, peer_str, _db_path)

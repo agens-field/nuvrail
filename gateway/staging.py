@@ -41,6 +41,7 @@ async def create_operation(
     op_type: str,
     protocol: str,
     description: str,
+    agent_id: Optional[int] = None,
     imap_command: Optional[str] = None,
     smtp_envelope: Optional[dict] = None,
     message_ids: Optional[list] = None,
@@ -73,7 +74,7 @@ async def create_operation(
                 imap_command, smtp_envelope, description, agent_id,
                 message_ids, folder_from, folder_to, flags_add, flags_remove,
                 snapshot, is_urgent
-            ) VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 op_id,
@@ -84,6 +85,7 @@ async def create_operation(
                 imap_command,
                 json.dumps(smtp_envelope) if smtp_envelope is not None else None,
                 description,
+                agent_id,
                 json.dumps(message_ids) if message_ids is not None else None,
                 folder_from,
                 folder_to,

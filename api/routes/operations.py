@@ -92,12 +92,27 @@ def get_db_path() -> Path:
 # ---------------------------------------------------------------------------
 
 
-async def _execute_imap_upstream(row: dict) -> None:
+async def _get_agent_credential(agent_id: Optional[int], db_path: Path) -> Optional[dict]:
+    """Look up agent_credentials row by id. Returns None if not found."""
+    if agent_id is None:
+        return None
+    from gateway.state_db import get_db as _get_db  # noqa: PLC0415
+    async with _get_db(db_path) as db:
+        async with db.execute(
+            "SELECT * FROM agent_credentials WHERE id = ?", (agent_id,)
+        ) as cur:
+            row = await cur.fetchone()
+    return dict(row) if row else None
+
+
+async def _execute_imap_upstream(row: dict, db_path: Path) -> None:
     """
     Replay a staged IMAP operation against the upstream server.
 
-    Opens a fresh IMAP4_SSL connection, authenticates with plain LOGIN
-    using upstream credentials from env, executes the operation, logs out.
+    Opens a fresh IMAP4_SSL connection using the agent's registered upstream
+    credentials (looked up from agent_credentials by agent_id on the operation).
+    Falls back to NUVRAIL_TEST_IMAP_* env vars if agent_id is not set
+    (for backwards compatibility with older staged operations).
 
     Supported op_types: store, move, copy, create, rename, trash, mark_read,
     flag, unflag, mark_unread (all map to UID STORE or UID MOVE/COPY/etc).
@@ -106,10 +121,25 @@ async def _execute_imap_upstream(row: dict) -> None:
     Raises RuntimeError on any upstream error so the caller can set
     operation status → 'failed'.
     """
-    imap_host = os.environ.get("NUVRAIL_TEST_IMAP_HOST", "")
-    imap_port = int(os.environ.get("NUVRAIL_TEST_IMAP_PORT", "993"))
-    imap_user = os.environ.get("NUVRAIL_TEST_IMAP_USER", "")
-    imap_pass = os.environ.get("NUVRAIL_TEST_IMAP_PASS", "")
+    from gateway.credentials import decrypt_credential  # noqa: PLC0415
+
+    agent_id = row.get("agent_id")
+    cred = await _get_agent_credential(agent_id, db_path)
+    if cred:
+        imap_host = cred["upstream_host"]
+        imap_port = int(cred["upstream_imap_port"])
+        imap_user = cred["upstream_user"]
+        imap_pass = decrypt_credential(cred["upstream_password"])
+    else:
+        # Fallback for ops staged before agent_id was tracked
+        imap_host = os.environ.get("NUVRAIL_TEST_IMAP_HOST", "")
+        imap_port = int(os.environ.get("NUVRAIL_TEST_IMAP_PORT", "993"))
+        imap_user = os.environ.get("NUVRAIL_TEST_IMAP_USER", "")
+        imap_pass = os.environ.get("NUVRAIL_TEST_IMAP_PASS", "")
+        if not imap_host:
+            raise RuntimeError(
+                f"Operation {row['id']} has no agent_id and no fallback env vars set"
+            )
 
     op_type = row.get("op_type", "")
     imap_command = row.get("imap_command") or ""
@@ -257,13 +287,27 @@ async def _do_approve(op_id: str, row: dict, db_path: Path) -> ApproveResponse:
         subject = envelope.get("subject", "<no subject>")
         body_preview = envelope.get("body_preview", "")
 
-        smtp_host = os.environ.get("NUVRAIL_TEST_SMTP_HOST", "")
-        smtp_port = int(os.environ.get("NUVRAIL_TEST_SMTP_PORT", "587"))
-        smtp_user = os.environ.get("NUVRAIL_TEST_SMTP_USER", "")
-        smtp_pass = os.environ.get("NUVRAIL_TEST_SMTP_PASS", "")
+        from gateway.credentials import decrypt_credential  # noqa: PLC0415
+        agent_id = row.get("agent_id")
+        cred = await _get_agent_credential(agent_id, db_path)
+        if cred:
+            smtp_host = cred["upstream_host"]
+            smtp_port = int(cred["upstream_smtp_port"])
+            smtp_user = cred["upstream_user"]
+            smtp_pass = decrypt_credential(cred["upstream_password"])
+        else:
+            smtp_host = os.environ.get("NUVRAIL_TEST_SMTP_HOST", "")
+            smtp_port = int(os.environ.get("NUVRAIL_TEST_SMTP_PORT", "587"))
+            smtp_user = os.environ.get("NUVRAIL_TEST_SMTP_USER", "")
+            smtp_pass = os.environ.get("NUVRAIL_TEST_SMTP_PASS", "")
+            if not smtp_host:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Operation {op_id} has no agent_id and no fallback env vars set",
+                )
 
         msg = MIMEText(body_preview or "(no body)", "plain")
-        msg["From"] = sender or smtp_user
+        msg["From"] = smtp_user  # always use real upstream address
         msg["To"] = ", ".join(recipients) if isinstance(recipients, list) else recipients
         msg["Subject"] = subject
 
@@ -294,7 +338,7 @@ async def _do_approve(op_id: str, row: dict, db_path: Path) -> ApproveResponse:
     else:
         # IMAP ops: replay the stored command against the upstream IMAP server.
         try:
-            await _execute_imap_upstream(row)
+            await _execute_imap_upstream(row, db_path)
         except Exception as exc:
             logger.error("[approve] IMAP execution failed for %s: %s", op_id, exc)
             await update_operation_status(op_id, "failed", error=str(exc), db_path=db_path)
