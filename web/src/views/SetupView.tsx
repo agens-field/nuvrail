@@ -142,7 +142,7 @@ function AgentStep() {
         <div className="bg-slate-700 border border-amber-500 rounded-lg p-4 font-mono text-sm space-y-2">
           <p className="text-amber-400 font-semibold mb-3">⚠ Shown once — save these now</p>
           <div className="text-slate-300">
-            <span className="text-slate-500">IMAP server: </span>localhost (or your proxy host)
+            <span className="text-slate-500">IMAP server: </span>{import.meta.env.VITE_PROXY_HOST ?? 'test.nuvrail.com'}
           </div>
           <div className="text-slate-300">
             <span className="text-slate-500">IMAP port:   </span>10143
