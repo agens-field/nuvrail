@@ -75,7 +75,7 @@ export default function App() {
                       `${NAV_LINK_BASE} ${isActive ? NAV_LINK_ACTIVE : NAV_LINK_INACTIVE}`
                     }
                   >
-                    Audit Log
+                    Audit
                   </NavLink>
                   <NavLink
                     to="/agents"
