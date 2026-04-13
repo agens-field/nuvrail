@@ -251,6 +251,18 @@ Push payload: `{title, body: description, urgent: bool, operation_id, url: "/"}`
 
 ---
 
+### ✅ Deployed — test.nuvrail.com
+
+**Status: DONE (2026-04-13)**
+
+- Docker Compose running: IMAP proxy + SMTP proxy + FastAPI + web app
+- TLS via Let's Encrypt / certbot
+- nginx reverse proxy on host
+- Per-agent upstream routing live (TODO 0.3 closed)
+- MAIL FROM rewrite — agents don't need to know the real upstream address
+
+---
+
 ### 🔲 Sub-milestone 0.0 — Dev Environment + Gmail OAuth2 Setup
 
 **Status: IN PROGRESS (mmodahl)**
@@ -263,21 +275,15 @@ Smoke test script: `scripts/test_gmail_auth.py` — OAuth2 consent → token sto
 
 ---
 
-### 🔲 Sub-milestone 0.3 — XOAUTH2 / Real Auth Integration
+### ✅ Sub-milestone 0.3 — Per-Agent Upstream Routing
 
-**Status: WAITING ON 0.0**
+**Status: DONE (2026-04-13)**
 
-`gateway/token_store.py` and `gateway/upstream.py` stubs exist. `gateway/providers/gmail.py` stub exists. Provider abstraction layer (`gateway/providers/base.py`) exists.
+Both IMAP and SMTP proxies now defer opening the upstream connection until after agent authentication. The upstream host/port/credentials come from the `agent_credentials` row, not static env vars. Each agent can point to a different IMAP/SMTP server.
 
-**Work remaining:**
-- [ ] Complete `token_store.py`: `get_access_token()`, `refresh_token()`, failure → `AuthenticationError`
-- [ ] Complete `gateway/providers/gmail.py`: `build_xoauth2_string()`, full XOAUTH2 auth against `imap.gmail.com:993`
-- [ ] Wire into `proxy.py`: on client LOGIN → call `get_access_token()` → upstream AUTHENTICATE XOAUTH2
-- [ ] SMTP: wire `token_store` into `smtp_proxy.py` (same TODO comment at line 349)
-- [ ] Token refresh transparent on upstream auth failure; single retry; BYE on second failure
-- [ ] Unit test: `build_xoauth2_string()` matches Google's documented format exactly
+Also: `MAIL FROM` is rewritten with `upstream_user` so agents don't need to know or specify the real email address.
 
-**Exit criteria:** Proxy authenticates to Gmail via real OAuth2. Token refresh is automatic. No credentials in code.
+Note: XOAUTH2/Gmail OAuth2 is a separate concern — tracked as Phase 2 when we add multi-provider support.
 
 ---
 
