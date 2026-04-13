@@ -49,7 +49,6 @@ from gateway.imap_parser import ParsedCommand, parse_line
 from gateway.imap_response_parser import parse_fetch_line, parse_list_response, parse_select_response
 from gateway.operation_parser import ParsedOperation, parse_append, parse_copy, parse_move, parse_store
 from gateway.credentials import decrypt_credential
-from gateway.credentials import decrypt_credential
 from gateway.staging import create_operation
 from gateway.state_db import (
     DB_PATH,
@@ -68,9 +67,6 @@ from gateway.state_db import (
 load_dotenv()
 
 logger = logging.getLogger(__name__)
-
-_UPSTREAM_HOST: str = os.environ.get("NUVRAIL_TEST_IMAP_HOST", "")
-_UPSTREAM_PORT: int = int(os.environ.get("NUVRAIL_TEST_IMAP_PORT", "993"))
 
 _READ_CHUNK = 4096
 
@@ -314,6 +310,9 @@ async def _client_to_upstream(
 ) -> None:
     """Parse each client line and route: read→upstream, write/blocked→intercept.
 
+    AUTH/LOGIN is handled upstream in handle_client before this coroutine starts.
+    All commands arriving here are post-authentication.
+
     Handles sync literals ({N} at end of line) by consuming the literal body
     from the client and responding with OK [STAGED] without forwarding.
     """
@@ -326,47 +325,6 @@ async def _client_to_upstream(
             break
 
         raw = line_bytes.decode("utf-8", errors="replace").rstrip("\r\n")
-
-        # --- LOGIN intercept — verify agent credentials ----------------------
-        # If this is a LOGIN command, verify the agent_username + agent_token
-        # against the agent_credentials table. On success, rewrite the LOGIN
-        # command with the stored upstream credentials before forwarding.
-        #
-        # Phase 0 upstream rewrite flow:
-        #   Client sends: <tag> LOGIN nuvrail_xxxx <agent_token>
-        #   Proxy verifies: agent_credentials table lookup + bcrypt verify
-        #   Proxy rewrites: <tag> LOGIN upstream_user upstream_password
-        #   Proxy forwards: rewritten LOGIN to upstream IMAP server
-        #
-        # TODO 0.3: use credential upstream_host/port for dynamic upstream routing
-        parts = raw.split()
-        if len(parts) >= 3 and parts[1].upper() == "LOGIN":
-            agent_user = parts[2] if len(parts) > 2 else ""
-            agent_pass = parts[3] if len(parts) > 3 else ""
-            # Verify agent username + token against agent_credentials table
-            credential = await _verify_agent_credential(agent_user, agent_pass, db_path)
-            if credential is None:
-                # Reject: send BYE and close the connection
-                tag = parts[0] if parts else "*"
-                try:
-                    client_writer.write(
-                        f"* BYE Authentication failed\r\n"
-                        f"{tag} NO Authentication credentials invalid\r\n".encode()
-                    )
-                    await client_writer.drain()
-                except OSError:
-                    pass
-                logger.warning("[%s] Agent auth failed for user=%s", peer, agent_user)
-                return  # exits the loop, triggers cleanup
-            # Rewrite LOGIN with stored upstream credentials before forwarding.
-            # Phase 0: use env-var upstream (same host/port). Agent token is
-            # never forwarded. Passwords never logged.
-            upstream_user = credential["upstream_user"]
-            upstream_password = decrypt_credential(credential["upstream_password"])
-            tag = parts[0]
-            rewritten = f"{tag} LOGIN {upstream_user} {upstream_password}\r\n"
-            line_bytes = rewritten.encode()
-            logger.info("[%s] Agent authenticated: %s → upstream user: %s", peer, agent_user, upstream_user)
 
         # --- Parse line -------------------------------------------------------
         parsed = parse_line(raw)
@@ -633,39 +591,199 @@ async def handle_client(
     client_reader: asyncio.StreamReader,
     client_writer: asyncio.StreamWriter,
 ) -> None:
-    """Handle one client connection: open upstream SSL, pump bytes bidirectionally."""
+    """
+    Handle one client connection.
+
+    Auth-before-upstream flow:
+
+      Client connects
+          │
+          ▼
+      Proxy sends synthetic greeting (no upstream yet)
+          │
+          ▼
+      Wait for LOGIN command
+          │  verify agent_username + token against agent_credentials
+          ├─ fail → BYE + close
+          │
+          ▼
+      Open SSL connection to upstream using credential.upstream_host/port
+          │
+          ▼
+      Rewrite LOGIN with upstream_user + upstream_password → forward
+          │
+          ▼
+      Bidirectional pump (c2u + u2c tasks)
+
+    This means the upstream host/port comes from the per-agent credential row,
+    not from a static env var — each agent can point to a different IMAP server.
+    """
     peer = client_writer.get_extra_info("peername", ("?", 0))
     peer_str = f"{peer[0]}:{peer[1]}"
     logger.info("[%s] Client connected", peer_str)
 
-    # Open SSL connection to upstream immediately.
+    import gateway.state_db as _state_db_mod
+    _db_path = _state_db_mod.DB_PATH
+
+    # Safety net: init_db is idempotent.
+    try:
+        await init_db(_db_path)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[%s] init_db safety call failed: %s", peer_str, exc)
+
+    # --- Step 1: Send synthetic greeting to client (no upstream yet) ----------
+    try:
+        client_writer.write(b"* OK Nuvrail IMAP proxy ready\r\n")
+        await client_writer.drain()
+    except OSError as exc:
+        logger.error("[%s] Failed to send greeting: %s", peer_str, exc)
+        client_writer.close()
+        return
+
+    # --- Step 2: Wait for LOGIN and verify agent credentials ------------------
+    credential: Optional[dict] = None
+    login_tag: str = "*"
+    login_line_bytes: bytes = b""
+
+    while credential is None:
+        try:
+            line_bytes = await client_reader.readline()
+        except (asyncio.IncompleteReadError, ConnectionResetError, OSError):
+            client_writer.close()
+            return
+        if not line_bytes:
+            client_writer.close()
+            return
+
+        raw = line_bytes.decode("utf-8", errors="replace").rstrip("\r\n")
+        parts = raw.split()
+        if not parts:
+            continue
+
+        cmd = parts[1].upper() if len(parts) > 1 else ""
+
+        if cmd == "CAPABILITY":
+            # Some clients issue CAPABILITY before LOGIN; respond locally.
+            tag = parts[0]
+            try:
+                client_writer.write(
+                    f"* CAPABILITY IMAP4rev1 AUTH=PLAIN\r\n"
+                    f"{tag} OK CAPABILITY completed\r\n".encode()
+                )
+                await client_writer.drain()
+            except OSError:
+                client_writer.close()
+                return
+            continue
+
+        if cmd == "LOGOUT":
+            tag = parts[0]
+            try:
+                client_writer.write(
+                    f"* BYE Logging out\r\n"
+                    f"{tag} OK LOGOUT completed\r\n".encode()
+                )
+                await client_writer.drain()
+            except OSError:
+                pass
+            client_writer.close()
+            return
+
+        if cmd != "LOGIN":
+            # Reject any other command before authentication
+            tag = parts[0]
+            try:
+                client_writer.write(
+                    f"{tag} NO Please authenticate first\r\n".encode()
+                )
+                await client_writer.drain()
+            except OSError:
+                client_writer.close()
+                return
+            continue
+
+        # LOGIN command
+        login_tag = parts[0]
+        agent_user = parts[2] if len(parts) > 2 else ""
+        agent_pass = parts[3] if len(parts) > 3 else ""
+
+        credential = await _verify_agent_credential(agent_user, agent_pass, _db_path)
+        if credential is None:
+            try:
+                client_writer.write(
+                    f"* BYE Authentication failed\r\n"
+                    f"{login_tag} NO Authentication credentials invalid\r\n".encode()
+                )
+                await client_writer.drain()
+            except OSError:
+                pass
+            logger.warning("[%s] Agent auth failed for user=%s", peer_str, agent_user)
+            client_writer.close()
+            return
+
+        logger.info(
+            "[%s] Agent authenticated: %s → upstream %s:%d user=%s",
+            peer_str, agent_user,
+            credential["upstream_host"], credential["upstream_imap_port"],
+            credential["upstream_user"],
+        )
+
+        # Rewrite LOGIN with upstream credentials for forwarding after connection
+        upstream_user = credential["upstream_user"]
+        upstream_password = decrypt_credential(credential["upstream_password"])
+        login_line_bytes = (
+            f"{login_tag} LOGIN {upstream_user} {upstream_password}\r\n".encode()
+        )
+
+    # --- Step 3: Open upstream connection using per-agent host/port -----------
+    upstream_host = credential["upstream_host"]
+    upstream_port = int(credential["upstream_imap_port"])
     ssl_ctx = ssl.create_default_context()
     try:
         upstream_reader, upstream_writer = await asyncio.open_connection(
-            _UPSTREAM_HOST,
-            _UPSTREAM_PORT,
-            ssl=ssl_ctx,
+            upstream_host, upstream_port, ssl=ssl_ctx,
         )
     except Exception as exc:
         logger.error(
             "[%s] Failed to connect to upstream %s:%d — %s",
-            peer_str, _UPSTREAM_HOST, _UPSTREAM_PORT, exc,
+            peer_str, upstream_host, upstream_port, exc,
         )
         try:
-            client_writer.write(b"* BYE Upstream connection failed\r\n")
+            client_writer.write(
+                f"{login_tag} NO Upstream connection failed\r\n".encode()
+            )
             await client_writer.drain()
         except OSError:
             pass
         client_writer.close()
         return
 
-    # Forward the upstream greeting to the client.
+    # --- Step 4: Consume upstream greeting (not forwarded — client already got ours)
     try:
-        greeting = await upstream_reader.readline()
-        client_writer.write(greeting)
-        await client_writer.drain()
+        await upstream_reader.readline()
     except (OSError, asyncio.IncompleteReadError) as exc:
         logger.error("[%s] Failed to read upstream greeting: %s", peer_str, exc)
+        client_writer.close()
+        upstream_writer.close()
+        return
+
+    # --- Step 5: Forward the rewritten LOGIN to upstream ---------------------
+    try:
+        upstream_writer.write(login_line_bytes)
+        await upstream_writer.drain()
+    except (OSError, BrokenPipeError) as exc:
+        logger.error("[%s] Failed to forward LOGIN to upstream: %s", peer_str, exc)
+        client_writer.close()
+        upstream_writer.close()
+        return
+
+    # Read the upstream LOGIN response and forward to client
+    try:
+        login_resp = await upstream_reader.readline()
+        client_writer.write(login_resp)
+        await client_writer.drain()
+    except (OSError, asyncio.IncompleteReadError) as exc:
+        logger.error("[%s] Failed to forward LOGIN response: %s", peer_str, exc)
         client_writer.close()
         upstream_writer.close()
         return
@@ -678,19 +796,6 @@ async def handle_client(
         "in_select": False,          # True while accumulating SELECT response lines
         "revert_trigger_tag": None,  # tag of last SELECT/NOOP/FETCH (triggers revert injection)
     }
-
-    # Safety net: init_db is idempotent; start_proxy already called it.
-    try:
-        await init_db(DB_PATH)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("[%s] init_db safety call failed: %s", peer_str, exc)
-
-    # Start bidirectional pump.
-    # NOTE: db_path is read from the gateway.state_db module at call time so that
-    # test fixtures can patch gateway.state_db.DB_PATH / gateway.proxy.DB_PATH
-    # after import and have it take effect for in-flight connections.
-    import gateway.state_db as _state_db_mod
-    _db_path = _state_db_mod.DB_PATH
     c2u = asyncio.create_task(
         _client_to_upstream(client_reader, upstream_writer, client_writer, session, peer_str, _db_path)
     )
@@ -732,8 +837,8 @@ async def start_proxy(host: str, port: int) -> asyncio.AbstractServer:
     server = await asyncio.start_server(handle_client, host, port)
     actual = server.sockets[0].getsockname()
     logger.info(
-        "Nuvrail IMAP proxy listening on %s:%d → upstream %s:%d",
-        actual[0], actual[1], _UPSTREAM_HOST, _UPSTREAM_PORT,
+        "Nuvrail IMAP proxy listening on %s:%d (upstream host/port per agent credential)",
+        actual[0], actual[1],
     )
     return server
 

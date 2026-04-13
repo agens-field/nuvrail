@@ -68,16 +68,12 @@ from typing import Optional
 from dotenv import load_dotenv
 
 from gateway.credentials import decrypt_credential
-from gateway.credentials import decrypt_credential
 from gateway.staging import create_operation
 from gateway.state_db import DB_PATH, get_db
 
 load_dotenv()
 
 logger = logging.getLogger(__name__)
-
-_UPSTREAM_HOST: str = os.environ.get("NUVRAIL_TEST_SMTP_HOST", "")
-_UPSTREAM_PORT: int = int(os.environ.get("NUVRAIL_TEST_SMTP_PORT", "587"))
 
 # Regex helpers for envelope extraction
 _MAIL_FROM_RE = re.compile(r"MAIL FROM:\s*<([^>]*)>", re.IGNORECASE)
@@ -236,54 +232,48 @@ async def handle_smtp_client(
     client_reader: asyncio.StreamReader,
     client_writer: asyncio.StreamWriter,
 ) -> None:
-    """Handle one SMTP client connection.
+    """
+    Handle one SMTP client connection.
 
-    Connects upstream, negotiates STARTTLS, then drives a synchronous
-    request/response loop — intercepting DATA to stage messages instead of
-    forwarding them.
+    Auth-before-upstream flow:
+
+      Client connects
+          │
+          ▼
+      Proxy sends synthetic 220 greeting (no upstream yet)
+          │
+          ▼
+      Relay EHLO locally with synthetic capabilities
+          │
+          ▼
+      Wait for AUTH — verify agent credentials
+          ├─ fail → 535 + close
+          │
+          ▼
+      Open upstream using credential.upstream_host/upstream_smtp_port
+      Negotiate STARTTLS, authenticate to upstream with real credentials
+          │
+          ▼
+      Continue command loop (MAIL FROM, RCPT TO, DATA, QUIT)
+
+    Each agent's upstream host/port comes from agent_credentials row.
     """
     peer = client_writer.get_extra_info("peername", ("?", 0))
     peer_str = f"{peer[0]}:{peer[1]}"
     logger.info("[%s] SMTP client connected", peer_str)
 
-    # --- Connect upstream and negotiate STARTTLS ----------------------------
+    # --- Step 1: Send synthetic greeting — no upstream connection yet --------
     try:
-        upstream_reader, upstream_writer, greeting_bytes = await _connect_upstream_starttls(
-            _UPSTREAM_HOST, _UPSTREAM_PORT
-        )
-    except Exception as exc:
-        logger.error(
-            "[%s] Failed to connect to upstream %s:%d — %s",
-            peer_str,
-            _UPSTREAM_HOST,
-            _UPSTREAM_PORT,
-            exc,
-        )
-        try:
-            client_writer.write(b"421 Service temporarily unavailable\r\n")
-            await client_writer.drain()
-        except OSError:
-            pass
-        client_writer.close()
-        return
-
-    # --- Forward 220 greeting to client ------------------------------------
-    try:
-        client_writer.write(greeting_bytes)
+        client_writer.write(b"220 Nuvrail SMTP proxy ready\r\n")
         await client_writer.drain()
     except OSError as exc:
-        logger.error("[%s] Failed to send greeting to client: %s", peer_str, exc)
-        upstream_writer.close()
+        logger.error("[%s] Failed to send greeting: %s", peer_str, exc)
         client_writer.close()
         return
 
-    # Read the post-STARTTLS EHLO response we triggered in _connect_upstream_starttls
-    # so the upstream reader is positioned at the next response.
-    post_tls_ehlo = await _read_smtp_response(upstream_reader)
-    # Store capabilities so we can respond to the client's first EHLO quickly
-    # by forwarding a live response (we'll re-send EHLO when client sends it).
-    # We don't use post_tls_ehlo here — just drain it to clear the buffer.
-    _ = post_tls_ehlo
+    upstream_reader: Optional[asyncio.StreamReader] = None
+    upstream_writer: Optional[asyncio.StreamWriter] = None
+    upstream_credential: Optional[dict] = None
 
     # --- Envelope tracking -------------------------------------------------
     sender: Optional[str] = None
@@ -305,21 +295,28 @@ async def handle_smtp_client(
             logger.debug("[%s] C→P: %s", peer_str, line)
 
             # ----------------------------------------------------------------
-            # AUTH — verify agent credentials, then pass through
+            # EHLO / HELO — respond locally before upstream is connected
+            # ----------------------------------------------------------------
+            if cmd in ("EHLO", "HELO"):
+                client_writer.write(
+                    b"250-Nuvrail proxy\r\n"
+                    b"250-AUTH PLAIN LOGIN\r\n"
+                    b"250-SIZE 52428800\r\n"
+                    b"250 8BITMIME\r\n"
+                )
+                await client_writer.drain()
+                continue
+
+            # ----------------------------------------------------------------
+            # AUTH — verify agent credentials, then open upstream connection
             # ----------------------------------------------------------------
             if cmd == "AUTH":
                 parts = line.split()
                 mech = parts[1].upper() if len(parts) > 1 else ""
-
-                # For AUTH PLAIN with inline credentials, verify immediately.
-                # AUTH LOGIN is multi-step; we verify after collecting the password.
-                agent_auth_ok: Optional[bool] = None  # None = deferred to multi-step
-
-                upstream_credential: Optional[dict] = None  # stored upstream cred row
+                cred: Optional[dict] = None
 
                 if mech == "PLAIN" and len(parts) >= 3:
                     import base64 as _b64  # noqa: PLC0415
-
                     try:
                         decoded = _b64.b64decode(parts[2])
                         auth_parts = decoded.split(b"\x00")
@@ -328,66 +325,110 @@ async def handle_smtp_client(
                     except Exception:
                         agent_user, agent_pass_plain = "", ""
                     cred = await _verify_smtp_agent_credential(agent_user, agent_pass_plain)
-                    agent_auth_ok = cred is not None
-                    if agent_auth_ok:
-                        upstream_credential = cred
-                        logger.info("[%s] SMTP agent authenticated via AUTH PLAIN: %s", peer_str, agent_user)
+                    if cred:
+                        logger.info("[%s] SMTP agent authenticated: %s", peer_str, agent_user)
                     else:
                         logger.warning("[%s] SMTP AUTH PLAIN failed for user=%s", peer_str, agent_user)
 
-                elif mech == "LOGIN":
-                    # TODO 0.3: translate AUTH LOGIN to XOAUTH2 for OAuth2 providers
-                    logger.info("[%s] AUTH LOGIN [multi-step — deferring credential check]", peer_str)
-                    # agent_auth_ok stays None; we pass through (Phase 0 limitation)
-                else:
-                    logger.info("[%s] AUTH %s [credentials redacted]", peer_str, mech)
+                elif mech == "PLAIN" and len(parts) < 3:
+                    # AUTH PLAIN without inline credentials — send challenge
+                    client_writer.write(b"334 \r\n")
+                    await client_writer.drain()
+                    cred_line = await client_reader.readline()
+                    import base64 as _b64c  # noqa: PLC0415
+                    try:
+                        decoded = _b64c.b64decode(cred_line.strip())
+                        auth_parts = decoded.split(b"\x00")
+                        agent_user = auth_parts[1].decode("utf-8", errors="replace") if len(auth_parts) >= 3 else ""
+                        agent_pass_plain = auth_parts[2].decode("utf-8", errors="replace") if len(auth_parts) >= 3 else ""
+                    except Exception:
+                        agent_user, agent_pass_plain = "", ""
+                    cred = await _verify_smtp_agent_credential(agent_user, agent_pass_plain)
 
-                # If we already know auth failed, reject immediately
-                if agent_auth_ok is False:
+                elif mech == "LOGIN":
+                    # AUTH LOGIN multi-step
+                    import base64 as _b64l  # noqa: PLC0415
+                    client_writer.write(b"334 " + _b64l.b64encode(b"Username:") + b"\r\n")
+                    await client_writer.drain()
+                    user_b64 = await client_reader.readline()
+                    client_writer.write(b"334 " + _b64l.b64encode(b"Password:") + b"\r\n")
+                    await client_writer.drain()
+                    pass_b64 = await client_reader.readline()
+                    try:
+                        agent_user = _b64l.b64decode(user_b64.strip()).decode("utf-8", errors="replace")
+                        agent_pass_plain = _b64l.b64decode(pass_b64.strip()).decode("utf-8", errors="replace")
+                    except Exception:
+                        agent_user, agent_pass_plain = "", ""
+                    cred = await _verify_smtp_agent_credential(agent_user, agent_pass_plain)
+
+                else:
+                    client_writer.write(b"504 Authentication mechanism not supported\r\n")
+                    await client_writer.drain()
+                    continue
+
+                if cred is None:
                     client_writer.write(b"535 5.7.8 Authentication credentials invalid\r\n")
                     await client_writer.drain()
-                    logger.warning("[%s] SMTP connection closed after auth failure", peer_str)
+                    logger.warning("[%s] SMTP auth failed — closing", peer_str)
                     break
 
-                # Rewrite AUTH PLAIN with upstream credentials if we have them.
-                # The agent token is never forwarded to the upstream.
-                # Phase 0: use stored upstream_user + upstream_password.
-                # TODO 0.3: use credential upstream_host/port for dynamic routing.
-                if upstream_credential is not None and mech == "PLAIN":
-                    import base64 as _b64r  # noqa: PLC0415
+                # Auth succeeded — open upstream using per-agent host/port
+                upstream_host = cred["upstream_host"]
+                upstream_port = int(cred["upstream_smtp_port"])
+                up_user = cred["upstream_user"]
+                up_pass = decrypt_credential(cred["upstream_password"])
 
-                    up_user = upstream_credential["upstream_user"]
-                    up_pass = decrypt_credential(upstream_credential["upstream_password"])
-                    rewritten_b64 = _b64r.b64encode(
-                        f"\x00{up_user}\x00{up_pass}".encode()
-                    ).decode()
-                    rewritten_line = f"AUTH PLAIN {rewritten_b64}\r\n"
-                    upstream_writer.write(rewritten_line.encode())
-                else:
-                    # Pass through unchanged (AUTH LOGIN multi-step or unknown mech)
-                    upstream_writer.write(line_bytes)
-                await upstream_writer.drain()
-
-                # AUTH LOGIN is multi-step: relay challenge/response pairs
-                # until we get a final 2xx or 5xx response.
-                while True:
-                    resp_lines = await _read_smtp_response(upstream_reader)
-                    resp_bytes = b"".join(resp_lines)
-                    client_writer.write(resp_bytes)
+                try:
+                    upstream_reader, upstream_writer, _ = await _connect_upstream_starttls(
+                        upstream_host, upstream_port
+                    )
+                except Exception as exc:
+                    logger.error(
+                        "[%s] Failed to connect to upstream %s:%d — %s",
+                        peer_str, upstream_host, upstream_port, exc,
+                    )
+                    client_writer.write(b"421 Service temporarily unavailable\r\n")
                     await client_writer.drain()
-                    if resp_lines and not resp_lines[0].startswith(b"334"):
-                        break  # final response (235 OK or 535 error)
-                    # 334 = challenge; read next client response and forward
-                    challenge_bytes = await client_reader.readline()
-                    if not challenge_bytes:
-                        break
-                    upstream_writer.write(challenge_bytes)
-                    await upstream_writer.drain()
+                    break
+
+                # Drain the post-STARTTLS EHLO response
+                await _read_smtp_response(upstream_reader)
+
+                # Authenticate to upstream with real credentials
+                import base64 as _b64u  # noqa: PLC0415
+                rewritten_b64 = _b64u.b64encode(
+                    f"\x00{up_user}\x00{up_pass}".encode()
+                ).decode()
+                upstream_writer.write(f"AUTH PLAIN {rewritten_b64}\r\n".encode())
+                await upstream_writer.drain()
+                upstream_auth_resp = await _read_smtp_response(upstream_reader)
+                if not upstream_auth_resp or not upstream_auth_resp[0].startswith(b"235"):
+                    logger.error("[%s] Upstream AUTH failed: %r", peer_str, upstream_auth_resp)
+                    client_writer.write(b"535 5.7.8 Upstream authentication failed\r\n")
+                    await client_writer.drain()
+                    break
+
+                upstream_credential = cred
+                client_writer.write(b"235 2.7.0 Authentication succeeded\r\n")
+                await client_writer.drain()
+                logger.info(
+                    "[%s] Upstream authenticated: %s:%d user=%s",
+                    peer_str, upstream_host, upstream_port, up_user,
+                )
+                continue
+
+            # ----------------------------------------------------------------
+            # Require auth before any envelope commands
+            # ----------------------------------------------------------------
+            if upstream_writer is None:
+                client_writer.write(b"530 5.7.0 Authentication required\r\n")
+                await client_writer.drain()
+                continue
 
             # ----------------------------------------------------------------
             # MAIL FROM — track sender, pass through
             # ----------------------------------------------------------------
-            elif cmd == "MAIL":
+            if cmd == "MAIL":
                 m = _MAIL_FROM_RE.search(line)
                 if m:
                     sender = m.group(1)
@@ -549,11 +590,9 @@ async def start_smtp_proxy(host: str, port: int) -> asyncio.AbstractServer:
     server = await asyncio.start_server(handle_smtp_client, host, port)
     actual = server.sockets[0].getsockname()
     logger.info(
-        "Nuvrail SMTP proxy listening on %s:%d → upstream %s:%d",
+        "Nuvrail SMTP proxy listening on %s:%d (upstream host/port per agent credential)",
         actual[0],
         actual[1],
-        _UPSTREAM_HOST,
-        _UPSTREAM_PORT,
     )
     return server
 
