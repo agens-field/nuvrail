@@ -706,9 +706,13 @@ async def handle_client(
             continue
 
         # LOGIN command
+        # IMAP LOGIN syntax: tag LOGIN userid password
+        # Clients may quote either argument: tag LOGIN "user" "pass"
+        # We strip surrounding double-quotes from both fields.
         login_tag = parts[0]
-        agent_user = parts[2] if len(parts) > 2 else ""
-        agent_pass = parts[3] if len(parts) > 3 else ""
+        agent_user = parts[2].strip('"') if len(parts) > 2 else ""
+        # Password may contain spaces if quoted — rejoin remaining parts and strip quotes
+        agent_pass = " ".join(parts[3:]).strip('"') if len(parts) > 3 else ""
 
         credential = await _verify_agent_credential(agent_user, agent_pass, _db_path)
         if credential is None:
