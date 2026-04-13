@@ -568,6 +568,8 @@ async def handle_smtp_client(
         logger.warning("[%s] Connection error: %s", peer_str, exc)
     finally:
         for w in (upstream_writer, client_writer):
+            if w is None:
+                continue
             try:
                 w.close()
                 await w.wait_closed()
