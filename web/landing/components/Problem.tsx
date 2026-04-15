@@ -14,19 +14,7 @@ export default function Problem() {
           </p>
         </div>
 
-        {/* Approval card — shows exactly what human review looks like */}
-        <div className="mt-14 flex justify-start">
-          <div className="w-full max-w-lg">
-            <img
-              src="/app-card.png"
-              alt="Nuvrail approval card: AI agent requested to send an email, awaiting human approve or reject"
-              className="w-full rounded-lg shadow-2xl shadow-black/50"
-            />
-            <p className="mt-3 text-xs text-slate-500">
-              Every proposed action staged for review before it touches your inbox.
-            </p>
-          </div>
-        </div>
+
       </div>
     </section>
   );

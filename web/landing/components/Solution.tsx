@@ -21,24 +21,13 @@ export default function Solution() {
             </p>
           </div>
 
-          {/* PR analogy code block */}
-          <div className="mt-10 bg-[#1e293b] border border-[#334155] rounded p-5 font-mono text-sm">
-            <div className="flex items-center gap-2 mb-4 pb-3 border-b border-[#334155]">
-              <span className="w-3 h-3 rounded-full bg-[#334155]" />
-              <span className="w-3 h-3 rounded-full bg-[#334155]" />
-              <span className="w-3 h-3 rounded-full bg-[#334155]" />
-              <span className="text-gray-600 text-xs ml-2">nuvrail / staged-actions</span>
-            </div>
-            <div className="space-y-1 text-xs md:text-sm">
-              <div className="text-gray-500">proposed by: gpt-4o-agent@acme.com</div>
-              <div className="text-gray-500 mb-3">status: awaiting approval</div>
-              <div className="text-red-400">- DELETE thread: &quot;Q3 forecast — FINAL v7&quot;</div>
-              <div className="text-green-400">+ MOVE to: /Archive/2024/Finance</div>
-              <div className="mt-3 flex gap-3">
-                <span className="text-[#818cf8]">[approve]</span>
-                <span className="text-red-400">[reject]</span>
-              </div>
-            </div>
+          {/* Approval card — the real UI, not a mock */}
+          <div className="mt-10">
+            <img
+              src="/app-card.png"
+              alt="Nuvrail approval card: AI agent requested to send an email, awaiting human approve or reject"
+              className="w-full rounded-lg shadow-2xl shadow-black/50"
+            />
           </div>
         </div>
       </div>
