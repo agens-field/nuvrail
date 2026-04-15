@@ -20,9 +20,19 @@ services:
         VITE_API_URL: https://test.nuvrail.com
         VITE_PROXY_HOST: test.nuvrail.com
     ports:
-      - "3000:80"       # Web app (put a TLS-terminating reverse proxy in front)
+      - "3000:80"       # Approval web app
     depends_on:
       - gateway
+    restart: unless-stopped
+
+  landing:
+    build:
+      context: web/landing
+      dockerfile: Dockerfile
+    ports:
+      - "3001:3001"     # Landing page (Next.js)
+    environment:
+      - LOOPS_API_KEY=${LOOPS_API_KEY}
     restart: unless-stopped
 
 volumes:

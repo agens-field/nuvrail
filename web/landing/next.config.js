@@ -1,7 +1,8 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  // Static export capable — uncomment to enable full static export (disables API routes)
-  // output: 'export',
+  // Standalone output bundles only what's needed to run — ideal for Docker.
+  // Keeps LOOPS_API_KEY server-side (never exposed to browser).
+  output: 'standalone',
   turbopack: {
     root: __dirname,
   },
