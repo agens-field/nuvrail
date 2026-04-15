@@ -21,7 +21,7 @@ const steps = [
 
 export default function HowItWorks() {
   return (
-    <section className="border-b border-[#2a2a2a]">
+    <section className="border-b border-[#334155]">
       <div className="max-w-4xl mx-auto px-6 py-20">
         <p className="font-mono text-xs text-gray-500 uppercase tracking-wider mb-12">
           How it works
@@ -30,7 +30,7 @@ export default function HowItWorks() {
         <div className="grid md:grid-cols-3 gap-8 md:gap-12">
           {steps.map((step) => (
             <div key={step.number} className="relative">
-              <div className="font-mono text-3xl font-bold text-[#2dd4bf] mb-4">
+              <div className="font-mono text-3xl font-bold text-[#818cf8] mb-4">
                 {step.number}
               </div>
               <h3 className="text-white font-semibold text-lg mb-3">{step.title}</h3>

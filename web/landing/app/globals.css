@@ -5,8 +5,8 @@
 @tailwind utilities;
 
 :root {
-  --background: #0f0f0f;
-  --foreground: #f9fafb;
+  --background: #0f172a; /* slate-900 — matches Nuvrail app */
+  --foreground: #f1f5f9; /* slate-100 */
 }
 
 html {
@@ -25,8 +25,8 @@ body {
   box-sizing: border-box;
 }
 
-/* Selection color */
+/* Selection color — indigo tint to match app */
 ::selection {
-  background-color: #2dd4bf33;
-  color: #f9fafb;
+  background-color: #818cf833;
+  color: #f1f5f9;
 }

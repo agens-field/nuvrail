@@ -28,11 +28,11 @@ export default function Hero() {
   }
 
   return (
-    <section className="border-b border-[#2a2a2a]">
+    <section className="border-b border-[#334155]">
       <div className="max-w-4xl mx-auto px-6 py-24 md:py-36">
         {/* Badge */}
         <div className="mb-8">
-          <span className="font-mono text-xs text-[#2dd4bf] bg-[#2dd4bf11] border border-[#2dd4bf33] px-3 py-1 rounded-sm tracking-wider uppercase">
+          <span className="font-mono text-xs text-[#818cf8] bg-[#818cf811] border border-[#818cf833] px-3 py-1 rounded-sm tracking-wider uppercase">
             Early access
           </span>
         </div>
@@ -42,7 +42,7 @@ export default function Hero() {
           Your AI agent is about to send that email. Are you sure?
         </h1>
 
-        <p className="text-xl md:text-2xl font-semibold text-[#2dd4bf] mb-4">
+        <p className="text-xl md:text-2xl font-semibold text-[#818cf8] mb-4">
           The approval layer between AI agents and your inbox.
         </p>
 
@@ -56,9 +56,9 @@ export default function Hero() {
 
         {/* CTA form */}
         {status === 'success' ? (
-          <div className="inline-flex items-center gap-3 bg-[#2dd4bf11] border border-[#2dd4bf44] rounded px-5 py-4">
-            <span className="text-[#2dd4bf] font-mono text-sm">✓</span>
-            <span className="text-[#2dd4bf] font-medium">You&apos;re on the list. We&apos;ll be in touch.</span>
+          <div className="inline-flex items-center gap-3 bg-[#818cf811] border border-[#818cf844] rounded px-5 py-4">
+            <span className="text-[#818cf8] font-mono text-sm">✓</span>
+            <span className="text-[#818cf8] font-medium">You&apos;re on the list. We&apos;ll be in touch.</span>
           </div>
         ) : (
           <form onSubmit={handleSubmit} className="flex flex-col sm:flex-row gap-3 max-w-xl">
@@ -68,13 +68,13 @@ export default function Hero() {
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               placeholder="you@company.com"
-              className="flex-1 bg-[#1a1a1a] border border-[#2a2a2a] text-white placeholder-gray-600 rounded px-4 py-3 text-sm focus:outline-none focus:border-[#2dd4bf] focus:ring-1 focus:ring-[#2dd4bf] transition-colors"
+              className="flex-1 bg-[#1e293b] border border-[#334155] text-white placeholder-gray-600 rounded px-4 py-3 text-sm focus:outline-none focus:border-[#818cf8] focus:ring-1 focus:ring-[#818cf8] transition-colors"
               disabled={status === 'loading'}
             />
             <button
               type="submit"
               disabled={status === 'loading' || !email}
-              className="bg-[#2dd4bf] text-[#0f0f0f] font-semibold px-6 py-3 rounded text-sm hover:bg-[#5eead4] disabled:opacity-50 disabled:cursor-not-allowed transition-colors whitespace-nowrap"
+              className="bg-[#818cf8] text-white font-semibold px-6 py-3 rounded text-sm hover:bg-[#4338ca] disabled:opacity-50 disabled:cursor-not-allowed transition-colors whitespace-nowrap"
             >
               {status === 'loading' ? 'Submitting…' : 'Get early access'}
             </button>

@@ -1,6 +1,6 @@
 export default function Problem() {
   return (
-    <section className="border-b border-[#2a2a2a]">
+    <section className="border-b border-[#334155]">
       <div className="max-w-4xl mx-auto px-6 py-20">
         <div className="max-w-2xl">
           <p className="font-mono text-xs text-gray-500 uppercase tracking-wider mb-6">

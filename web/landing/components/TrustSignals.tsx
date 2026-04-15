@@ -87,7 +87,7 @@ const signals = [
 
 export default function TrustSignals() {
   return (
-    <section className="border-b border-[#2a2a2a]">
+    <section className="border-b border-[#334155]">
       <div className="max-w-4xl mx-auto px-6 py-20">
         <p className="font-mono text-xs text-gray-500 uppercase tracking-wider mb-12">
           Built for trust
@@ -97,9 +97,9 @@ export default function TrustSignals() {
           {signals.map((signal) => (
             <div
               key={signal.title}
-              className="bg-[#1a1a1a] border border-[#2a2a2a] rounded p-6"
+              className="bg-[#1e293b] border border-[#334155] rounded p-6"
             >
-              <div className="text-[#2dd4bf] mb-4">{signal.icon}</div>
+              <div className="text-[#818cf8] mb-4">{signal.icon}</div>
               <h3 className="text-white font-semibold mb-2">{signal.title}</h3>
               <p className="text-gray-400 text-sm leading-relaxed">{signal.description}</p>
             </div>

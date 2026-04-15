@@ -46,7 +46,7 @@ export default function WaitlistForm() {
   }
 
   return (
-    <section id="waitlist" className="border-b border-[#2a2a2a]">
+    <section id="waitlist" className="border-b border-[#334155]">
       <div className="max-w-4xl mx-auto px-6 py-20">
         <div className="max-w-xl">
           <p className="font-mono text-xs text-gray-500 uppercase tracking-wider mb-4">
@@ -63,8 +63,8 @@ export default function WaitlistForm() {
           </p>
 
           {status === 'success' ? (
-            <div className="bg-[#2dd4bf11] border border-[#2dd4bf44] rounded p-6">
-              <p className="text-[#2dd4bf] font-medium">
+            <div className="bg-[#818cf811] border border-[#818cf844] rounded p-6">
+              <p className="text-[#818cf8] font-medium">
                 You&apos;re on the list. We&apos;ll be in touch.
               </p>
             </div>
@@ -79,7 +79,7 @@ export default function WaitlistForm() {
                   onChange={handleChange}
                   placeholder="you@company.com"
                   disabled={status === 'loading'}
-                  className="w-full bg-[#1a1a1a] border border-[#2a2a2a] text-white placeholder-gray-600 rounded px-4 py-3 text-sm focus:outline-none focus:border-[#2dd4bf] focus:ring-1 focus:ring-[#2dd4bf] transition-colors"
+                  className="w-full bg-[#1e293b] border border-[#334155] text-white placeholder-gray-600 rounded px-4 py-3 text-sm focus:outline-none focus:border-[#818cf8] focus:ring-1 focus:ring-[#818cf8] transition-colors"
                 />
               </div>
 
@@ -91,7 +91,7 @@ export default function WaitlistForm() {
                   onChange={handleChange}
                   placeholder="Company (optional)"
                   disabled={status === 'loading'}
-                  className="w-full bg-[#1a1a1a] border border-[#2a2a2a] text-white placeholder-gray-600 rounded px-4 py-3 text-sm focus:outline-none focus:border-[#2dd4bf] focus:ring-1 focus:ring-[#2dd4bf] transition-colors"
+                  className="w-full bg-[#1e293b] border border-[#334155] text-white placeholder-gray-600 rounded px-4 py-3 text-sm focus:outline-none focus:border-[#818cf8] focus:ring-1 focus:ring-[#818cf8] transition-colors"
                 />
               </div>
 
@@ -101,7 +101,7 @@ export default function WaitlistForm() {
                   value={form.deployingAgents}
                   onChange={handleChange}
                   disabled={status === 'loading'}
-                  className="w-full bg-[#1a1a1a] border border-[#2a2a2a] text-gray-400 rounded px-4 py-3 text-sm focus:outline-none focus:border-[#2dd4bf] focus:ring-1 focus:ring-[#2dd4bf] transition-colors appearance-none"
+                  className="w-full bg-[#1e293b] border border-[#334155] text-gray-400 rounded px-4 py-3 text-sm focus:outline-none focus:border-[#818cf8] focus:ring-1 focus:ring-[#818cf8] transition-colors appearance-none"
                 >
                   <option value="">Deploying AI agents that touch email today?</option>
                   <option value="yes-actively">Yes, actively</option>
@@ -113,7 +113,7 @@ export default function WaitlistForm() {
               <button
                 type="submit"
                 disabled={status === 'loading' || !form.email}
-                className="w-full bg-[#2dd4bf] text-[#0f0f0f] font-semibold px-6 py-3 rounded text-sm hover:bg-[#5eead4] disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                className="w-full bg-[#818cf8] text-white font-semibold px-6 py-3 rounded text-sm hover:bg-[#4338ca] disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
               >
                 {status === 'loading' ? 'Submitting…' : 'Join the waitlist'}
               </button>

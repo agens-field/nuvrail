@@ -8,13 +8,14 @@ module.exports = {
   theme: {
     extend: {
       colors: {
-        background: '#0f0f0f',
-        surface: '#1a1a1a',
-        border: '#2a2a2a',
-        accent: '#2dd4bf',       // teal-400 — trustworthy, technical
-        'accent-dark': '#0f766e', // teal-700
-        muted: '#6b7280',
-        subtle: '#374151',
+        // Matches the Nuvrail approval app (slate + indigo palette)
+        background: '#0f172a',   // slate-900
+        surface: '#1e293b',      // slate-800
+        border: '#334155',       // slate-700
+        accent: '#818cf8',       // indigo-400 — matches app wordmark + active nav
+        'accent-dark': '#4f46e5', // indigo-600 — matches app CTA buttons
+        muted: '#94a3b8',        // slate-400
+        subtle: '#475569',       // slate-600
       },
       fontFamily: {
         mono: ['JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Consolas', 'monospace'],
