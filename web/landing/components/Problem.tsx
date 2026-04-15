@@ -13,6 +13,26 @@ export default function Problem() {
             That&apos;s not a risk you can accept.
           </p>
         </div>
+
+        {/* App screenshot — shows the problem solved in practice */}
+        <div className="mt-14">
+          <div className="rounded-lg overflow-hidden border border-[#334155] shadow-2xl shadow-black/50">
+            <div className="bg-[#1e293b] border-b border-[#334155] px-4 py-2.5 flex items-center gap-2">
+              <span className="w-3 h-3 rounded-full bg-[#334155]" />
+              <span className="w-3 h-3 rounded-full bg-[#334155]" />
+              <span className="w-3 h-3 rounded-full bg-[#334155]" />
+              <span className="font-mono text-xs text-slate-500 ml-2">test.nuvrail.com</span>
+            </div>
+            <img
+              src="/app-screenshot.png"
+              alt="Nuvrail approval interface showing a staged email operation awaiting human review"
+              className="w-full block"
+            />
+          </div>
+          <p className="mt-3 text-xs text-slate-500 text-center">
+            Every proposed action staged for review before it touches your inbox.
+          </p>
+        </div>
       </div>
     </section>
   );
