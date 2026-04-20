@@ -366,6 +366,7 @@ async def _client_to_upstream(
                     imap_command=parsed_op.imap_command,
                     folder_to=parsed_op.folder_to,
                     flags_add=parsed_op.flags_add,
+                    db_path=db_path,
                 )
                 resp = f"{tag} OK [STAGED] Operation queued — ID: {op_id}\r\n"
             except Exception as exc:
@@ -397,6 +398,11 @@ async def _client_to_upstream(
             # the tagged OK for one of these commands.
             if parsed.command.upper() in ("SELECT", "EXAMINE", "NOOP", "FETCH"):
                 session["revert_trigger_tag"] = parsed.tag.upper()
+
+            # Track whether the current SEARCH is UID-mode so the u2c pump
+            # can filter pending-move UIDs from the SEARCH response.
+            if parsed.command.upper() == "SEARCH":
+                session["search_uid_mode"] = parsed.uid
 
             # Pass through to upstream; the u2c pump returns the response.
             try:
@@ -530,6 +536,7 @@ async def _client_to_upstream(
                         flags_add=parsed_op.flags_add if parsed_op.flags_add else None,
                         flags_remove=parsed_op.flags_remove if parsed_op.flags_remove else None,
                         snapshot=op_snapshot,
+                        db_path=db_path,
                     )
                     resp = f"{parsed.tag} OK [STAGED] Operation queued — ID: {op_id}\r\n"
                 else:
@@ -540,6 +547,7 @@ async def _client_to_upstream(
                         agent_id=session.get("agent_id"),
                         description=f"{parsed.command} {' '.join(parsed.args)}".strip(),
                         imap_command=raw,
+                        db_path=db_path,
                     )
                     resp = f"{parsed.tag} OK [STAGED] Operation queued — ID: {op_id}\r\n"
             except Exception as exc:
@@ -615,6 +623,51 @@ async def _upstream_to_client(
                 if m and m.group(1).upper() == revert_tag:
                     session["revert_trigger_tag"] = None
                     await _inject_pending_reverts(client_writer, session, db_path, peer)
+
+            # Adjust * N EXISTS count: subtract pending-move messages so the
+            # agent sees the mailbox size consistent with its staged operations.
+            _exists_m = re.match(r"^\* (\d+) EXISTS$", line, re.IGNORECASE)
+            if _exists_m and session.get("folder"):
+                try:
+                    _pending = await get_pending_move_uids_for_folder(
+                        session["folder"], db_path=db_path
+                    )
+                    if _pending:
+                        _n = int(_exists_m.group(1))
+                        _adjusted = max(0, _n - len(_pending))
+                        if _adjusted != _n:
+                            line = f"* {_adjusted} EXISTS"
+                            line_with_crlf = line.encode() + b"\r\n"
+                            logger.debug(
+                                "[%s] EXISTS adjusted %d → %d (%d pending moves)",
+                                peer, _n, _adjusted, len(_pending),
+                            )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("[%s] EXISTS adjustment failed (non-fatal): %s", peer, exc)
+
+            # Filter * SEARCH results: strip UIDs that are pending MOVE from
+            # the current folder. Only applied when the agent used UID SEARCH.
+            elif re.match(r"^\* SEARCH\b", line, re.IGNORECASE) and session.get("search_uid_mode") and session.get("folder"):
+                try:
+                    _pending = await get_pending_move_uids_for_folder(
+                        session["folder"], db_path=db_path
+                    )
+                    if _pending:
+                        _parts = line.split()
+                        _keyword = _parts[:2]  # ["*", "SEARCH"]
+                        _uid_strs = _parts[2:]
+                        _filtered = [
+                            u for u in _uid_strs
+                            if not (u.isdigit() and int(u) in _pending)
+                        ]
+                        line = " ".join(_keyword + _filtered)
+                        line_with_crlf = line.encode() + b"\r\n"
+                        logger.debug(
+                            "[%s] SEARCH filtered %d pending-move UIDs from results",
+                            peer, len(_uid_strs) - len(_filtered),
+                        )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("[%s] SEARCH filter failed (non-fatal): %s", peer, exc)
 
             # Suppress FETCH lines for UIDs that are pending MOVE from the
             # current folder. This keeps the agent's view consistent with its
@@ -919,6 +972,7 @@ async def handle_client(
         "in_select": False,          # True while accumulating SELECT response lines
         "revert_trigger_tag": None,  # tag of last SELECT/NOOP/FETCH (triggers revert injection)
         "agent_id": credential["id"],  # agent_credentials.id for staging
+        "search_uid_mode": False,    # True if last SEARCH was UID SEARCH
     }
     c2u = asyncio.create_task(
         _client_to_upstream(client_reader, upstream_writer, client_writer, session, peer_str, _db_path)

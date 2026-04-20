@@ -24,6 +24,7 @@ Auth notes (post-auth milestone):
 
 import asyncio
 import os
+import re
 import tempfile
 import time
 from pathlib import Path
@@ -330,6 +331,174 @@ async def test_non_uid_store_rejected(
     finally:
         writer.write(b"b099 LOGOUT\r\n")
         try:
+            await writer.drain()
+        except OSError:
+            pass
+        await _close(writer)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_select_exists_adjusted_for_pending_move(
+    proxy_server: tuple,
+    upstream_imap_config: dict,
+) -> None:
+    """After staging a MOVE, SELECT EXISTS count must reflect the virtual removal.
+
+    The agent should see one fewer message than upstream reports — the moved
+    message is pending approval but already 'gone' from the agent's view.
+    """
+    host, port, agent_user, agent_token = proxy_server
+    if not upstream_imap_config.get("host"):
+        pytest.skip("NUVRAIL_TEST_IMAP_HOST not set")
+
+    reader, writer = await _connect(host, port)
+    try:
+        await _read_line(reader)  # greeting
+
+        writer.write(f"c001 LOGIN {agent_user} {agent_token}\r\n".encode())
+        await writer.drain()
+        await _read_until_ok_or_no(reader, "c001")
+
+        # SELECT to get baseline EXISTS count
+        writer.write(b"c002 SELECT INBOX\r\n")
+        await writer.drain()
+        select_lines = await _read_until_ok_or_no(reader, "c002")
+
+        baseline_exists: int | None = None
+        for line in select_lines:
+            m = re.search(r"^\* (\d+) EXISTS", line, re.IGNORECASE)
+            if m:
+                baseline_exists = int(m.group(1))
+                break
+
+        if baseline_exists is None or baseline_exists == 0:
+            pytest.skip("INBOX has no messages — cannot test EXISTS adjustment")
+
+        import asyncio as _asyncio
+        await _asyncio.sleep(0.05)  # let SELECT sync settle
+
+        # Stage a MOVE for the first known UID
+        # First, fetch a UID from INBOX so we have something to move
+        writer.write(b"c003 UID SEARCH ALL\r\n")
+        await writer.drain()
+        search_lines = await _read_until_ok_or_no(reader, "c003")
+        uids: list[int] = []
+        for line in search_lines:
+            m = re.match(r"^\* SEARCH (.*)", line, re.IGNORECASE)
+            if m:
+                uids = [int(u) for u in m.group(1).split() if u.strip().isdigit()]
+                break
+
+        if not uids:
+            pytest.skip("No UIDs found in INBOX")
+
+        move_uid = uids[0]
+
+        # Stage the MOVE
+        writer.write(f"c004 UID MOVE {move_uid} Archive\r\n".encode())
+        await writer.drain()
+        move_lines = await _read_until_ok_or_no(reader, "c004")
+        assert any("STAGED" in l.upper() for l in move_lines), (
+            f"Expected STAGED in MOVE response, got: {move_lines!r}"
+        )
+
+        # Re-SELECT INBOX — EXISTS count must be reduced by 1
+        writer.write(b"c005 SELECT INBOX\r\n")
+        await writer.drain()
+        reselect_lines = await _read_until_ok_or_no(reader, "c005")
+
+        adjusted_exists: int | None = None
+        for line in reselect_lines:
+            m = re.search(r"^\* (\d+) EXISTS", line, re.IGNORECASE)
+            if m:
+                adjusted_exists = int(m.group(1))
+                break
+
+        assert adjusted_exists is not None, "No EXISTS line in re-SELECT response"
+        assert adjusted_exists == baseline_exists - 1, (
+            f"Expected EXISTS={baseline_exists - 1} after staging MOVE, "
+            f"got {adjusted_exists} (baseline was {baseline_exists})"
+        )
+
+    finally:
+        try:
+            writer.write(b"c099 LOGOUT\r\n")
+            await writer.drain()
+        except OSError:
+            pass
+        await _close(writer)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_uid_search_filters_pending_move(
+    proxy_server: tuple,
+    upstream_imap_config: dict,
+) -> None:
+    """UID SEARCH ALL must not return UIDs that are staged for MOVE.
+
+    The agent should get a search result that excludes moved messages,
+    consistent with its view that the message is already gone.
+    """
+    host, port, agent_user, agent_token = proxy_server
+    if not upstream_imap_config.get("host"):
+        pytest.skip("NUVRAIL_TEST_IMAP_HOST not set")
+
+    reader, writer = await _connect(host, port)
+    try:
+        await _read_line(reader)  # greeting
+
+        writer.write(f"d001 LOGIN {agent_user} {agent_token}\r\n".encode())
+        await writer.drain()
+        await _read_until_ok_or_no(reader, "d001")
+
+        writer.write(b"d002 SELECT INBOX\r\n")
+        await writer.drain()
+        await _read_until_ok_or_no(reader, "d002")
+        await __import__("asyncio").sleep(0.05)
+
+        # Baseline UID SEARCH ALL
+        writer.write(b"d003 UID SEARCH ALL\r\n")
+        await writer.drain()
+        baseline_search = await _read_until_ok_or_no(reader, "d003")
+        baseline_uids: list[int] = []
+        for line in baseline_search:
+            m = re.match(r"^\* SEARCH (.*)", line, re.IGNORECASE)
+            if m:
+                baseline_uids = [int(u) for u in m.group(1).split() if u.strip().isdigit()]
+
+        if not baseline_uids:
+            pytest.skip("No UIDs found — cannot test SEARCH filtering")
+
+        move_uid = baseline_uids[0]
+
+        # Stage a MOVE
+        writer.write(f"d004 UID MOVE {move_uid} Archive\r\n".encode())
+        await writer.drain()
+        move_resp = await _read_until_ok_or_no(reader, "d004")
+        assert any("STAGED" in l.upper() for l in move_resp)
+
+        # UID SEARCH ALL after staging — moved UID must be absent
+        writer.write(b"d005 UID SEARCH ALL\r\n")
+        await writer.drain()
+        filtered_search = await _read_until_ok_or_no(reader, "d005")
+        filtered_uids: list[int] = []
+        for line in filtered_search:
+            m = re.match(r"^\* SEARCH (.*)", line, re.IGNORECASE)
+            if m:
+                filtered_uids = [int(u) for u in m.group(1).split() if u.strip().isdigit()]
+
+        assert move_uid not in filtered_uids, (
+            f"Pending-move UID {move_uid} should not appear in UID SEARCH results "
+            f"after staging. Got: {filtered_uids!r}"
+        )
+        assert len(filtered_uids) == len(baseline_uids) - 1, (
+            f"Expected {len(baseline_uids) - 1} UIDs after filtering, "
+            f"got {len(filtered_uids)}"
+        )
+
+    finally:
+        try:
+            writer.write(b"d099 LOGOUT\r\n")
             await writer.drain()
         except OSError:
             pass
