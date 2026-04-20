@@ -8,6 +8,7 @@ The test_approve_smtp_operation test sends a real email to testing@nuvrail.com
 (the test mailbox — sending to itself is acceptable for integration verification).
 """
 import os
+import time
 from pathlib import Path
 
 import httpx
@@ -16,8 +17,9 @@ import pytest
 from api.auth import get_auth_db_path, get_current_user
 from api.main import app
 from api.routes.operations import get_db_path
+from gateway.credentials import encrypt_credential
 from gateway.staging import create_operation
-from gateway.state_db import init_db
+from gateway.state_db import get_db, init_db
 
 # Fake user used to satisfy auth dependency in tests that don't test auth itself
 _FAKE_USER = {"id": 1, "email": "test@test.com", "display_name": None, "created_at": 0, "api_token": "testtoken"}
@@ -187,12 +189,32 @@ async def test_approve_imap_operation(
     if not imap_host:
         pytest.skip("NUVRAIL_TEST_IMAP_HOST not set — skipping upstream IMAP test")
 
-    import time as _time
-    folder_name = f"NuvrailTest_{int(_time.time())}"
+    imap_port = int(os.environ.get("NUVRAIL_TEST_IMAP_PORT", "993"))
+    imap_user = os.environ.get("NUVRAIL_TEST_IMAP_USER", "")
+    imap_pass = os.environ.get("NUVRAIL_TEST_IMAP_PASS", "")
+
+    # Insert an agent credential row so the approve path can look up credentials
+    # via agent_id rather than falling back to env vars.
+    async with get_db(db_path) as db:
+        cur = await db.execute(
+            """INSERT INTO agent_credentials
+               (user_id, label, agent_username, hashed_token,
+                upstream_host, upstream_imap_port, upstream_smtp_port,
+                upstream_user, upstream_password, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (1, "test", "nuvrail_imap_approve_test", "x",
+             imap_host, imap_port, 587, imap_user,
+             encrypt_credential(imap_pass), int(time.time())),
+        )
+        await db.commit()
+        agent_id = cur.lastrowid
+
+    folder_name = f"NuvrailTest_{int(time.time())}"
 
     op_id = await create_operation(
         op_type="create",
         protocol="imap",
+        agent_id=agent_id,
         description=f"Create folder {folder_name}",
         imap_command=f"A001 CREATE {folder_name}",
         folder_to=folder_name,
@@ -209,9 +231,6 @@ async def test_approve_imap_operation(
 
     # Cleanup: delete the test folder via direct IMAP
     import aioimaplib
-    imap_port = int(os.environ.get("NUVRAIL_TEST_IMAP_PORT", "993"))
-    imap_user = os.environ.get("NUVRAIL_TEST_IMAP_USER", "")
-    imap_pass = os.environ.get("NUVRAIL_TEST_IMAP_PASS", "")
     c = aioimaplib.IMAP4_SSL(host=imap_host, port=imap_port)
     await c.wait_hello_from_server()
     await c.login(imap_user, imap_pass)
@@ -231,9 +250,29 @@ async def test_approve_smtp_operation(
     if not smtp_host:
         pytest.skip("NUVRAIL_TEST_SMTP_HOST not set")
 
+    smtp_port = int(os.environ.get("NUVRAIL_TEST_SMTP_PORT", "587"))
+    smtp_user = os.environ.get("NUVRAIL_TEST_SMTP_USER", "")
+    smtp_pass = os.environ.get("NUVRAIL_TEST_SMTP_PASS", "")
+
+    # Insert agent credential so approve path can look up credentials by agent_id
+    async with get_db(db_path) as db:
+        cur = await db.execute(
+            """INSERT INTO agent_credentials
+               (user_id, label, agent_username, hashed_token,
+                upstream_host, upstream_imap_port, upstream_smtp_port,
+                upstream_user, upstream_password, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (1, "test", "nuvrail_smtp_approve_test", "x",
+             smtp_host, 993, smtp_port, smtp_user,
+             encrypt_credential(smtp_pass), int(time.time())),
+        )
+        await db.commit()
+        smtp_agent_id = cur.lastrowid
+
     op_id = await create_operation(
         op_type="smtp_send",
         protocol="smtp",
+        agent_id=smtp_agent_id,
         description='Send email to testing@nuvrail.com — Subject: "Milestone 1.0 test"',
         smtp_envelope={
             "from": "testing@nuvrail.com",

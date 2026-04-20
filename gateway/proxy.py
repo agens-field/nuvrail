@@ -404,6 +404,26 @@ async def _client_to_upstream(
                 break
 
         elif action == "write":
+            # Reject non-UID write commands.
+            # Sequence numbers are positional and shift whenever messages are
+            # added/removed from a folder. Staged operations may be held
+            # pending approval for up to 48 hours — a sequence number recorded
+            # at staging time can point to a completely different message by
+            # execution time. UID addressing is stable across sessions and
+            # mailbox changes. All write commands must use UID prefix.
+            if not parsed.uid and parsed.command.upper() in ("STORE", "COPY", "MOVE"):
+                try:
+                    client_writer.write(
+                        f"{parsed.tag} NO [CLIENTBUG] Use UID {parsed.command} not "
+                        f"{parsed.command} — sequence numbers shift when messages move "
+                        f"and are unsafe for staged approval.\r\n".encode()
+                    )
+                    await client_writer.drain()
+                except (ConnectionResetError, BrokenPipeError, OSError):
+                    break
+                logger.warning("[%s] Rejected non-UID write: %s", peer, raw)
+                continue
+
             # Intercept — don't forward, stage the operation, respond locally.
             try:
                 parsed_op = _build_parsed_op(parsed)
@@ -670,7 +690,7 @@ async def handle_client(
             tag = parts[0]
             try:
                 client_writer.write(
-                    f"* CAPABILITY IMAP4rev1 AUTH=PLAIN\r\n"
+                    f"* CAPABILITY IMAP4rev1 AUTH=PLAIN AUTH=LOGIN\r\n"
                     f"{tag} OK CAPABILITY completed\r\n".encode()
                 )
                 await client_writer.drain()
@@ -692,7 +712,7 @@ async def handle_client(
             client_writer.close()
             return
 
-        if cmd != "LOGIN":
+        if cmd not in ("LOGIN", "AUTHENTICATE"):
             # Reject any other command before authentication
             tag = parts[0]
             try:
@@ -705,14 +725,52 @@ async def handle_client(
                 return
             continue
 
-        # LOGIN command
-        # IMAP LOGIN syntax: tag LOGIN userid password
-        # Clients may quote either argument: tag LOGIN "user" "pass"
-        # We strip surrounding double-quotes from both fields.
+        # LOGIN command: tag LOGIN userid password
+        # AUTHENTICATE PLAIN command: tag AUTHENTICATE PLAIN [base64]
+        # Clients may quote LOGIN arguments. Strip surrounding double-quotes.
         login_tag = parts[0]
-        agent_user = parts[2].strip('"') if len(parts) > 2 else ""
-        # Password may contain spaces if quoted — rejoin remaining parts and strip quotes
-        agent_pass = " ".join(parts[3:]).strip('"') if len(parts) > 3 else ""
+
+        if cmd == "AUTHENTICATE":
+            mech = parts[2].upper() if len(parts) > 2 else ""
+            if mech != "PLAIN":
+                try:
+                    client_writer.write(
+                        f"{login_tag} NO Unsupported auth mechanism — use LOGIN or AUTHENTICATE PLAIN\r\n".encode()
+                    )
+                    await client_writer.drain()
+                except OSError:
+                    client_writer.close()
+                    return
+                continue
+
+            # AUTHENTICATE PLAIN may have inline base64 or use a challenge
+            if len(parts) > 3:
+                b64_payload = parts[3]
+            else:
+                # Send challenge, wait for client response
+                try:
+                    client_writer.write(b"+ \r\n")
+                    await client_writer.drain()
+                    resp_line = await client_reader.readline()
+                    b64_payload = resp_line.decode("utf-8", errors="replace").strip()
+                except (OSError, asyncio.IncompleteReadError):
+                    client_writer.close()
+                    return
+
+            import base64 as _b64  # noqa: PLC0415
+            try:
+                decoded = _b64.b64decode(b64_payload)
+                auth_parts = decoded.split(b"\x00")
+                agent_user = auth_parts[1].decode("utf-8", errors="replace") if len(auth_parts) >= 3 else ""
+                agent_pass = auth_parts[2].decode("utf-8", errors="replace") if len(auth_parts) >= 3 else ""
+            except Exception:
+                agent_user, agent_pass = "", ""
+
+        else:
+            # LOGIN command
+            agent_user = parts[2].strip('"') if len(parts) > 2 else ""
+            # Password may contain spaces if quoted — rejoin and strip quotes
+            agent_pass = " ".join(parts[3:]).strip('"') if len(parts) > 3 else ""
 
         credential = await _verify_agent_credential(agent_user, agent_pass, _db_path)
         if credential is None:

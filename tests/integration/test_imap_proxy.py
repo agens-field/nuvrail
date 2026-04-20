@@ -281,3 +281,56 @@ async def test_logout_clean(
         assert "A006 OK" in last, f"Expected OK after LOGOUT, got: {lines!r}"
     finally:
         await _close(writer)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_non_uid_store_rejected(
+    proxy_server: tuple,
+    upstream_imap_config: dict,
+) -> None:
+    """Non-UID STORE must be rejected with NO [CLIENTBUG] — sequence numbers
+    are unsafe for deferred approval because they shift when messages move."""
+    host, port, agent_user, agent_token = proxy_server
+    if not upstream_imap_config.get("host"):
+        pytest.skip("NUVRAIL_TEST_IMAP_HOST not set")
+    reader, writer = await _connect(host, port)
+    try:
+        await _read_line(reader)  # consume greeting
+        writer.write(f"b001 LOGIN {agent_user} {agent_token}\r\n".encode())
+        await writer.drain()
+        await _read_until_ok_or_no(reader, "b001")
+
+        writer.write(b"b002 SELECT INBOX\r\n")
+        await writer.drain()
+        await _read_until_ok_or_no(reader, "b002")
+
+        # Non-UID STORE (sequence number) — must be rejected
+        writer.write(b"b003 STORE 1 +FLAGS (\\Seen)\r\n")
+        await writer.drain()
+        lines = await _read_until_ok_or_no(reader, "b003")
+        last = lines[-1].upper()
+        assert "B003 NO" in last, (
+            f"Expected NO for non-UID STORE, got: {lines!r}"
+        )
+        assert "CLIENTBUG" in last, (
+            f"Expected [CLIENTBUG] in response, got: {lines!r}"
+        )
+
+        # UID STORE must still be accepted (returns STAGED)
+        writer.write(b"b004 UID STORE 1 +FLAGS (\\Seen)\r\n")
+        await writer.drain()
+        lines = await _read_until_ok_or_no(reader, "b004")
+        last = lines[-1].upper()
+        assert "B004 OK" in last, (
+            f"Expected OK [STAGED] for UID STORE, got: {lines!r}"
+        )
+        assert "STAGED" in " ".join(lines).upper(), (
+            f"Expected STAGED in UID STORE response, got: {lines!r}"
+        )
+    finally:
+        writer.write(b"b099 LOGOUT\r\n")
+        try:
+            await writer.drain()
+        except OSError:
+            pass
+        await _close(writer)
