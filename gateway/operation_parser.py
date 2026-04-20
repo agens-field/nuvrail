@@ -143,4 +143,113 @@ def parse_append(tag: str, folder: str, flags: List[str], message_size: int) -> 
     )
 
 
+# ---------------------------------------------------------------------------
+# Rich description builder — combines ParsedOperation with live message metadata
+# ---------------------------------------------------------------------------
+
+# Human-readable verb for each op_type, used in bulk descriptions.
+_OP_VERB: dict[str, str] = {
+    "move": "Move",
+    "copy": "Copy",
+    "trash": "Move to Trash",
+    "mark_read": "Mark as read",
+    "mark_unread": "Mark as unread",
+    "flag": "Star",
+    "unflag": "Unstar",
+    "store": "Update flags on",
+    "append": "Save draft",
+    "create": "Create folder",
+    "rename": "Rename folder",
+    "smtp_send": "Send email",
+}
+
+
+def build_rich_description(
+    parsed_op: "ParsedOperation",
+    metadata: "List[dict]",
+) -> str:
+    """Build a human-readable description enriched with sender/subject metadata.
+
+    metadata is a list of dicts with keys ``uid``, ``sender``, ``subject``
+    (as returned by state_db.get_message_metadata_by_uid_set). Empty list
+    means no metadata was available — falls back to the plain UID-based
+    description on parsed_op.
+
+    Single message:
+      'Move to Trash: "Re: Invoice" from billing@acme.com'
+      'Mark as read: "Weekly digest" from noreply@substack.com'
+      Falls back to: 'Move to Trash: 42'  (when no metadata)
+
+    Multiple messages — common sender:
+      'Archive 5 messages from spam@whoever.com'
+
+    Multiple messages — mixed senders:
+      'Archive "Re: Invoice" and 4 more'
+      Falls back to: 'Archive 5 messages'  (when no metadata at all)
+
+    APPEND/CREATE/RENAME/SMTP ops are returned unchanged (metadata N/A).
+    """
+    op_type = parsed_op.op_type
+
+    # Ops that don't involve individual messages — return unchanged
+    if op_type in ("append", "create", "rename", "smtp_send"):
+        return parsed_op.description
+
+    verb = _OP_VERB.get(op_type, op_type.replace("_", " ").capitalize())
+
+    # Determine how many messages this op targets by inspecting the uid_set
+    uid_set_str = parsed_op.message_ids[0] if parsed_op.message_ids else ""
+    # A rough count: if it's a range like "1:5", we can't know exactly without
+    # the full state DB, so fall back to the metadata count we have.
+    is_multi_uid_set = ":" in uid_set_str or "," in uid_set_str
+
+    # --- No metadata available: fall back to UID-based description ---
+    if not metadata:
+        if is_multi_uid_set:
+            # We know it's multiple but don't have count — keep original
+            return parsed_op.description
+        # Single UID, no metadata
+        return parsed_op.description
+
+    total = len(metadata)
+
+    # Build folder suffix for move/copy
+    folder_suffix = ""
+    if op_type in ("move", "copy") and parsed_op.folder_to:
+        folder_suffix = f" to {parsed_op.folder_to}"
+
+    if total == 1:
+        # Single message with metadata
+        msg = metadata[0]
+        sender = msg.get("sender") or ""
+        subject = msg.get("subject") or ""
+        parts: List[str] = []
+        if subject:
+            parts.append(f'"{subject}"')
+        if sender:
+            parts.append(f"from {sender}")
+        if parts:
+            return f"{verb}: {' '.join(parts)}{folder_suffix}"
+        # Metadata row exists but both fields are null
+        return parsed_op.description
+
+    # Multiple messages
+    senders = [m.get("sender") for m in metadata]
+    unique_senders = {s for s in senders if s}  # strip None
+
+    if len(unique_senders) == 1:
+        # All from the same sender
+        sender = next(iter(unique_senders))
+        return f"{verb} {total} messages from {sender}{folder_suffix}"
+    else:
+        # Mixed senders — show first message subject + overflow count
+        first = metadata[0]
+        first_subject = first.get("subject") or ""
+        remaining = total - 1
+        if first_subject:
+            return f'{verb} "{first_subject}" and {remaining} more{folder_suffix}'
+        else:
+            return f"{verb} {total} messages{folder_suffix}"
+
+
 

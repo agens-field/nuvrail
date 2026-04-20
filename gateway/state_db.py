@@ -411,6 +411,25 @@ async def get_messages_by_uid_set(
     return [dict(r) for r in rows2]
 
 
+async def get_message_metadata_by_uid_set(
+    folder_id: int,
+    uid_set_str: str,
+    db_path: Path = DB_PATH,
+) -> "list[dict]":
+    """Return lightweight sender/subject rows for a UID set.
+
+    Used at staging time to build human-readable operation descriptions
+    without fetching full message rows. Returns a list of dicts with keys
+    ``uid``, ``sender``, ``subject`` for each message found in the state DB.
+    Messages not yet FETCH'd through the proxy will simply be absent.
+    """
+    rows = await get_messages_by_uid_set(folder_id, uid_set_str, db_path=db_path)
+    return [
+        {"uid": r["uid"], "sender": r.get("sender"), "subject": r.get("subject")}
+        for r in rows
+    ]
+
+
 async def get_pending_move_uids_for_folder(
     folder_name: str,
     db_path: Path = DB_PATH,

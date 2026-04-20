@@ -47,7 +47,7 @@ from dotenv import load_dotenv
 from gateway.command_router import classify
 from gateway.imap_parser import ParsedCommand, parse_line
 from gateway.imap_response_parser import parse_fetch_line, parse_list_response, parse_select_response
-from gateway.operation_parser import ParsedOperation, parse_append, parse_copy, parse_move, parse_store
+from gateway.operation_parser import ParsedOperation, build_rich_description, parse_append, parse_copy, parse_move, parse_store
 from gateway.credentials import decrypt_credential
 from gateway.staging import create_operation
 from gateway.state_db import (
@@ -58,6 +58,7 @@ from gateway.state_db import (
     get_pending_move_uids_for_folder,
     get_pending_reverts,
     init_db,
+    get_message_metadata_by_uid_set,
     mark_reverts_delivered,
     remove_messages_from_folder,
     snapshot_messages,
@@ -495,6 +496,24 @@ async def _client_to_upstream(
                             )
                             op_snapshot = None
 
+                    # Enrich description with sender/subject from state DB.
+                    # Must happen BEFORE the MOVE optimistic update below, which
+                    # deletes message rows from the state DB — after that point
+                    # the metadata is gone. Non-fatal if lookup fails.
+                    op_description = parsed_op.description
+                    if folder_id is not None and parsed_op.message_ids:
+                        uid_set_for_meta = parsed_op.message_ids[0]
+                        try:
+                            msg_meta = await get_message_metadata_by_uid_set(
+                                folder_id, uid_set_for_meta, db_path=db_path
+                            )
+                            op_description = build_rich_description(parsed_op, msg_meta)
+                        except Exception as meta_exc:  # noqa: BLE001
+                            logger.debug(
+                                "[%s] Metadata lookup for rich description failed (non-fatal): %s",
+                                peer, meta_exc,
+                            )
+
                     # MOVE optimistic update: remove message from source folder
                     # in local state DB so the agent sees a consistent view
                     # (message appears moved immediately, before human approves).
@@ -525,7 +544,7 @@ async def _client_to_upstream(
                         op_type=parsed_op.op_type,
                         protocol="imap",
                         agent_id=session.get("agent_id"),
-                        description=parsed_op.description,
+                        description=op_description,
                         imap_command=parsed_op.imap_command,
                         message_ids=parsed_op.message_ids if parsed_op.message_ids else None,
                         # folder_from: use parsed value if set (COPY/MOVE

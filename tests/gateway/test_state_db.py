@@ -13,6 +13,7 @@ import pytest
 from gateway.state_db import (
     apply_optimistic_flag_update,
     get_message,
+    get_message_metadata_by_uid_set,
     get_messages_by_uid_set,
     get_or_create_folder,
     get_pending_move_uids_for_folder,
@@ -654,3 +655,87 @@ async def test_message_previews_fallback_to_snapshot(db_path: Path) -> None:
     assert "377" in snap_data
     assert snap_data["377"]["sender"] == "boss@example.com"
     assert snap_data["377"]["subject"] == "Important offer"
+
+
+# ---------------------------------------------------------------------------
+# get_message_metadata_by_uid_set tests
+# ---------------------------------------------------------------------------
+
+
+async def test_get_message_metadata_single_uid(db_path: Path) -> None:
+    """Returns sender and subject for a single known UID."""
+    folder_id = await get_or_create_folder("INBOX", db_path=db_path)
+    await upsert_message(
+        folder_id, uid=10, seq_num=1,
+        sender="alice@example.com", subject="Hello there",
+        db_path=db_path,
+    )
+    result = await get_message_metadata_by_uid_set(folder_id, "10", db_path=db_path)
+    assert len(result) == 1
+    assert result[0]["uid"] == 10
+    assert result[0]["sender"] == "alice@example.com"
+    assert result[0]["subject"] == "Hello there"
+
+
+async def test_get_message_metadata_multiple_uids(db_path: Path) -> None:
+    """Returns a row for each UID in the set that exists in the DB."""
+    folder_id = await get_or_create_folder("INBOX", db_path=db_path)
+    for uid, sender, subject in [
+        (1, "a@a.com", "First"),
+        (2, "b@b.com", "Second"),
+        (3, "c@c.com", "Third"),
+    ]:
+        await upsert_message(
+            folder_id, uid=uid, seq_num=uid,
+            sender=sender, subject=subject,
+            db_path=db_path,
+        )
+    result = await get_message_metadata_by_uid_set(folder_id, "1,2,3", db_path=db_path)
+    assert len(result) == 3
+    uids = [r["uid"] for r in result]
+    assert 1 in uids and 2 in uids and 3 in uids
+
+
+async def test_get_message_metadata_uid_range(db_path: Path) -> None:
+    """UID range (N:M) expands correctly."""
+    folder_id = await get_or_create_folder("INBOX", db_path=db_path)
+    for uid in range(10, 14):  # 10, 11, 12, 13
+        await upsert_message(
+            folder_id, uid=uid, seq_num=uid,
+            sender="bulk@list.com", subject=f"Digest #{uid}",
+            db_path=db_path,
+        )
+    result = await get_message_metadata_by_uid_set(folder_id, "10:13", db_path=db_path)
+    assert len(result) == 4
+    assert all(r["sender"] == "bulk@list.com" for r in result)
+
+
+async def test_get_message_metadata_unknown_uid_returns_empty(db_path: Path) -> None:
+    """UIDs not in the state DB return an empty list (message not yet FETCH'd)."""
+    folder_id = await get_or_create_folder("INBOX", db_path=db_path)
+    result = await get_message_metadata_by_uid_set(folder_id, "999", db_path=db_path)
+    assert result == []
+
+
+async def test_get_message_metadata_partial_hit(db_path: Path) -> None:
+    """Only returns rows for UIDs that exist; unknown UIDs are silently absent."""
+    folder_id = await get_or_create_folder("INBOX", db_path=db_path)
+    await upsert_message(
+        folder_id, uid=5, seq_num=1,
+        sender="known@example.com", subject="Known",
+        db_path=db_path,
+    )
+    # UID 6 does not exist
+    result = await get_message_metadata_by_uid_set(folder_id, "5,6", db_path=db_path)
+    assert len(result) == 1
+    assert result[0]["uid"] == 5
+
+
+async def test_get_message_metadata_null_sender_and_subject(db_path: Path) -> None:
+    """Messages with null sender/subject return rows with None values."""
+    folder_id = await get_or_create_folder("INBOX", db_path=db_path)
+    await upsert_message(folder_id, uid=20, seq_num=1, db_path=db_path)
+    result = await get_message_metadata_by_uid_set(folder_id, "20", db_path=db_path)
+    assert len(result) == 1
+    assert result[0]["sender"] is None
+    assert result[0]["subject"] is None

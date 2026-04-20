@@ -134,31 +134,30 @@ export default function OperationCard({ operation, selected, onToggleSelect }: O
           </div>
         )}
 
-        {/* IMAP message previews — sender + subject for affected messages */}
+        {/* IMAP message previews — only shown for multi-message ops.
+             Single-message ops: the description already carries sender + subject.
+             Multi-message ops with mixed senders: description shows first message +
+             overflow count; previews show the remaining messages' details. */}
         {!operation.smtp_envelope &&
           operation.message_previews &&
-          operation.message_previews.length > 0 && (
-          <div className="text-sm text-slate-400 space-y-1">
-            {operation.message_previews.map((msg) => (
-              <div key={msg.uid} className="flex flex-col gap-0.5">
+          operation.message_previews.length > 1 && (
+          <div className="text-sm text-slate-400 space-y-1 border-t border-slate-700/50 pt-2 mt-1">
+            {operation.message_previews.slice(1).map((msg) => (
+              <div key={msg.uid} className="flex flex-col gap-0.5 pl-2 border-l border-slate-600">
                 {msg.sender && (
-                  <p>
+                  <p className="truncate">
                     <span className="text-slate-500">From:</span>{' '}
                     <span className="text-slate-300">{msg.sender}</span>
                   </p>
                 )}
                 {msg.subject && (
-                  <p>
+                  <p className="truncate">
                     <span className="text-slate-500">Subject:</span>{' '}
                     <span className="text-slate-300">&ldquo;{msg.subject}&rdquo;</span>
                   </p>
                 )}
               </div>
             ))}
-            {/* If operation targets more messages than we preview, show a count */}
-            {operation.message_ids?.[0]?.includes(':') && (
-              <p className="text-slate-500 text-xs">and possibly more&hellip;</p>
-            )}
           </div>
         )}
 
