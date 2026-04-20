@@ -522,7 +522,10 @@ async def _client_to_upstream(
                         description=parsed_op.description,
                         imap_command=parsed_op.imap_command,
                         message_ids=parsed_op.message_ids if parsed_op.message_ids else None,
-                        folder_from=parsed_op.folder_from,
+                        # folder_from: use parsed value if set (COPY/MOVE
+                        # parse_move doesn't know the current mailbox), fall
+                        # back to the session's selected folder.
+                        folder_from=parsed_op.folder_from or session.get("folder"),
                         folder_to=parsed_op.folder_to,
                         flags_add=parsed_op.flags_add if parsed_op.flags_add else None,
                         flags_remove=parsed_op.flags_remove if parsed_op.flags_remove else None,

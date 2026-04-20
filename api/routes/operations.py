@@ -249,14 +249,45 @@ async def _execute_imap_upstream(row: dict, db_path: Path) -> None:
             pass
 
 
+def _previews_from_snapshot(row: dict, max_messages: int = 3) -> list[MessagePreview]:
+    """Extract MessagePreview objects from the operation's snapshot field.
+
+    Fallback used when the messages table has no rows (e.g. after MOVE staging
+    deletes them, or when folder_from is not set on older operations).
+    Returns [] if snapshot is absent or has no sender/subject data.
+    """
+    snap_raw = row.get("snapshot")
+    if not snap_raw:
+        return []
+    try:
+        snap = json.loads(snap_raw) if isinstance(snap_raw, str) else snap_raw
+        previews: list[MessagePreview] = []
+        for uid_str, state in (snap or {}).items():
+            if len(previews) >= max_messages:
+                break
+            sender = state.get("sender")
+            subject = state.get("subject")
+            if sender or subject:  # only include if we have something to show
+                previews.append(MessagePreview(
+                    uid=int(uid_str),
+                    sender=sender,
+                    subject=subject,
+                    date_sent=None,
+                ))
+        return previews
+    except Exception:  # noqa: BLE001
+        return []
+
+
 async def _fetch_message_previews(
     row: dict, db_path: Path, max_messages: int = 3
 ) -> list[MessagePreview]:
     """Look up sender/subject for IMAP operation's affected messages.
 
-    Joins folder_from -> folders table -> messages table using the UID set
-    stored in message_ids. Returns up to max_messages previews.
-    SMTP ops and ops with no folder/message data return an empty list.
+    Primary path: joins folder_from -> folders table -> messages table.
+    Fallback: reads sender/subject from the operation's snapshot field
+    (used when rows were deleted during MOVE staging, or folder_from is null).
+    SMTP ops return an empty list.
     """
     from gateway.state_db import get_db as _get_db  # noqa: PLC0415
 
@@ -264,7 +295,8 @@ async def _fetch_message_previews(
         return []
     folder_name = row.get("folder_from")
     if not folder_name:
-        return []
+        # No folder context — go straight to snapshot fallback
+        return _previews_from_snapshot(row, max_messages)
     raw_ids = row.get("message_ids")
     if not raw_ids:
         return []
@@ -323,30 +355,15 @@ async def _fetch_message_previews(
                     subject=r[2],
                     date_sent=r[3],
                 ))
-            # If no rows found from messages table (e.g. rows were deleted
-            # during MOVE staging), fall back to snapshot data which captures
-            # sender/subject at staging time.
+            # If messages table has no rows (e.g. deleted during MOVE staging),
+            # fall back to snapshot which captures sender/subject at staging time.
             if not previews:
-                snap_raw = row.get("snapshot")
-                if snap_raw:
-                    try:
-                        snap = json.loads(snap_raw) if isinstance(snap_raw, str) else snap_raw
-                        for uid_str, state in (snap or {}).items():
-                            if len(previews) >= 3:
-                                break
-                            previews.append(MessagePreview(
-                                uid=int(uid_str),
-                                sender=state.get("sender"),
-                                subject=state.get("subject"),
-                                date_sent=None,
-                            ))
-                    except Exception:  # noqa: BLE001
-                        pass
+                return _previews_from_snapshot(row, max_messages)
 
             return previews
     except Exception:  # noqa: BLE001
-        # Non-fatal: if the lookup fails, return empty rather than breaking the API
-        return []
+        # Non-fatal: fall back to snapshot rather than breaking the API
+        return _previews_from_snapshot(row, max_messages)
 
 
 def _row_to_response(row: dict) -> OperationResponse:
