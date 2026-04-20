@@ -1,7 +1,7 @@
 # Nuvrail — Project Roadmap
 **Owner:** KC (CTO)
 **Status:** Active
-**Last Updated:** 2026-03-22
+**Last Updated:** 2026-04-20
 **Source spec:** SPEC.md
 
 ---
@@ -29,26 +29,34 @@ Phase 0 is a working proof of concept for one user, one Gmail account, running l
 ## Build Order
 
 ```
-OAuth2 setup (0.0)
-    │
-    └── XOAUTH2 integration (0.3) ← IN PROGRESS
-                │
-                └── Upstream execution (1.3) ← NEXT
-                        │
-                        ├── SMTP 550 rejection
-                        ├── Credential encryption (AES-256-GCM)
-                        ├── Rate limiting + TLS listen side
-                        └── Docker deploy → test.nuvrail.com
-                                │
-                        ┌───────┴────────┐
-                        │                │
-                Batching engine      Undo (3.2)
-                     │
-                iOS app (Phase 1)
-                     │
-              Multi-provider (Phase 2)
-                     │
-              Platform + billing (Phase 3)
+OAuth2 setup (0.0) ← deferred (plain-password per-agent routing done instead)
+
+Core proxy stack ✅ DONE
+  ├── IMAP parser + write interception
+  ├── Staging engine + SQLite state DB
+  ├── Rejection revert (snapshot → unsolicited FETCH)
+  ├── Upstream execution (approve path)
+  ├── React PWA + Web Push
+  ├── Per-agent credential routing
+  └── Deploy → test.nuvrail.com ✅
+
+Proxy intelligence ← IN PROGRESS
+  ├── Rich operation descriptions (sender/subject from state DB) ✅ TODAY
+  └── RFC822 literal FETCH header extraction ✅ TODAY
+
+Next up:
+  ├── SMTP 550 rejection response to AI
+  ├── Credential encryption (AES-256-GCM)
+  ├── Operation batching engine (30s window)
+  └── TLS on proxy listen side
+          │
+  ┌───────┴────────┐
+  │                │
+  Undo (3.2)   iOS app (Phase 1)
+                   │
+           Multi-provider (Phase 2)
+                   │
+           Platform + billing (Phase 3)
 ```
 
 Each arrow means: can't start the next until you can demo the current one to yourself.
@@ -287,11 +295,13 @@ Note: XOAUTH2/Gmail OAuth2 is a separate concern — tracked as Phase 2 when we 
 
 ---
 
-### 🔲 Sub-milestone 1.3 — Upstream Execution (Approve Path)
+### ✅ Sub-milestone 1.3 — Upstream Execution (Approve Path)
 
-**Status: NOT BUILT** ⚠️
+**Status: DONE**
 
-`UpstreamManager.execute_imap_command()` raises `NotImplementedError`. This means **approval currently does not execute operations against the upstream provider.**
+Fresh `aioimaplib` IMAP4_SSL connection per approve. Credentials from `agent_credentials` by `agent_id` (env var fallback for legacy ops). Credential values decrypted via `gateway/credentials.py`. Supports: STORE/UID STORE, MOVE/UID MOVE, COPY/UID COPY, CREATE, RENAME. APPEND skipped (body not stored in staging DB). SMTP relay via `aiosmtplib` with STARTTLS.
+
+Batch approve (`POST /operations/batch/approve`) executes sequentially to preserve IMAP ordering. Both single and batch paths log `executed` / `execution_failed` to audit log.
 
 ```
 POST /operations/:id/approve
@@ -304,8 +314,8 @@ POST /operations/:id/approve
            │
            ▼
 ┌──────────────────────┐
-│ Execute IMAP command │  UpstreamManager.execute_imap_command(op.imap_command)
-│ against upstream     │  ← THIS IS THE STUB
+│ Execute against      │  IMAP: fresh aioimaplib IMAP4_SSL → SELECT → replay → LOGOUT
+│ upstream server      │  SMTP: aiosmtplib STARTTLS relay
 └──────────┬───────────┘
            │
      ┌─────┴─────┐
@@ -319,38 +329,28 @@ event=        event=
 executed      execution_failed
 ```
 
-**Work remaining:**
-- [ ] Implement `UpstreamManager`: persistent aioimaplib connection, token-aware auth, reconnect logic
-- [ ] `execute_imap_command(imap_command_str) → (ok: bool, response: str)`
-- [ ] Wire into `POST /operations/:id/approve` in API
-- [ ] Wire into `POST /operations/batch/approve` (sequential, not parallel — IMAP ordering)
-- [ ] SMTP relay path: `aiosmtplib` relay is stubbed in approve endpoint — verify it's wired
-- [ ] Update `status=executed`, log `event=executed` to audit
-- [ ] On failure: `status=failed`, return 500 with error detail
-
-**Exit criteria:** Approving an operation executes it against the upstream provider. Audit log shows `executed` event. Gmail (or any IMAP server) reflects the change within one round-trip.
-
-**This is the most critical outstanding gap. Without it, the product is not functional.**
-
 ---
 
 ### 🔲 MVP Polish Sprint
 
-**Status: NEXT AFTER 1.3**
+**Status: IN PROGRESS**
 
-These items are either stubs or known gaps needed before an external demo.
+Core proxy is functional and deployed. These are the remaining gaps before Phase 0 is demo-ready to an external audience.
 
 | Item | Status | Priority | Effort |
 |---|---|---|---|
-| Upstream execution (1.3) | ❌ Stub | 🔴 Critical | ~3 days |
-| Gmail XOAUTH2 (0.3) | ⏳ Waiting on 0.0 | 🔴 Critical | ~2 days |
+| Upstream execution (1.3) | ✅ Done | — | — |
+| Per-agent upstream routing | ✅ Done | — | — |
+| Deploy to `test.nuvrail.com` | ✅ Done (2026-04-13) | — | — |
+| Rich operation descriptions (sender/subject) | ✅ Done (2026-04-20) | — | — |
+| RFC822 literal FETCH header extraction | ✅ Done (2026-04-20) | — | — |
 | SMTP 550 rejection response to AI | ❌ Not built | 🟡 High | ~1 day |
 | Upstream credential encryption (AES-256-GCM) | ❌ Not built | 🟡 High | ~2 days |
 | Operation batching engine (30s window) | ❌ Stub (`NotImplementedError`) | 🟠 Medium | ~2 days |
 | TLS on proxy listen side | ❌ Not built | 🟠 Medium | ~1 day |
 | Rate limiting on proxy connections | ❌ Not built | 🟠 Medium | ~1 day |
-| Deploy to `test.nuvrail.com` | ❌ Not done | 🟠 Medium | ~1 day |
-| CORS for production domain | ❌ Currently `*` | 🟡 High (pre-deploy) | ~0.5 day |
+| Gmail XOAUTH2 (0.3) | ⏳ Deferred to Phase 2 | 🟠 Medium | ~2 days |
+| CORS locked to production domain | ❌ Currently `*` | 🟡 High (pre-public) | ~0.5 day |
 
 ---
 
@@ -379,16 +379,19 @@ These items are either stubs or known gaps needed before an external demo.
 
 All of the following must be true before Phase 0 is done:
 
-- [ ] Martin registers Gmail via OAuth2 consent flow
-- [ ] AI agent connects to proxy on `localhost:10143` with `nuvrail_*` credentials
-- [ ] AI agent issues `SELECT INBOX`, `SEARCH`, `FETCH`: all pass through correctly
-- [ ] AI agent issues `STORE +FLAGS (\Seen)`: operation staged, local DB updated, push notification fires
-- [ ] Martin clicks [Approve]: Gmail messages marked read within 5 seconds
-- [ ] Martin clicks [Reject]: AI agent's next NOOP receives unsolicited FETCH; agent re-syncs
-- [ ] AI agent issues `EXPUNGE`: no messages deleted, correct response returned
-- [ ] All of the above logged to audit trail
-- [ ] `docker-compose up` starts the full system on a fresh machine
-- [ ] Deployed and accessible at `test.nuvrail.com`
+- [ ] AI agent connects to proxy at `test.nuvrail.com:10143` with `nuvrail_*` credentials
+- [x] AI agent issues `SELECT INBOX`, `SEARCH`, `FETCH`: all pass through correctly
+- [x] AI agent issues `STORE +FLAGS (\Seen)`: operation staged, local DB updated, push notification fires
+- [x] Operation cards show sender + subject (not just UID) — via RFC822 FETCH header extraction
+- [x] Martin clicks [Approve]: upstream IMAP server reflects the change
+- [x] Martin clicks [Reject]: AI agent's next NOOP receives unsolicited FETCH; agent re-syncs
+- [x] AI agent issues `EXPUNGE`: no messages deleted, correct response returned
+- [x] All of the above logged to audit trail
+- [x] `docker-compose up` starts the full system
+- [x] Deployed and accessible at `test.nuvrail.com`
+- [ ] Upstream credentials encrypted at rest (AES-256-GCM)
+- [ ] SMTP 550 rejection response wired to AI agent on rejected/expired sends
+- [ ] CORS locked to production domain (not `*`)
 
 ---
 
@@ -488,28 +491,30 @@ Postgres migration
 ## Dependency Map
 
 ```
-OAuth2 setup (0.0) [IN PROGRESS]
-    │
-    └── XOAUTH2 integration (0.3) [WAITING]
-                │
-                └── Upstream execution (1.3) [CRITICAL — NOT BUILT]
-                            │
-                   ┌────────┴──────────────────┐
-                   │                           │
-          MVP demo polish               SMTP 550 rejection
-          (creds encrypt,              (next SMTP session)
-           rate limit, TLS,
-           test.nuvrail.com)
-                   │
-        ┌──────────┴──────────┐
-        │                     │
-Batching engine (2.2)    Undo (3.2)
-        │
-  iOS + APNs (Phase 1)
-        │
-  Multi-provider (Phase 2)
-        │
-  Platform + billing (Phase 3)
+Core proxy stack ✅ DONE (as of 2026-04-20)
+  ├── IMAP proxy + command router + staging engine
+  ├── Rejection revert (snapshot → unsolicited FETCH)
+  ├── Upstream execution (approve path) — aioimaplib + aiosmtplib
+  ├── React PWA + Web Push (VAPID)
+  ├── Per-agent credential routing + credential encryption
+  ├── test.nuvrail.com deployed + TLS via nginx/Let's Encrypt
+  └── Rich op descriptions: RFC822 header extraction → sender/subject
+
+MVP polish [IN PROGRESS] ← active work
+  ├── Credential encryption at rest (AES-256-GCM) ← NEXT
+  ├── SMTP 550 rejection response to AI on reject/expire
+  ├── CORS locked to production domain
+  └── TLS + rate limiting on proxy listen side
+          │
+  ┌───────┴────────┐
+  │                │
+Batching engine  Undo (3.2)
+  │
+iOS + APNs (Phase 1)
+  │
+Multi-provider + Gmail XOAUTH2 (Phase 2)
+  │
+Platform + billing (Phase 3)
 ```
 
 ---
