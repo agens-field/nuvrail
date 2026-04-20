@@ -134,6 +134,34 @@ export default function OperationCard({ operation, selected, onToggleSelect }: O
           </div>
         )}
 
+        {/* IMAP message previews — sender + subject for affected messages */}
+        {!operation.smtp_envelope &&
+          operation.message_previews &&
+          operation.message_previews.length > 0 && (
+          <div className="text-sm text-slate-400 space-y-1">
+            {operation.message_previews.map((msg) => (
+              <div key={msg.uid} className="flex flex-col gap-0.5">
+                {msg.sender && (
+                  <p>
+                    <span className="text-slate-500">From:</span>{' '}
+                    <span className="text-slate-300">{msg.sender}</span>
+                  </p>
+                )}
+                {msg.subject && (
+                  <p>
+                    <span className="text-slate-500">Subject:</span>{' '}
+                    <span className="text-slate-300">&ldquo;{msg.subject}&rdquo;</span>
+                  </p>
+                )}
+              </div>
+            ))}
+            {/* If operation targets more messages than we preview, show a count */}
+            {operation.message_ids?.[0]?.includes(':') && (
+              <p className="text-slate-500 text-xs">and possibly more&hellip;</p>
+            )}
+          </div>
+        )}
+
         {/* Timing */}
         <div className="flex items-center gap-1 text-xs text-slate-500">
           <Clock className="w-3 h-3" />

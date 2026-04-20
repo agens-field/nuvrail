@@ -11,6 +11,14 @@ from typing import List, Optional
 from pydantic import BaseModel, field_validator
 
 
+class MessagePreview(BaseModel):
+    """Sender and subject for a single message affected by an IMAP operation."""
+    uid: int
+    sender: Optional[str] = None
+    subject: Optional[str] = None
+    date_sent: Optional[int] = None
+
+
 class OperationResponse(BaseModel):
     id: str
     status: str
@@ -29,6 +37,7 @@ class OperationResponse(BaseModel):
     flags_remove: List[str] = []
     is_urgent: int = 0
     error: Optional[str] = None
+    message_previews: List[MessagePreview] = []
 
     @field_validator("smtp_envelope", mode="before")
     @classmethod

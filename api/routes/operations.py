@@ -65,6 +65,7 @@ from api.models import (
     BatchRejectRequest,
     BatchRejectResponse,
     BatchRejectResult,
+    MessagePreview,
     OperationListResponse,
     OperationResponse,
     RejectResponse,
@@ -246,6 +247,86 @@ async def _execute_imap_upstream(row: dict, db_path: Path) -> None:
             await client.logout()
         except Exception:
             pass
+
+
+async def _fetch_message_previews(
+    row: dict, db_path: Path, max_messages: int = 3
+) -> list[MessagePreview]:
+    """Look up sender/subject for IMAP operation's affected messages.
+
+    Joins folder_from -> folders table -> messages table using the UID set
+    stored in message_ids. Returns up to max_messages previews.
+    SMTP ops and ops with no folder/message data return an empty list.
+    """
+    from gateway.state_db import get_db as _get_db  # noqa: PLC0415
+
+    if row.get("protocol") != "imap":
+        return []
+    folder_name = row.get("folder_from")
+    if not folder_name:
+        return []
+    raw_ids = row.get("message_ids")
+    if not raw_ids:
+        return []
+    try:
+        uid_list = json.loads(raw_ids) if isinstance(raw_ids, str) else raw_ids
+    except Exception:
+        return []
+    if not uid_list:
+        return []
+    # message_ids is stored as ["<uid_set_str>"] — e.g. ["42"] or ["1:5"]
+    uid_set_str = uid_list[0] if isinstance(uid_list[0], str) else str(uid_list[0])
+
+    try:
+        async with _get_db(db_path) as db:
+            # Resolve folder name to folder_id
+            async with db.execute(
+                "SELECT id FROM folders WHERE name = ?", (folder_name,)
+            ) as cur:
+                folder_row = await cur.fetchone()
+            if folder_row is None:
+                return []
+            folder_id = folder_row[0]
+
+            # Expand the UID set and fetch sender/subject for up to max_messages
+            # We use a simple expansion: if it's a plain UID or comma list, split;
+            # if it's a range (e.g. 1:5), let the DB do the work via BETWEEN.
+            previews: list[MessagePreview] = []
+            if ":" in uid_set_str and uid_set_str != "1:*":
+                # Range like "41:71" — fetch ordered by uid, limit to max_messages
+                parts = uid_set_str.split(":")
+                lo, hi = int(parts[0]), int(parts[1])
+                async with db.execute(
+                    "SELECT uid, sender, subject, date_sent FROM messages "
+                    "WHERE folder_id = ? AND uid BETWEEN ? AND ? ORDER BY uid LIMIT ?",
+                    (folder_id, lo, hi, max_messages),
+                ) as cur:
+                    rows = await cur.fetchall()
+            else:
+                # Individual UIDs (comma-separated) or single UID
+                uids = [int(u.strip()) for u in uid_set_str.split(",") if u.strip().isdigit()]
+                if not uids:
+                    return []
+                uids = uids[:max_messages]
+                placeholders = ",".join("?" for _ in uids)
+                async with db.execute(
+                    f"SELECT uid, sender, subject, date_sent FROM messages "
+                    f"WHERE folder_id = ? AND uid IN ({placeholders}) ORDER BY uid",
+                    [folder_id, *uids],
+                ) as cur:
+                    rows = await cur.fetchall()
+
+            for r in rows:
+                previews.append(MessagePreview(
+                    uid=r[0],
+                    sender=r[1],
+                    subject=r[2],
+                    date_sent=r[3],
+                ))
+            return previews
+    except Exception:  # noqa: BLE001
+        # Non-fatal: if the lookup fails, return empty rather than breaking the API
+        return []
 
 
 def _row_to_response(row: dict) -> OperationResponse:
@@ -430,7 +511,11 @@ async def list_ops(
 ) -> OperationListResponse:
     """List staged operations, optionally filtered by status."""
     rows = await list_operations(status=status, db_path=db_path)
-    ops = [_row_to_response(r) for r in rows]
+    ops = []
+    for r in rows:
+        op = _row_to_response(r)
+        op.message_previews = await _fetch_message_previews(r, db_path)
+        ops.append(op)
     return OperationListResponse(operations=ops, total=len(ops))
 
 
@@ -572,7 +657,9 @@ async def get_op(
     row = await get_operation(op_id, db_path=db_path)
     if row is None:
         raise HTTPException(status_code=404, detail=f"Operation {op_id!r} not found")
-    return _row_to_response(row)
+    op = _row_to_response(row)
+    op.message_previews = await _fetch_message_previews(row, db_path)
+    return op
 
 
 @router.post("/operations/{op_id}/approve", response_model=ApproveResponse)

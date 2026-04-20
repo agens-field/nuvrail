@@ -1,3 +1,10 @@
+export interface MessagePreview {
+  uid: number
+  sender?: string | null
+  subject?: string | null
+  date_sent?: number | null
+}
+
 export interface SmtpEnvelope {
   from: string
   to: string[]
@@ -16,6 +23,7 @@ export interface Operation {
   decided_at?: number
   imap_command?: string
   smtp_envelope?: SmtpEnvelope
+  message_previews?: MessagePreview[]
   message_ids?: string[]
   folder_from?: string
   folder_to?: string
