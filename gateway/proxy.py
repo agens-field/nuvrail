@@ -58,6 +58,7 @@ from gateway.state_db import (
     get_pending_reverts,
     init_db,
     mark_reverts_delivered,
+    remove_messages_from_folder,
     snapshot_messages,
     update_folder_stats,
     upsert_folders_from_list,
@@ -486,6 +487,32 @@ async def _client_to_upstream(
                                 peer, snap_exc,
                             )
                             op_snapshot = None
+
+                    # MOVE optimistic update: remove message from source folder
+                    # in local state DB so the agent sees a consistent view
+                    # (message appears moved immediately, before human approves).
+                    # The snapshot captured above enables full rollback on rejection.
+                    is_move_op = parsed.command.upper() == "MOVE" and parsed_op.message_ids
+                    if is_move_op and folder_id is not None and parsed_op.message_ids:
+                        uid_set_str = parsed_op.message_ids[0]
+                        try:
+                            # Snapshot first (if not already taken by flag-op path)
+                            if op_snapshot is None:
+                                op_snapshot = await snapshot_messages(
+                                    folder_id, uid_set_str, db_path=db_path
+                                )
+                            await remove_messages_from_folder(
+                                folder_id, uid_set_str, db_path=db_path
+                            )
+                            logger.debug(
+                                "[%s] MOVE staged: removed UIDs %s from local state (folder_id=%s)",
+                                peer, uid_set_str, folder_id,
+                            )
+                        except Exception as move_exc:  # noqa: BLE001
+                            logger.warning(
+                                "[%s] MOVE optimistic update failed (non-fatal): %s",
+                                peer, move_exc,
+                            )
 
                     op_id = await create_operation(
                         op_type=parsed_op.op_type,

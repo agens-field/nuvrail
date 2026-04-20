@@ -91,6 +91,7 @@ def _patch_staging_db(db_path: Path) -> dict:
         _state_db.apply_optimistic_flag_update,
         _state_db.restore_from_snapshot,
         _state_db.insert_pending_reverts,
+        _state_db.remove_messages_from_folder,
     ]:
         if fn.__kwdefaults__ is None:
             fn.__kwdefaults__ = {}

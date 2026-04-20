@@ -411,6 +411,30 @@ async def get_messages_by_uid_set(
     return [dict(r) for r in rows2]
 
 
+async def remove_messages_from_folder(
+    folder_id: int,
+    uid_set_str: str,
+    db_path: Path = DB_PATH,
+) -> None:
+    """Delete message rows for the given UID set from the local state mirror.
+
+    Used when staging a MOVE operation — the message is optimistically removed
+    from the source folder so the agent sees a consistent view without waiting
+    for human approval. Rollback restores the row via restore_from_snapshot.
+    """
+    rows = await get_messages_by_uid_set(folder_id, uid_set_str, db_path=db_path)
+    if not rows:
+        return
+    uids = [r["uid"] for r in rows]
+    placeholders = ",".join("?" * len(uids))
+    async with get_db(db_path) as db:
+        await db.execute(
+            f"DELETE FROM messages WHERE folder_id = ? AND uid IN ({placeholders})",  # noqa: S608
+            [folder_id, *uids],
+        )
+        await db.commit()
+
+
 # ---------------------------------------------------------------------------
 # Snapshot, optimistic update, and revert (milestone 1.2 — rejection revert)
 # ---------------------------------------------------------------------------
@@ -441,6 +465,9 @@ async def snapshot_messages(
             "flags": flags,
             "seq_num": row.get("sequence_num"),
             "folder_id": folder_id,
+            # sender/subject captured so MOVE rollback can fully re-insert the row
+            "sender": row.get("sender"),
+            "subject": row.get("subject"),
         }
     return snapshot
 
@@ -523,16 +550,30 @@ async def restore_from_snapshot(
             true_flags: list = state.get("flags", [])
             true_flags_json = json.dumps(true_flags)
 
-            # Restore the messages row to pre-op flag state.
-            # If the row doesn't exist (message not yet synced through proxy),
-            # the UPDATE is a no-op — that's fine. We still queue a pending_revert
-            # so the proxy injects the unsolicited FETCH, which tells the AI
-            # the flag was not applied. seq_num may be None for unsynced messages;
-            # the proxy defaults to seq_num=1 in that case.
-            await db.execute(
-                "UPDATE messages SET flags = ?, last_updated = ? WHERE folder_id = ? AND uid = ?",
-                (true_flags_json, now, folder_id, uid),
-            )
+            # Check if the row still exists (STORE revert) or was deleted (MOVE revert).
+            async with db.execute(
+                "SELECT id FROM messages WHERE folder_id = ? AND uid = ?",
+                (folder_id, uid),
+            ) as chk:
+                exists = await chk.fetchone()
+
+            if exists:
+                # STORE revert: row exists, just restore flags
+                await db.execute(
+                    "UPDATE messages SET flags = ?, last_updated = ? WHERE folder_id = ? AND uid = ?",
+                    (true_flags_json, now, folder_id, uid),
+                )
+            else:
+                # MOVE revert: row was deleted at staging time — re-insert it
+                seq_num = state.get("seq_num")
+                sender = state.get("sender")
+                subject = state.get("subject")
+                await db.execute(
+                    """INSERT OR IGNORE INTO messages
+                       (folder_id, uid, sequence_num, flags, sender, subject, last_updated)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (folder_id, uid, seq_num, true_flags_json, sender, subject, now),
+                )
             reverts.append({
                 "operation_id": operation_id,
                 "folder_id": folder_id,

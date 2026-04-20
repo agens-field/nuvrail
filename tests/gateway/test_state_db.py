@@ -16,9 +16,9 @@ from gateway.state_db import (
     get_messages_by_uid_set,
     get_or_create_folder,
     init_db,
-
+    remove_messages_from_folder,
+    restore_from_snapshot,
     snapshot_messages,
-
     update_folder_stats,
     upsert_folders_from_list,
     upsert_message,
@@ -427,3 +427,96 @@ async def test_get_pending_reverts_different_folder_not_returned(db_path: Path) 
     # Querying for INBOX should return 1
     inbox_rows = await get_pending_reverts(inbox_id, db_path=db_path)
     assert len(inbox_rows) == 1
+
+
+# ---------------------------------------------------------------------------
+# remove_messages_from_folder + MOVE snapshot/restore tests
+# ---------------------------------------------------------------------------
+
+
+
+
+async def test_remove_messages_from_folder_single_uid(db_path: Path) -> None:
+    """Removing a single UID deletes only that row."""
+    folder_id = await _setup_folder(db_path)
+    await upsert_message(folder_id, uid=10, seq_num=1, db_path=db_path)
+    await upsert_message(folder_id, uid=20, seq_num=2, db_path=db_path)
+
+    await remove_messages_from_folder(folder_id, "10", db_path=db_path)
+
+    remaining = await get_messages_by_uid_set(folder_id, "10,20", db_path=db_path)
+    uids = {r["uid"] for r in remaining}
+    assert 10 not in uids, "UID 10 should have been removed"
+    assert 20 in uids, "UID 20 should still be present"
+
+
+async def test_remove_messages_from_folder_range(db_path: Path) -> None:
+    """Removing a range deletes only the UIDs in that range."""
+    folder_id = await _setup_folder(db_path)
+    for uid in [1, 2, 3, 4, 5]:
+        await upsert_message(folder_id, uid=uid, seq_num=uid, db_path=db_path)
+
+    await remove_messages_from_folder(folder_id, "2:4", db_path=db_path)
+
+    remaining = await get_messages_by_uid_set(folder_id, "1:5", db_path=db_path)
+    uids = {r["uid"] for r in remaining}
+    assert uids == {1, 5}, f"Expected only UIDs 1 and 5, got {uids}"
+
+
+async def test_snapshot_captures_sender_subject(db_path: Path) -> None:
+    """snapshot_messages includes sender and subject in the snapshot."""
+    folder_id = await _setup_folder(db_path)
+    await upsert_message(
+        folder_id, uid=42, seq_num=1,
+        sender="alice@example.com", subject="Q3 report",
+        db_path=db_path,
+    )
+
+    snap = await snapshot_messages(folder_id, "42", db_path=db_path)
+    assert "42" in snap
+    assert snap["42"]["sender"] == "alice@example.com"
+    assert snap["42"]["subject"] == "Q3 report"
+
+
+async def test_restore_from_snapshot_reinserts_deleted_message(db_path: Path) -> None:
+    """On MOVE rollback: restore_from_snapshot re-inserts a deleted message row."""
+    from gateway.staging import create_operation, update_operation_status
+
+    folder_id = await _setup_folder(db_path)
+    await upsert_message(
+        folder_id, uid=99, seq_num=3,
+        flags=["\\Seen"], sender="bob@example.com", subject="Important",
+        db_path=db_path,
+    )
+
+    # Stage a MOVE op with a full snapshot (including sender/subject)
+    snap = await snapshot_messages(folder_id, "99", db_path=db_path)
+    op_id = await create_operation(
+        op_type="move",
+        protocol="imap",
+        description="Move 99 to Archive",
+        imap_command="UID MOVE 99 Archive",
+        message_ids=["99"],
+        folder_from="INBOX",
+        folder_to="Archive",
+        snapshot=snap,
+        db_path=db_path,
+    )
+
+    # Simulate MOVE optimistic update: delete the row
+    await remove_messages_from_folder(folder_id, "99", db_path=db_path)
+    gone = await get_messages_by_uid_set(folder_id, "99", db_path=db_path)
+    assert gone == [], "Message should be gone after MOVE staging"
+
+    # Reject the operation — restore_from_snapshot should re-insert the row
+    from gateway.state_db import restore_from_snapshot
+    reverts = await restore_from_snapshot(op_id, db_path=db_path)
+
+    restored = await get_messages_by_uid_set(folder_id, "99", db_path=db_path)
+    assert len(restored) == 1, "Message should be re-inserted after MOVE rollback"
+    row = restored[0]
+    assert row["uid"] == 99
+    assert row["sender"] == "bob@example.com"
+    assert row["subject"] == "Important"
+    import json as _json
+    assert "\\Seen" in _json.loads(row["flags"] or "[]")
