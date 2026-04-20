@@ -55,6 +55,7 @@ from gateway.state_db import (
     apply_optimistic_flag_update,
     get_db,
     get_message,
+    get_pending_move_uids_for_folder,
     get_pending_reverts,
     init_db,
     mark_reverts_delivered,
@@ -611,6 +612,33 @@ async def _upstream_to_client(
                 if m and m.group(1).upper() == revert_tag:
                     session["revert_trigger_tag"] = None
                     await _inject_pending_reverts(client_writer, session, db_path, peer)
+
+            # Suppress FETCH lines for UIDs that are pending MOVE from the
+            # current folder. This keeps the agent's view consistent with its
+            # staged operations — the message appears already moved without
+            # waiting for human approval.
+            if re.match(r"^\* \d+ FETCH\b", line, re.IGNORECASE):
+                folder_name = session.get("folder")
+                if folder_name:
+                    try:
+                        pending_move_uids = await get_pending_move_uids_for_folder(
+                            folder_name, db_path=db_path
+                        )
+                        if pending_move_uids:
+                            fetch_info = parse_fetch_line(line)
+                            if fetch_info and fetch_info.uid in pending_move_uids:
+                                logger.debug(
+                                    "[%s] Suppressing FETCH for pending-move UID %s",
+                                    peer, fetch_info.uid,
+                                )
+                                # Still sync state but don't forward to client
+                                try:
+                                    await _sync_upstream_line(line, session, db_path, peer)
+                                except Exception:  # noqa: BLE001
+                                    pass
+                                continue
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning("[%s] Pending-move filter error (non-fatal): %s", peer, exc)
 
             # Forward this line to the client.
             try:

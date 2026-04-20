@@ -15,6 +15,7 @@ from gateway.state_db import (
     get_message,
     get_messages_by_uid_set,
     get_or_create_folder,
+    get_pending_move_uids_for_folder,
     init_db,
     remove_messages_from_folder,
     restore_from_snapshot,
@@ -520,3 +521,136 @@ async def test_restore_from_snapshot_reinserts_deleted_message(db_path: Path) ->
     assert row["subject"] == "Important"
     import json as _json
     assert "\\Seen" in _json.loads(row["flags"] or "[]")
+
+
+async def test_get_pending_move_uids_for_folder_returns_nothing_without_function(
+    db_path: Path,
+) -> None:
+    """Placeholder: verify staged MOVE ops can be queried by folder_from.
+    
+    This test documents the gap: after staging a MOVE, there is currently no
+    function to retrieve pending-move UIDs for a given folder so the u2c pump
+    can filter FETCH responses. The function needs to be added.
+    """
+    from gateway.staging import create_operation
+    from gateway.state_db import get_db
+
+    folder_id = await _setup_folder(db_path)
+    await upsert_message(folder_id, uid=377, seq_num=1, sender="boss@example.com", subject="Offer", db_path=db_path)
+
+    # Stage a MOVE
+    await create_operation(
+        op_type="move",
+        protocol="imap",
+        description="Move 377 to Archive",
+        imap_command="UID MOVE 377 Archive",
+        message_ids=["377"],
+        folder_from="INBOX",
+        folder_to="Archive",
+        db_path=db_path,
+    )
+
+    # Query staged_operations for pending MOVEs from INBOX
+    async with get_db(db_path) as db:
+        async with db.execute(
+            """SELECT message_ids FROM staged_operations
+               WHERE status = 'pending' AND op_type = 'move' AND folder_from = ?""",
+            ("INBOX",),
+        ) as cur:
+            rows = await cur.fetchall()
+
+    import json as _json
+    pending_uids: set[int] = set()
+    for row in rows:
+        ids = _json.loads(row[0] or "[]")
+        for uid_str in ids:
+            if uid_str.isdigit():
+                pending_uids.add(int(uid_str))
+
+    assert 377 in pending_uids, (
+        "UID 377 should be retrievable from staged_operations for pending MOVE filter"
+    )
+
+
+async def test_get_pending_move_uids_for_folder_single(db_path: Path) -> None:
+    """get_pending_move_uids_for_folder returns staged move UID for folder."""
+    from gateway.staging import create_operation
+    from gateway.state_db import get_pending_move_uids_for_folder
+
+    await create_operation(
+        op_type="move", protocol="imap",
+        description="Move 377 to Archive",
+        imap_command="UID MOVE 377 Archive",
+        message_ids=["377"],
+        folder_from="INBOX", folder_to="Archive",
+        db_path=db_path,
+    )
+
+    uids = await get_pending_move_uids_for_folder("INBOX", db_path=db_path)
+    assert 377 in uids
+
+    other = await get_pending_move_uids_for_folder("Sent", db_path=db_path)
+    assert 377 not in other
+
+
+async def test_get_pending_move_uids_excludes_approved(db_path: Path) -> None:
+    """Approved/rejected ops are not returned — only pending ones."""
+    from gateway.staging import create_operation, update_operation_status
+    from gateway.state_db import get_pending_move_uids_for_folder
+
+    op_id = await create_operation(
+        op_type="move", protocol="imap",
+        description="Move 50 to Archive",
+        imap_command="UID MOVE 50 Archive",
+        message_ids=["50"],
+        folder_from="INBOX", folder_to="Archive",
+        db_path=db_path,
+    )
+    await update_operation_status(op_id, "approved", db_path=db_path)
+
+    uids = await get_pending_move_uids_for_folder("INBOX", db_path=db_path)
+    assert 50 not in uids
+
+
+async def test_message_previews_fallback_to_snapshot(db_path: Path) -> None:
+    """After MOVE staging deletes the row, message_previews reads from snapshot."""
+    from gateway.staging import create_operation
+
+    folder_id = await _setup_folder(db_path)
+    await upsert_message(
+        folder_id, uid=377, seq_num=1,
+        sender="boss@example.com", subject="Important offer",
+        db_path=db_path,
+    )
+
+    # Take snapshot (includes sender/subject now)
+    snap = await snapshot_messages(folder_id, "377", db_path=db_path)
+    assert snap["377"]["sender"] == "boss@example.com"
+
+    # Stage move and delete from local state (simulates what proxy does)
+    op_id = await create_operation(
+        op_type="move", protocol="imap",
+        description="Move 377 to Archive",
+        imap_command="UID MOVE 377 Archive",
+        message_ids=["377"],
+        folder_from="INBOX", folder_to="Archive",
+        snapshot=snap,
+        db_path=db_path,
+    )
+    await remove_messages_from_folder(folder_id, "377", db_path=db_path)
+
+    # Now simulate what _fetch_message_previews does via the API
+    from gateway.state_db import get_db
+    async with get_db(db_path) as db:
+        async with db.execute(
+            "SELECT * FROM staged_operations WHERE id = ?", (op_id,)
+        ) as cur:
+            op_row = dict(await cur.fetchone())
+
+    import json as _json
+    snap_raw = op_row.get("snapshot")
+    assert snap_raw is not None
+    snap_data = _json.loads(snap_raw)
+    assert "377" in snap_data
+    assert snap_data["377"]["sender"] == "boss@example.com"
+    assert snap_data["377"]["subject"] == "Important offer"

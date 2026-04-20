@@ -92,6 +92,7 @@ def _patch_staging_db(db_path: Path) -> dict:
         _state_db.restore_from_snapshot,
         _state_db.insert_pending_reverts,
         _state_db.remove_messages_from_folder,
+        _state_db.get_pending_move_uids_for_folder,
     ]:
         if fn.__kwdefaults__ is None:
             fn.__kwdefaults__ = {}

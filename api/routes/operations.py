@@ -323,6 +323,26 @@ async def _fetch_message_previews(
                     subject=r[2],
                     date_sent=r[3],
                 ))
+            # If no rows found from messages table (e.g. rows were deleted
+            # during MOVE staging), fall back to snapshot data which captures
+            # sender/subject at staging time.
+            if not previews:
+                snap_raw = row.get("snapshot")
+                if snap_raw:
+                    try:
+                        snap = json.loads(snap_raw) if isinstance(snap_raw, str) else snap_raw
+                        for uid_str, state in (snap or {}).items():
+                            if len(previews) >= 3:
+                                break
+                            previews.append(MessagePreview(
+                                uid=int(uid_str),
+                                sender=state.get("sender"),
+                                subject=state.get("subject"),
+                                date_sent=None,
+                            ))
+                    except Exception:  # noqa: BLE001
+                        pass
+
             return previews
     except Exception:  # noqa: BLE001
         # Non-fatal: if the lookup fails, return empty rather than breaking the API

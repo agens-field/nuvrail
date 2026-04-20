@@ -411,6 +411,48 @@ async def get_messages_by_uid_set(
     return [dict(r) for r in rows2]
 
 
+async def get_pending_move_uids_for_folder(
+    folder_name: str,
+    db_path: Path = DB_PATH,
+) -> "set[int]":
+    """Return UIDs that are pending MOVE out of the given folder.
+
+    Used by the u2c pump to filter FETCH responses — if a UID is pending
+    move from the current folder, the proxy suppresses that FETCH line so
+    the agent sees a consistent view without waiting for human approval.
+    """
+    async with get_db(db_path) as db:
+        async with db.execute(
+            """SELECT message_ids FROM staged_operations
+               WHERE status = 'pending' AND op_type = 'move' AND folder_from = ?""",
+            (folder_name,),
+        ) as cur:
+            rows = await cur.fetchall()
+
+    pending: set[int] = set()
+    for row in rows:
+        raw = row["message_ids"] if isinstance(row, dict) else row[0]
+        if not raw:
+            continue
+        try:
+            ids = json.loads(raw)
+        except Exception:
+            continue
+        for uid_str in ids:
+            # message_ids stores raw uid_set strings like "377" or "1:5"
+            # For simple single UIDs, parse directly; ranges handled below
+            s = str(uid_str).strip()
+            if s.isdigit():
+                pending.add(int(s))
+            elif ":" in s:
+                # Expand simple range N:M
+                parts = s.split(":")
+                if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
+                    lo, hi = int(parts[0]), int(parts[1])
+                    pending.update(range(lo, hi + 1))
+    return pending
+
+
 async def remove_messages_from_folder(
     folder_id: int,
     uid_set_str: str,
