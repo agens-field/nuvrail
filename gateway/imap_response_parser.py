@@ -31,10 +31,12 @@ SELECT response flow
 
 from __future__ import annotations
 
+import email
+import email.header
 import logging
 import re
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +86,16 @@ _RE_LIST = re.compile(
 
 # FETCH response — must start with "* <seq> FETCH ("
 _RE_FETCH_START = re.compile(r"^\* (\d+) FETCH \((.+)\)$", re.IGNORECASE | re.DOTALL)
+
+# FETCH response with a trailing literal: "* N FETCH (UID M RFC822 {size}" or
+# "* N FETCH (UID M BODY[] {size}" etc.  Captures seq_num, UID, and literal size.
+# FETCH response with a trailing literal: "* N FETCH (UID M RFC822 {size}" or
+# "* N FETCH (UID M BODY[] {size}" etc.  Captures seq_num, UID, and literal size.
+# The closing ')' may or may not appear on the same line before the literal data.
+_RE_FETCH_LITERAL = re.compile(
+    r"^\* (\d+) FETCH \(.*?\bUID (\d+)\b.*\{(\d+)\}\)?\s*$",
+    re.IGNORECASE,
+)
 
 # Within FETCH payload
 _RE_UID = re.compile(r"\bUID (\d+)\b", re.IGNORECASE)
@@ -221,3 +233,64 @@ def parse_fetch_line(line: str) -> Optional[FetchInfo]:
         logger.debug("parse_fetch_line: ENVELOPE parsing failed: %s", exc)
 
     return info
+
+
+# Maximum bytes to read from an RFC822 literal to extract headers.
+# Real-world message headers rarely exceed 8 KB; 16 KB is a safe cap.
+_HEADER_READ_LIMIT = 16 * 1024
+
+
+def _decode_header(raw: str) -> str:
+    """Decode an RFC2047 encoded-word header value to a plain string.
+
+    Examples:
+      '=?UTF-8?Q?Re=3A_Invoice?='  →  'Re: Invoice'
+      '=?iso-8859-1?B?dGVzdA==?='  →  'test'
+      'Plain subject'              →  'Plain subject'
+    """
+    try:
+        parts = email.header.decode_header(raw)
+        decoded = []
+        for part, charset in parts:
+            if isinstance(part, bytes):
+                decoded.append(part.decode(charset or "utf-8", errors="replace"))
+            else:
+                decoded.append(part)
+        return "".join(decoded).strip()
+    except Exception:  # noqa: BLE001
+        return raw.strip()
+
+
+def extract_headers_from_rfc822(data: bytes) -> Tuple[Optional[str], Optional[str]]:
+    """Extract (sender, subject) from the start of a raw RFC822 message.
+
+    Parses only the header block (everything before the first blank line).
+    Returns (None, None) if headers cannot be extracted.
+
+    Handles:
+    - RFC2047 encoded-word subjects (=?UTF-8?Q?...?=)
+    - Multi-line (folded) headers
+    - Both From: and Subject: in any order
+
+    Does NOT load the full message body — data may be a truncated prefix.
+    """
+    try:
+        # Find end of headers (blank line). Work on the prefix only.
+        header_end = data.find(b"\r\n\r\n")
+        if header_end == -1:
+            header_end = data.find(b"\n\n")
+        header_bytes = data[:header_end] if header_end != -1 else data
+
+        # Use stdlib email parser in headersonly mode — safe on truncated input.
+        msg = email.message_from_bytes(header_bytes + b"\r\n\r\n")
+
+        raw_from = msg.get("From", "")
+        raw_subject = msg.get("Subject", "")
+
+        sender = _decode_header(raw_from) if raw_from else None
+        subject = _decode_header(raw_subject) if raw_subject else None
+
+        return sender or None, subject or None
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("extract_headers_from_rfc822: failed: %s", exc)
+        return None, None

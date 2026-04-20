@@ -6,6 +6,8 @@ Tests are purely in-process — no DB, no network.
 from __future__ import annotations
 
 from gateway.imap_response_parser import (
+    _RE_FETCH_LITERAL,
+    extract_headers_from_rfc822,
     parse_fetch_line,
     parse_list_response,
     parse_select_response,
@@ -177,3 +179,129 @@ def test_parse_fetch_envelope_subject_and_sender() -> None:
     assert info.date_str == "Mon, 1 Jan 2024 12:00:00 +0000"
     assert info.sender is not None
     assert "alice@example.com" in info.sender
+
+
+# ---------------------------------------------------------------------------
+# _RE_FETCH_LITERAL — regex for detecting RFC822 literal FETCH lines
+# ---------------------------------------------------------------------------
+
+
+def test_fetch_literal_regex_matches_rfc822() -> None:
+    """Standard UID FETCH RFC822 response with literal size."""
+    line = "* 5 FETCH (UID 386 RFC822 {12345})"
+    m = _RE_FETCH_LITERAL.match(line)
+    assert m is not None
+    assert int(m.group(1)) == 5    # seq_num
+    assert int(m.group(2)) == 386  # uid
+    assert int(m.group(3)) == 12345  # literal size
+
+
+def test_fetch_literal_regex_matches_body_bracket() -> None:
+    """BODY[] variant also triggers the literal path."""
+    line = "* 3 FETCH (UID 99 BODY[] {8192})"
+    m = _RE_FETCH_LITERAL.match(line)
+    assert m is not None
+    assert int(m.group(2)) == 99
+    assert int(m.group(3)) == 8192
+
+
+def test_fetch_literal_regex_matches_with_flags() -> None:
+    """UID and FLAGS can appear together before RFC822."""
+    line = "* 2 FETCH (UID 42 FLAGS (\\Seen) RFC822 {500})"
+    m = _RE_FETCH_LITERAL.match(line)
+    assert m is not None
+    assert int(m.group(2)) == 42
+
+
+def test_fetch_literal_regex_no_match_without_uid() -> None:
+    """Lines without UID in the FETCH payload don't match."""
+    line = "* 5 FETCH (RFC822 {12345})"
+    m = _RE_FETCH_LITERAL.match(line)
+    assert m is None
+
+
+def test_fetch_literal_regex_no_match_envelope_fetch() -> None:
+    """Normal ENVELOPE fetch (no literal) doesn't match."""
+    line = '* 1 FETCH (UID 42 FLAGS (\\Seen) ENVELOPE ("date" "subject" NIL NIL NIL NIL NIL NIL NIL NIL))'
+    m = _RE_FETCH_LITERAL.match(line)
+    assert m is None
+
+
+# ---------------------------------------------------------------------------
+# extract_headers_from_rfc822
+# ---------------------------------------------------------------------------
+
+
+def _make_rfc822(from_: str, subject: str, body: str = "Hello") -> bytes:
+    """Build a minimal RFC822 message as bytes."""
+    return (
+        f"From: {from_}\r\n"
+        f"Subject: {subject}\r\n"
+        f"Date: Mon, 1 Jan 2024 12:00:00 +0000\r\n"
+        f"\r\n"
+        f"{body}\r\n"
+    ).encode()
+
+
+def test_extract_headers_plain() -> None:
+    """Plain ASCII From/Subject are returned as-is."""
+    data = _make_rfc822("Alice <alice@example.com>", "Hello there")
+    sender, subject = extract_headers_from_rfc822(data)
+    assert sender == "Alice <alice@example.com>"
+    assert subject == "Hello there"
+
+
+def test_extract_headers_encoded_subject() -> None:
+    """RFC2047 encoded-word subjects are decoded."""
+    # =?UTF-8?Q?Re=3A_Invoice?= decodes to "Re: Invoice"
+    data = _make_rfc822("billing@acme.com", "=?UTF-8?Q?Re=3A_Invoice?=")
+    sender, subject = extract_headers_from_rfc822(data)
+    assert subject == "Re: Invoice"
+    assert sender == "billing@acme.com"
+
+
+def test_extract_headers_encoded_sender() -> None:
+    """RFC2047 encoded-word display names in From are decoded."""
+    data = _make_rfc822("=?UTF-8?Q?Alice_Smith?= <alice@example.com>", "Hi")
+    sender, subject = extract_headers_from_rfc822(data)
+    assert sender is not None
+    assert "alice@example.com" in sender
+
+
+def test_extract_headers_missing_fields() -> None:
+    """Missing From/Subject returns None for each missing field."""
+    data = b"Date: Mon, 1 Jan 2024 12:00:00 +0000\r\n\r\nBody"
+    sender, subject = extract_headers_from_rfc822(data)
+    assert sender is None
+    assert subject is None
+
+
+def test_extract_headers_truncated_no_blank_line() -> None:
+    """Truncated input without blank line is handled gracefully."""
+    # Simulate only reading first N bytes of a large message
+    data = b"From: alice@example.com\r\nSubject: Test\r\n"
+    sender, subject = extract_headers_from_rfc822(data)
+    assert sender == "alice@example.com"
+    assert subject == "Test"
+
+
+def test_extract_headers_empty_bytes() -> None:
+    """Empty input returns (None, None) without raising."""
+    sender, subject = extract_headers_from_rfc822(b"")
+    assert sender is None
+    assert subject is None
+
+
+def test_extract_headers_multiline_subject() -> None:
+    """Folded (multi-line) Subject header is unfolded correctly."""
+    data = (
+        b"From: alice@example.com\r\n"
+        b"Subject: This is a very long subject\r\n"
+        b" that wraps onto the next line\r\n"
+        b"\r\n"
+        b"Body"
+    )
+    sender, subject = extract_headers_from_rfc822(data)
+    assert subject is not None
+    assert "long subject" in subject
+    assert "wraps" in subject

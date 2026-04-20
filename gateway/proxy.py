@@ -46,7 +46,14 @@ from dotenv import load_dotenv
 
 from gateway.command_router import classify
 from gateway.imap_parser import ParsedCommand, parse_line
-from gateway.imap_response_parser import parse_fetch_line, parse_list_response, parse_select_response
+from gateway.imap_response_parser import (
+    _HEADER_READ_LIMIT,
+    _RE_FETCH_LITERAL,
+    extract_headers_from_rfc822,
+    parse_fetch_line,
+    parse_list_response,
+    parse_select_response,
+)
 from gateway.operation_parser import ParsedOperation, build_rich_description, parse_append, parse_copy, parse_move, parse_store
 from gateway.credentials import decrypt_credential
 from gateway.staging import create_operation
@@ -687,6 +694,87 @@ async def _upstream_to_client(
                         )
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("[%s] SEARCH filter failed (non-fatal): %s", peer, exc)
+
+            # RFC822 literal FETCH: "* N FETCH (UID M RFC822 {size})"
+            # The full message body follows as a literal block. We consume it
+            # from the stream here, extract From/Subject headers, and forward
+            # everything to the client unchanged. This is the only point where
+            # we see message metadata for agents that fetch RFC822 directly
+            # rather than requesting ENVELOPE.
+            #
+            # Flow:
+            #   header line  ──► forward to client
+            #                ──► consume literal bytes from stream
+            #                ──► extract headers from first _HEADER_READ_LIMIT bytes
+            #                ──► forward remaining bytes to client
+            #                ──► upsert sender/subject into state DB
+            #
+            # Non-fatal: if anything fails, bytes are still forwarded correctly.
+            _lit_m = _RE_FETCH_LITERAL.match(line)
+            if _lit_m:
+                _lit_uid = int(_lit_m.group(2))
+                _lit_size = int(_lit_m.group(3))
+                folder_id = session.get("folder_id")
+                try:
+                    # Forward the header line first.
+                    client_writer.write(line_with_crlf)
+                    await client_writer.drain()
+
+                    # Read the full literal from stream (already partially in buffer).
+                    _lit_remaining = _lit_size
+                    _header_buf = b""
+                    _header_done = False
+
+                    # Drain whatever is already in buffer before reading more.
+                    while _lit_remaining > 0:
+                        if buffer:
+                            _take = min(len(buffer), _lit_remaining)
+                            _chunk = buffer[:_take]
+                            buffer = buffer[_take:]
+                        else:
+                            _to_read = min(_READ_CHUNK, _lit_remaining)
+                            _chunk = await upstream_reader.read(_to_read)
+                            if not _chunk:
+                                break
+
+                        # Accumulate prefix for header extraction.
+                        if not _header_done:
+                            _header_buf += _chunk
+                            if len(_header_buf) >= _HEADER_READ_LIMIT or _lit_remaining - len(_chunk) <= 0:
+                                _header_done = True
+
+                        # Forward bytes to client immediately.
+                        client_writer.write(_chunk)
+                        await client_writer.drain()
+                        _lit_remaining -= len(_chunk)
+
+                    # Extract and store headers (non-fatal).
+                    if folder_id is not None and _header_buf:
+                        try:
+                            _sender, _subject = extract_headers_from_rfc822(_header_buf)
+                            if _sender or _subject:
+                                await upsert_message(
+                                    folder_id,
+                                    _lit_uid,
+                                    sender=_sender,
+                                    subject=_subject,
+                                    db_path=db_path,
+                                )
+                                logger.debug(
+                                    "[%s] RFC822 literal: stored sender=%r subject=%r for uid=%s",
+                                    peer, _sender, _subject, _lit_uid,
+                                )
+                        except Exception as _hdr_exc:  # noqa: BLE001
+                            logger.debug(
+                                "[%s] RFC822 header extraction failed (non-fatal): %s",
+                                peer, _hdr_exc,
+                            )
+                except (ConnectionResetError, BrokenPipeError, OSError):
+                    return
+                except Exception as _lit_exc:  # noqa: BLE001
+                    logger.warning("[%s] RFC822 literal handling error (non-fatal): %s", peer, _lit_exc)
+                # Skip normal forward + sync for this line — already forwarded above.
+                continue
 
             # Suppress FETCH lines for UIDs that are pending MOVE from the
             # current folder. This keeps the agent's view consistent with its
