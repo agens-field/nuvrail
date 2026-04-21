@@ -1,4 +1,7 @@
 import type {
+  AutoApprovalRule,
+  AutoApprovalRuleCreateRequest,
+  AutoApprovalRuleUpdateRequest,
   AuditListResponse,
   BatchApproveResponse,
   BatchRejectResponse,
@@ -67,7 +70,22 @@ async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
     }
     throw new Error(`API ${res.status}: ${text}`)
   }
-  return res.json() as Promise<T>
+
+  // Some successful endpoints intentionally return 204 No Content.
+  if (res.status === 204) {
+    return undefined as T
+  }
+
+  const bodyText = await res.text()
+  if (!bodyText.trim()) {
+    return undefined as T
+  }
+
+  try {
+    return JSON.parse(bodyText) as T
+  } catch {
+    throw new Error(`API returned invalid JSON for ${path}`)
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -252,6 +270,35 @@ export async function exportAuditLog(agentId?: number): Promise<void> {
   a.download = 'nuvrail-audit.json'
   a.click()
   URL.revokeObjectURL(url)
+}
+
+// ---------------------------------------------------------------------------
+// Auto-approval rule endpoints
+// ---------------------------------------------------------------------------
+
+export async function fetchRules(): Promise<AutoApprovalRule[]> {
+  return apiFetch<AutoApprovalRule[]>('/api/v1/rules')
+}
+
+export async function createRule(body: AutoApprovalRuleCreateRequest): Promise<AutoApprovalRule> {
+  return apiFetch<AutoApprovalRule>('/api/v1/rules', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  })
+}
+
+export async function updateRule(
+  id: number,
+  body: AutoApprovalRuleUpdateRequest
+): Promise<AutoApprovalRule> {
+  return apiFetch<AutoApprovalRule>(`/api/v1/rules/${id}`, {
+    method: 'PATCH',
+    body: JSON.stringify(body),
+  })
+}
+
+export async function deleteRule(id: number): Promise<void> {
+  await apiFetch<void>(`/api/v1/rules/${id}`, { method: 'DELETE' })
 }
 
 // ---------------------------------------------------------------------------

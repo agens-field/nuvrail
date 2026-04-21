@@ -93,6 +93,40 @@ export interface AuditListResponse {
   offset: number
 }
 
+export type AutoApprovalAction = 'approve' | 'reject'
+
+export interface AutoApprovalRule {
+  id: number
+  enabled: boolean
+  priority: number
+  op_type?: string | null
+  sender_pattern?: string | null
+  folder_from?: string | null
+  action: AutoApprovalAction
+  description: string
+  created_at: number
+}
+
+export interface AutoApprovalRuleCreateRequest {
+  enabled?: boolean
+  priority?: number
+  op_type?: string | null
+  sender_pattern?: string | null
+  folder_from?: string | null
+  action: AutoApprovalAction
+  description: string
+}
+
+export interface AutoApprovalRuleUpdateRequest {
+  enabled?: boolean
+  priority?: number
+  op_type?: string | null
+  sender_pattern?: string | null
+  folder_from?: string | null
+  action?: AutoApprovalAction
+  description?: string
+}
+
 // Web Push
 export interface VapidKeyResponse {
   public_key: string

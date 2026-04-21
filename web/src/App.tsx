@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Toaster } from 'sonner'
 import PendingView from './views/PendingView'
 import AuditView from './views/AuditView'
+import RulesView from './views/RulesView'
 import AgentsView from './views/AgentsView'
 import LoginView from './views/LoginView'
 import SetupView from './views/SetupView'
@@ -70,6 +71,14 @@ export default function App() {
                     Pending
                   </NavLink>
                   <NavLink
+                    to="/rules"
+                    className={({ isActive }) =>
+                      `${NAV_LINK_BASE} ${isActive ? NAV_LINK_ACTIVE : NAV_LINK_INACTIVE}`
+                    }
+                  >
+                    Rules
+                  </NavLink>
+                  <NavLink
                     to="/audit"
                     className={({ isActive }) =>
                       `${NAV_LINK_BASE} ${isActive ? NAV_LINK_ACTIVE : NAV_LINK_INACTIVE}`
@@ -101,6 +110,7 @@ export default function App() {
             <main className="max-w-4xl mx-auto px-4 py-6">
               <Routes>
                 <Route path="/" element={<PendingView />} />
+                <Route path="/rules" element={<RulesView />} />
                 <Route path="/audit" element={<AuditView />} />
                 <Route path="/agents" element={<AgentsView />} />
                 <Route path="/setup" element={<SetupView />} />
