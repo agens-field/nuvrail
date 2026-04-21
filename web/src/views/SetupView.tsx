@@ -111,6 +111,22 @@ function AgentStep() {
   const [result, setResult] = useState<AgentCreateResponse | null>(null)
   const [copied, setCopied] = useState(false)
 
+  function mapConnectionError(message: string): string {
+    if (message.includes('imap_auth_failed')) {
+      return 'Wrong password — for Gmail or iCloud, use an app-specific password.'
+    }
+    if (message.includes('imap_connection_failed')) {
+      return 'Could not reach the IMAP server. Check the host and IMAP port.'
+    }
+    if (message.includes('imap_ssl_error')) {
+      return 'SSL/TLS error. Check that you are using the correct IMAP SSL port.'
+    }
+    if (message.includes('imap_timeout')) {
+      return 'Connection timed out while verifying. Please try again.'
+    }
+    return message
+  }
+
   async function handleGenerate(e: React.FormEvent) {
     e.preventDefault()
     setError(null)
@@ -126,7 +142,9 @@ function AgentStep() {
       })
       setResult(data)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to generate credentials')
+      setError(
+        err instanceof Error ? mapConnectionError(err.message) : 'Failed to generate credentials'
+      )
     } finally {
       setLoading(false)
     }
@@ -268,7 +286,7 @@ function AgentStep() {
           disabled={loading}
           className="w-full bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white font-medium py-2 px-4 rounded transition-colors"
         >
-          {loading ? 'Generating…' : 'Generate Agent Credentials'}
+          {loading ? 'Verifying connection…' : 'Generate Agent Credentials'}
         </button>
       </form>
     </div>
