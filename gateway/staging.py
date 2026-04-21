@@ -21,7 +21,7 @@ from typing import Optional
 
 import asyncio
 
-from gateway.rules import get_matching_rule
+from gateway.rules import evaluate_rules, get_matching_rule
 from gateway.state_db import DB_PATH, get_db
 from gateway.state_db import insert_pending_reverts, restore_from_snapshot
 
@@ -161,20 +161,31 @@ async def create_operation(
 
     # Evaluate auto-rules before push notifications. Auto-approved/rejected
     # operations should not create pending-review push noise.
-    op_context = {
-        "id": op_id,
-        "op_type": op_type,
-        "sender": (smtp_envelope or {}).get("from") if smtp_envelope else None,
-        "smtp_envelope": smtp_envelope,
-        "folder_from": folder_from,
-        "snapshot": snapshot,
-    }
-    matched_rule = await get_matching_rule(op_context, db_path=db_path)
-    auto_action = matched_rule.get("action") if matched_rule is not None else None
-    if matched_rule is not None and auto_action in {"approve", "reject"}:
-        await _apply_auto_rule_decision(op_id, auto_action, matched_rule, db_path)
-    else:
-        auto_action = None
+    auto_action = await evaluate_rules(
+        {
+            "id": op_id,
+            "op_type": op_type,
+            "sender": (smtp_envelope or {}).get("from") if smtp_envelope else None,
+            "smtp_envelope": smtp_envelope,
+            "folder_from": folder_from,
+            "snapshot": snapshot,
+        },
+        db_path=db_path,
+    )
+    if auto_action in {"approve", "reject"}:
+        matched_rule = await get_matching_rule(
+            {
+                "id": op_id,
+                "op_type": op_type,
+                "sender": (smtp_envelope or {}).get("from") if smtp_envelope else None,
+                "smtp_envelope": smtp_envelope,
+                "folder_from": folder_from,
+                "snapshot": snapshot,
+            },
+            db_path=db_path,
+        )
+        if matched_rule is not None:
+            await _apply_auto_rule_decision(op_id, auto_action, matched_rule, db_path)
 
     if auto_action is None:
         # Fire-and-forget Web Push notification. Non-fatal — staging always succeeds.
