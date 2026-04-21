@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { formatDistanceToNow, format, fromUnixTime } from 'date-fns'
 import { Download, ChevronDown, ChevronRight, RefreshCw } from 'lucide-react'
-import { fetchAuditLog, exportAuditLog } from '../api/client'
+import { fetchAuditLog, exportAuditLog, fetchAgents } from '../api/client'
 import type { AuditEntry } from '../types'
 
 const PAGE_SIZE = 20
@@ -107,12 +107,17 @@ function AuditRow({ entry }: { entry: AuditEntry }) {
         <td className="px-3 py-3 text-sm text-slate-400 whitespace-nowrap">
           {ACTOR_LABELS[entry.actor ?? ''] ?? entry.actor ?? '—'}
         </td>
+
+        {/* Agent */}
+        <td className="px-3 py-3 text-sm text-slate-400 whitespace-nowrap">
+          {entry.agent_label ?? (entry.agent_id ? `Agent #${entry.agent_id}` : '—')}
+        </td>
       </tr>
 
       {/* Expanded detail row */}
       {expanded && (
         <tr className="bg-slate-800/70 border-b border-slate-700/50">
-          <td colSpan={5} className="px-6 py-4">
+          <td colSpan={6} className="px-6 py-4">
             <div className="space-y-2 text-sm">
               {entry.operation_id && (
                 <div>
@@ -150,11 +155,22 @@ function AuditRow({ entry }: { entry: AuditEntry }) {
 export default function AuditView() {
   const [page, setPage] = useState(0)
   const [eventFilter, setEventFilter] = useState<string | undefined>(undefined)
+  const [agentFilter, setAgentFilter] = useState<number | undefined>(undefined)
   const [exporting, setExporting] = useState(false)
 
+  const { data: agents } = useQuery({
+    queryKey: ['agents'],
+    queryFn: fetchAgents,
+  })
+
   const { data, isLoading, isError, refetch, isFetching } = useQuery({
-    queryKey: ['audit', page, eventFilter],
-    queryFn: () => fetchAuditLog({ limit: PAGE_SIZE, offset: page * PAGE_SIZE, event: eventFilter }),
+    queryKey: ['audit', page, eventFilter, agentFilter],
+    queryFn: () => fetchAuditLog({
+      limit: PAGE_SIZE,
+      offset: page * PAGE_SIZE,
+      event: eventFilter,
+      agent_id: agentFilter,
+    }),
     placeholderData: prev => prev,
   })
 
@@ -163,7 +179,7 @@ export default function AuditView() {
   async function handleExport() {
     setExporting(true)
     try {
-      await exportAuditLog()
+      await exportAuditLog(agentFilter)
     } catch (err) {
       console.error('Export failed:', err)
     } finally {
@@ -183,7 +199,23 @@ export default function AuditView() {
             </p>
           )}
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
+          <select
+            value={agentFilter === undefined ? '' : String(agentFilter)}
+            onChange={(e) => {
+              const value = e.target.value
+              setAgentFilter(value ? Number(value) : undefined)
+              setPage(0)
+            }}
+            className="px-3 py-2 rounded-md bg-slate-700 hover:bg-slate-600 text-sm text-slate-200 border border-slate-600"
+          >
+            <option value="">All agents</option>
+            {(agents ?? []).map(agent => (
+              <option key={agent.id} value={agent.id}>
+                {agent.label}
+              </option>
+            ))}
+          </select>
           <button
             onClick={() => refetch()}
             disabled={isFetching}
@@ -246,6 +278,7 @@ export default function AuditView() {
                 <th className="px-3 py-2">Event</th>
                 <th className="px-3 py-2">Description</th>
                 <th className="px-3 py-2">Actor</th>
+                <th className="px-3 py-2">Agent</th>
               </tr>
             </thead>
             <tbody>

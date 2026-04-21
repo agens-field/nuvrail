@@ -51,6 +51,7 @@ def _row_to_entry(row: dict) -> AuditEntry:
         event=row["event"],
         actor=row.get("actor"),
         agent_id=row.get("agent_id"),
+        agent_label=row.get("agent_label"),
         detail=detail_parsed,
         # Joined fields from staged_operations (may be None if op was deleted)
         op_description=row.get("op_description"),
@@ -66,6 +67,7 @@ async def list_audit(
     offset: int = Query(default=0, ge=0),
     event: Optional[str] = Query(default=None),
     actor: Optional[str] = Query(default=None),
+    agent_id: Optional[int] = Query(default=None, ge=1),
     db_path: Path = Depends(get_db_path),
     current_user: dict = Depends(get_current_user),
 ) -> AuditListResponse:
@@ -94,6 +96,9 @@ async def list_audit(
     if actor is not None:
         conditions.append("a.actor = ?")
         params.append(actor)
+    if agent_id is not None:
+        conditions.append("(a.agent_id = ? OR (a.agent_id IS NULL AND op.agent_id = ?))")
+        params.extend([agent_id, agent_id])
 
     where = "WHERE " + " AND ".join(conditions)
 
@@ -103,6 +108,7 @@ async def list_audit(
         FROM audit_log a
         LEFT JOIN staged_operations op ON a.operation_id = op.id
         LEFT JOIN agent_credentials ac ON a.agent_id = ac.id
+        LEFT JOIN agent_credentials op_ac ON op.agent_id = op_ac.id
     """
 
     count_sql = f"SELECT COUNT(*) {join_clause} {where}"
@@ -113,7 +119,8 @@ async def list_audit(
             a.operation_id,
             a.event,
             a.actor,
-            a.agent_id,
+            COALESCE(a.agent_id, op.agent_id) AS agent_id,
+            COALESCE(ac.label, op_ac.label) AS agent_label,
             a.detail,
             op.description   AS op_description,
             op.op_type       AS op_type,
@@ -139,6 +146,7 @@ async def list_audit(
 
 @router.get("/audit/export")
 async def export_audit(
+    agent_id: Optional[int] = Query(default=None, ge=1),
     db_path: Path = Depends(get_db_path),
     current_user: dict = Depends(get_current_user),
 ) -> JSONResponse:
@@ -149,14 +157,28 @@ async def export_audit(
     Suitable for compliance archival or external analysis.
     """
     user_id = current_user["id"]
-    select_sql = """
+    conditions: list[str] = [
+        "(ac.user_id = ? OR (a.agent_id IS NULL AND op.id IS NOT NULL AND EXISTS ("
+        "    SELECT 1 FROM staged_operations op2"
+        "    JOIN agent_credentials ac2 ON op2.agent_id = ac2.id"
+        "    WHERE op2.id = a.operation_id AND ac2.user_id = ?"
+        ")))"
+    ]
+    params: list[object] = [user_id, user_id]
+    if agent_id is not None:
+        conditions.append("(a.agent_id = ? OR (a.agent_id IS NULL AND op.agent_id = ?))")
+        params.extend([agent_id, agent_id])
+
+    where = "WHERE " + " AND ".join(conditions)
+    select_sql = f"""
         SELECT
             a.id,
             a.timestamp,
             a.operation_id,
             a.event,
             a.actor,
-            a.agent_id,
+            COALESCE(a.agent_id, op.agent_id) AS agent_id,
+            COALESCE(ac.label, op_ac.label) AS agent_label,
             a.detail,
             op.description   AS op_description,
             op.op_type       AS op_type,
@@ -165,15 +187,12 @@ async def export_audit(
         FROM audit_log a
         LEFT JOIN staged_operations op ON a.operation_id = op.id
         LEFT JOIN agent_credentials ac ON a.agent_id = ac.id
-        WHERE (ac.user_id = ? OR (a.agent_id IS NULL AND op.id IS NOT NULL AND EXISTS (
-            SELECT 1 FROM staged_operations op2
-            JOIN agent_credentials ac2 ON op2.agent_id = ac2.id
-            WHERE op2.id = a.operation_id AND ac2.user_id = ?
-        )))
+        LEFT JOIN agent_credentials op_ac ON op.agent_id = op_ac.id
+        {where}
         ORDER BY a.id ASC
     """
     async with get_db(db_path) as db:
-        async with db.execute(select_sql, (user_id, user_id)) as cur:
+        async with db.execute(select_sql, params) as cur:
             rows = [dict(r) for r in await cur.fetchall()]
 
     entries = [_row_to_entry(r).model_dump() for r in rows]
@@ -198,7 +217,8 @@ async def get_audit_entry(
             a.operation_id,
             a.event,
             a.actor,
-            a.agent_id,
+            COALESCE(a.agent_id, op.agent_id) AS agent_id,
+            COALESCE(ac.label, op_ac.label) AS agent_label,
             a.detail,
             op.description   AS op_description,
             op.op_type       AS op_type,
@@ -207,6 +227,7 @@ async def get_audit_entry(
         FROM audit_log a
         LEFT JOIN staged_operations op ON a.operation_id = op.id
         LEFT JOIN agent_credentials ac ON a.agent_id = ac.id
+        LEFT JOIN agent_credentials op_ac ON op.agent_id = op_ac.id
         WHERE a.id = ?
           AND (ac.user_id = ? OR (a.agent_id IS NULL AND op.id IS NOT NULL AND EXISTS (
               SELECT 1 FROM staged_operations op2

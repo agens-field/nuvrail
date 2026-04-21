@@ -144,6 +144,40 @@ async def test_audit_list_filter_by_actor(
     assert all(e["actor"] == "system" for e in data["entries"])
 
 
+async def test_audit_list_filter_by_agent_id_and_label(
+    client: httpx.AsyncClient, db_path: Path
+) -> None:
+    """?agent_id filters entries and returns joined agent label."""
+    async with get_db(db_path) as db:
+        cur = await db.execute(
+            """INSERT INTO agent_credentials
+               (user_id, label, agent_username, hashed_token,
+                upstream_host, upstream_imap_port, upstream_smtp_port,
+                upstream_user, upstream_password, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (1, "Agent Two", "nuvrail_agent_2", "x", "imap.example.com", 993, 587, "a2@example.com", "pass", 0),
+        )
+        await db.commit()
+        agent_two = cur.lastrowid
+
+    await _create_op_with_audit(db_path)
+    op_two = await create_operation(
+        op_type="move",
+        protocol="imap",
+        agent_id=agent_two,
+        description="Agent two op",
+        db_path=db_path,
+    )
+
+    resp = await client.get(f"/api/v1/audit?agent_id={agent_two}")
+    assert resp.status_code == 200
+    data = resp.json()
+    matching = [e for e in data["entries"] if e.get("operation_id") == op_two]
+    assert matching
+    assert all(e.get("agent_id") == str(agent_two) for e in matching)
+    assert all(e.get("agent_label") == "Agent Two" for e in matching)
+
+
 async def test_audit_list_pagination(client: httpx.AsyncClient, db_path: Path) -> None:
     """limit/offset pagination works correctly."""
     # Create several ops to generate audit entries
@@ -243,3 +277,37 @@ async def test_audit_export_content_disposition(client: httpx.AsyncClient) -> No
     cd = resp.headers.get("content-disposition", "")
     assert "attachment" in cd
     assert "nuvrail-audit.json" in cd
+
+
+async def test_audit_export_respects_agent_filter(
+    client: httpx.AsyncClient, db_path: Path
+) -> None:
+    """Export endpoint accepts ?agent_id and returns only matching agent entries."""
+    await _create_op_with_audit(db_path)  # fake agent 1
+
+    async with get_db(db_path) as db:
+        cur = await db.execute(
+            """INSERT INTO agent_credentials
+               (user_id, label, agent_username, hashed_token,
+                upstream_host, upstream_imap_port, upstream_smtp_port,
+                upstream_user, upstream_password, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (1, "Agent Three", "nuvrail_agent_3", "x", "imap.example.com", 993, 587, "a3@example.com", "pass", 0),
+        )
+        await db.commit()
+        agent_three = cur.lastrowid
+
+    op_three = await create_operation(
+        op_type="copy",
+        protocol="imap",
+        agent_id=agent_three,
+        description="Agent three op",
+        db_path=db_path,
+    )
+
+    resp = await client.get(f"/api/v1/audit/export?agent_id={agent_three}")
+    assert resp.status_code == 200
+    entries = resp.json()["audit_log"]
+    matching = [e for e in entries if e.get("operation_id") == op_three]
+    assert matching
+    assert all(e.get("agent_id") == str(agent_three) for e in matching)

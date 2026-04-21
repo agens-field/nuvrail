@@ -54,7 +54,7 @@ from typing import Optional
 
 import aioimaplib
 import aiosmtplib
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from api.auth import get_current_user
 from api.models import (
@@ -543,11 +543,12 @@ async def _do_reject(op_id: str, row: dict, db_path: Path) -> RejectResponse:  #
 @router.get("/operations", response_model=OperationListResponse)
 async def list_ops(
     status: Optional[str] = None,
+    agent_id: Optional[int] = Query(default=None, ge=1),
     db_path: Path = Depends(get_db_path),
     current_user: dict = Depends(get_current_user),
 ) -> OperationListResponse:
     """List staged operations, optionally filtered by status."""
-    rows = await list_operations(status=status, db_path=db_path)
+    rows = await list_operations(status=status, agent_id=agent_id, db_path=db_path)
     ops = []
     for r in rows:
         op = _row_to_response(r)

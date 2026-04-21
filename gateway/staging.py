@@ -132,14 +132,31 @@ async def get_operation(op_id: str, db_path: Path = DB_PATH) -> Optional[dict]:
 
 async def list_operations(
     status: Optional[str] = None,
+    agent_id: Optional[int] = None,
     db_path: Path = DB_PATH,
 ) -> list:
     """List operations, optionally filtered by status."""
     async with get_db(db_path) as db:
-        if status is not None:
+        if status is not None and agent_id is not None:
+            async with db.execute(
+                """
+                SELECT * FROM staged_operations
+                WHERE status = ? AND agent_id = ?
+                ORDER BY created_at DESC
+                """,
+                (status, agent_id),
+            ) as cursor:
+                rows = await cursor.fetchall()
+        elif status is not None:
             async with db.execute(
                 "SELECT * FROM staged_operations WHERE status = ? ORDER BY created_at DESC",
                 (status,),
+            ) as cursor:
+                rows = await cursor.fetchall()
+        elif agent_id is not None:
+            async with db.execute(
+                "SELECT * FROM staged_operations WHERE agent_id = ? ORDER BY created_at DESC",
+                (agent_id,),
             ) as cursor:
                 rows = await cursor.fetchall()
         else:
