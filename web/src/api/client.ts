@@ -171,9 +171,12 @@ export async function revokeAgent(id: number): Promise<void> {
 // Operations endpoints
 // ---------------------------------------------------------------------------
 
-export async function fetchOperations(status?: string): Promise<OperationsResponse> {
-  const qs = status ? `?status=${encodeURIComponent(status)}` : ''
-  return apiFetch<OperationsResponse>(`/api/v1/operations${qs}`)
+export async function fetchOperations(status?: string, agentId?: number): Promise<OperationsResponse> {
+  const qs = new URLSearchParams()
+  if (status) qs.set('status', status)
+  if (agentId !== undefined) qs.set('agent_id', String(agentId))
+  const q = qs.toString()
+  return apiFetch<OperationsResponse>(`/api/v1/operations${q ? `?${q}` : ''}`)
 }
 
 export async function fetchOperation(id: string): Promise<Operation> {
@@ -211,22 +214,25 @@ export async function batchRejectOperations(ids: string[]): Promise<BatchRejectR
 // ---------------------------------------------------------------------------
 
 export async function fetchAuditLog(
-  params: { limit?: number; offset?: number; event?: string; actor?: string } = {}
+  params: { limit?: number; offset?: number; event?: string; actor?: string; agent_id?: number } = {}
 ): Promise<AuditListResponse> {
   const qs = new URLSearchParams()
   if (params.limit !== undefined) qs.set('limit', String(params.limit))
   if (params.offset !== undefined) qs.set('offset', String(params.offset))
   if (params.event) qs.set('event', params.event)
   if (params.actor) qs.set('actor', params.actor)
+  if (params.agent_id !== undefined) qs.set('agent_id', String(params.agent_id))
   const q = qs.toString()
   return apiFetch<AuditListResponse>(`/api/v1/audit${q ? `?${q}` : ''}`)
 }
 
-export async function exportAuditLog(): Promise<void> {
+export async function exportAuditLog(agentId?: number): Promise<void> {
   const token = getToken()
   const headers: Record<string, string> = {}
   if (token) headers['Authorization'] = `Bearer ${token}`
-  const res = await fetch(`${BASE}/api/v1/audit/export`, { headers })
+  const qs = new URLSearchParams()
+  if (agentId !== undefined) qs.set('agent_id', String(agentId))
+  const res = await fetch(`${BASE}/api/v1/audit/export${qs.toString() ? `?${qs.toString()}` : ''}`, { headers })
   if (!res.ok) throw new Error(`Export failed: ${res.status}`)
   const blob = await res.blob()
   const url = URL.createObjectURL(blob)
