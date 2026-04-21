@@ -71,6 +71,7 @@ from gateway.credentials import decrypt_credential
 from gateway.security_controls import build_auth_abuse_protector
 from gateway.staging import create_operation
 from gateway.state_db import DB_PATH, get_db
+from logging_config import redact_protocol_line
 
 load_dotenv()
 
@@ -294,7 +295,7 @@ async def handle_smtp_client(
             line = line_bytes.decode("utf-8", errors="replace").rstrip("\r\n")
             cmd = line.split()[0].upper() if line.split() else ""
 
-            logger.debug("[%s] C→P: %s", peer_str, line)
+            logger.debug("[%s] C→P: %s", peer_str, redact_protocol_line(line))
 
             # ----------------------------------------------------------------
             # EHLO / HELO — respond locally before upstream is connected
