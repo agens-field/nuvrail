@@ -169,8 +169,9 @@ async def test_imap_archive_staged_not_yet_executed(
     auth_headers = e2e_setup["auth_headers"]
     imap_proxy_host = e2e_setup["imap_host"]
     imap_proxy_port = e2e_setup["imap_port"]
-    user = upstream_smtp_cfg["user"]
-    password = upstream_smtp_cfg["password"]
+    proxy_agent = e2e_setup["proxy_agent_auth"]["imap"]
+    user = proxy_agent["username"]
+    password = proxy_agent["token"]
 
     uid: Optional[int] = None
 
@@ -242,8 +243,9 @@ async def test_imap_upstream_flag_applied_after_approve(
     auth_headers = e2e_setup["auth_headers"]
     imap_proxy_host = e2e_setup["imap_host"]
     imap_proxy_port = e2e_setup["imap_port"]
-    user = upstream_smtp_cfg["user"]
-    password = upstream_smtp_cfg["password"]
+    proxy_agent = e2e_setup["proxy_agent_auth"]["imap"]
+    user = proxy_agent["username"]
+    password = proxy_agent["token"]
 
     uid: Optional[int] = None
 
@@ -288,8 +290,9 @@ async def test_imap_archive_staging_gate(
     api_client = e2e_setup["api_client"]
     imap_proxy_host = e2e_setup["imap_host"]
     imap_proxy_port = e2e_setup["imap_port"]
-    user = upstream_smtp_cfg["user"]
-    password = upstream_smtp_cfg["password"]
+    proxy_agent = e2e_setup["proxy_agent_auth"]["imap"]
+    user = proxy_agent["username"]
+    password = proxy_agent["token"]
 
     uid: Optional[int] = None
 
@@ -349,8 +352,9 @@ async def test_imap_archive_rejected_state_unchanged(
     api_client = e2e_setup["api_client"]
     imap_proxy_host = e2e_setup["imap_host"]
     imap_proxy_port = e2e_setup["imap_port"]
-    user = upstream_smtp_cfg["user"]
-    password = upstream_smtp_cfg["password"]
+    proxy_agent = e2e_setup["proxy_agent_auth"]["imap"]
+    user = proxy_agent["username"]
+    password = proxy_agent["token"]
 
     uid: Optional[int] = None
 
