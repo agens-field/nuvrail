@@ -424,6 +424,50 @@ async def test_reject_without_snapshot_does_not_raise(
     assert resp.json()["status"] == "rejected"
 
 
+async def test_auto_approved_operation_not_listed_as_pending(
+    client: httpx.AsyncClient, db_path: Path
+) -> None:
+    """Auto-approved operations should not appear in pending list."""
+    async with get_db(db_path) as db:
+        await db.execute(
+            """
+            INSERT INTO auto_approval_rules
+                (enabled, priority, op_type, sender_pattern, folder_from, action, description, created_at)
+            VALUES (1, 10, 'mark_read', '*@substack.com', NULL, 'approve', 'Approve substack mark-read', 0)
+            """
+        )
+        await db.commit()
+
+    op_id = await create_operation(
+        op_type="mark_read",
+        protocol="imap",
+        description="Mark as read",
+        smtp_envelope={"from": "daily@substack.com"},
+        db_path=db_path,
+    )
+
+    detail = await client.get(f"/api/v1/operations/{op_id}")
+    assert detail.status_code == 200
+    assert detail.json()["status"] == "approved"
+
+    pending = await client.get("/api/v1/operations?status=pending")
+    assert pending.status_code == 200
+    pending_ids = {row["id"] for row in pending.json()["operations"]}
+    assert op_id not in pending_ids
+
+    async with get_db(db_path) as db:
+        async with db.execute(
+            "SELECT event, actor, detail FROM audit_log WHERE operation_id = ? ORDER BY id ASC",
+            (op_id,),
+        ) as cur:
+            logs = await cur.fetchall()
+    assert len(logs) == 2
+    assert logs[0]["event"] == "staged"
+    assert logs[1]["event"] == "approved"
+    assert logs[1]["actor"] == "auto_rule"
+    assert "Approve substack mark-read" in (logs[1]["detail"] or "")
+
+
 # ---------------------------------------------------------------------------
 # Batch approve/reject tests
 # ---------------------------------------------------------------------------

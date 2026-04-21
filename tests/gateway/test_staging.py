@@ -7,6 +7,7 @@ import re
 from pathlib import Path
 
 import pytest
+from unittest.mock import patch
 
 from gateway.staging import (
     create_operation,
@@ -196,3 +197,115 @@ async def test_create_operation_without_snapshot_stores_null(db_path: Path) -> N
     row = await get_operation(op_id, db_path=db_path)
     assert row is not None
     assert row["snapshot"] is None
+
+
+async def test_create_operation_auto_approved_by_rule(db_path: Path) -> None:
+    """Matching auto-approval rule updates op status to approved on stage."""
+    async with get_db(db_path) as db:
+        await db.execute(
+            """
+            INSERT INTO auto_approval_rules
+                (enabled, priority, op_type, sender_pattern, folder_from, action, description, created_at)
+            VALUES (1, 10, 'mark_read', '*@substack.com', NULL, 'approve', 'Substack mark-read', 0)
+            """
+        )
+        await db.commit()
+
+    op_id = await create_operation(
+        op_type="mark_read",
+        protocol="imap",
+        description="Mark as read",
+        smtp_envelope={"from": "digest@substack.com"},
+        db_path=db_path,
+    )
+    row = await get_operation(op_id, db_path=db_path)
+    assert row is not None
+    assert row["status"] == "approved"
+    assert row["decided_by"] == "auto_rule"
+
+    async with get_db(db_path) as db:
+        async with db.execute(
+            "SELECT event, actor, detail FROM audit_log WHERE operation_id = ? ORDER BY id ASC",
+            (op_id,),
+        ) as cur:
+            logs = await cur.fetchall()
+    assert len(logs) == 2
+    assert logs[0]["event"] == "staged"
+    assert logs[1]["event"] == "approved"
+    assert logs[1]["actor"] == "auto_rule"
+    assert "Substack mark-read" in (logs[1]["detail"] or "")
+
+
+async def test_create_operation_auto_rejected_by_rule_restores_snapshot(db_path: Path) -> None:
+    """Matching reject rule updates status and restores optimistic state."""
+    from gateway.state_db import apply_optimistic_flag_update, get_message, get_or_create_folder, upsert_message
+    import json
+
+    folder_id = await get_or_create_folder("INBOX", db_path=db_path)
+    await upsert_message(folder_id, 42, seq_num=1, flags=[], db_path=db_path)
+
+    await apply_optimistic_flag_update(folder_id, "42", flags_add=[r"\Seen"], flags_remove=[], db_path=db_path)
+    pre = await get_message(folder_id, 42, db_path=db_path)
+    assert r"\Seen" in json.loads(pre["flags"])
+
+    async with get_db(db_path) as db:
+        await db.execute(
+            """
+            INSERT INTO auto_approval_rules
+                (enabled, priority, op_type, sender_pattern, folder_from, action, description, created_at)
+            VALUES (1, 10, 'mark_read', '*@substack.com', 'INBOX', 'reject', 'Reject substack mark-read', 0)
+            """
+        )
+        await db.commit()
+
+    op_id = await create_operation(
+        op_type="mark_read",
+        protocol="imap",
+        description="Mark as read",
+        message_ids=["42"],
+        folder_from="INBOX",
+        smtp_envelope={"from": "digest@substack.com"},
+        snapshot={"42": {"flags": [], "seq_num": 1, "folder_id": folder_id}},
+        db_path=db_path,
+    )
+    row = await get_operation(op_id, db_path=db_path)
+    assert row is not None
+    assert row["status"] == "rejected"
+    assert row["decided_by"] == "auto_rule"
+
+    post = await get_message(folder_id, 42, db_path=db_path)
+    assert json.loads(post["flags"]) == []
+
+    async with get_db(db_path) as db:
+        async with db.execute(
+            "SELECT event, actor FROM audit_log WHERE operation_id = ? ORDER BY id ASC",
+            (op_id,),
+        ) as cur:
+            logs = await cur.fetchall()
+    assert len(logs) == 2
+    assert logs[1]["event"] == "rejected"
+    assert logs[1]["actor"] == "auto_rule"
+
+
+async def test_create_operation_skips_push_for_auto_approved(db_path: Path) -> None:
+    """Auto-decided operations should not trigger staged push notifications."""
+    async with get_db(db_path) as db:
+        await db.execute(
+            """
+            INSERT INTO auto_approval_rules
+                (enabled, priority, op_type, sender_pattern, folder_from, action, description, created_at)
+            VALUES (1, 10, 'mark_read', '*@substack.com', NULL, 'approve', 'Substack mark-read', 0)
+            """
+        )
+        await db.commit()
+
+    with patch("gateway.push.notify_staged") as notify_mock, patch("asyncio.create_task") as task_mock:
+        await create_operation(
+            op_type="mark_read",
+            protocol="imap",
+            description="Mark as read",
+            smtp_envelope={"from": "digest@substack.com"},
+            db_path=db_path,
+        )
+        notify_mock.assert_not_called()
+        task_mock.assert_not_called()
