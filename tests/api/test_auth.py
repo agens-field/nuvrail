@@ -15,15 +15,16 @@ Both get_db_path (routes) and get_auth_db_path (auth dependency) are
 overridden so all DB access hits the same isolated test DB.
 """
 from __future__ import annotations
-
 from pathlib import Path
 
 import httpx
 import pytest
 
+from api.routes import auth as auth_routes
 from api.auth import get_auth_db_path
 from api.main import app
 from api.routes.operations import get_db_path
+from gateway.state_db import get_db
 from gateway.state_db import init_db
 
 
@@ -196,9 +197,14 @@ async def test_audit_requires_auth(client: httpx.AsyncClient) -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_create_agent(client: httpx.AsyncClient) -> None:
+async def test_create_agent(client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch) -> None:
     """POST /agents returns agent_username and agent_token."""
     token = await _register_and_login(client)
+
+    async def _ok_verify(*args: object, **kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr(auth_routes, "_verify_imap_connection", _ok_verify)
     resp = await client.post(
         "/api/v1/agents",
         headers={"Authorization": f"Bearer {token}"},
@@ -221,7 +227,7 @@ async def test_create_agent(client: httpx.AsyncClient) -> None:
 
 
 async def test_agent_password_stored_encrypted(
-    client: httpx.AsyncClient, db_path: Path
+    client: httpx.AsyncClient, db_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """POST /agents must store upstream_password as an AES-256-GCM envelope, not plaintext."""
     from gateway.credentials import is_encrypted
@@ -229,6 +235,9 @@ async def test_agent_password_stored_encrypted(
 
     token = await _register_and_login(client)
     plaintext_password = "my-upstream-password"
+    async def _ok_verify(*args: object, **kwargs: object) -> None:
+        return None
+    monkeypatch.setattr(auth_routes, "_verify_imap_connection", _ok_verify)
 
     resp = await client.post(
         "/api/v1/agents",
@@ -260,10 +269,17 @@ async def test_agent_password_stored_encrypted(
     )
 
 
-async def test_agent_token_not_repeated(client: httpx.AsyncClient) -> None:
+async def test_agent_token_not_repeated(
+    client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """GET /agents does NOT include the agent_token field."""
     token = await _register_and_login(client)
     auth = {"Authorization": f"Bearer {token}"}
+
+    async def _ok_verify(*args: object, **kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr(auth_routes, "_verify_imap_connection", _ok_verify)
     await client.post(
         "/api/v1/agents",
         headers=auth,
@@ -281,10 +297,13 @@ async def test_agent_token_not_repeated(client: httpx.AsyncClient) -> None:
     assert "agent_username" in agents[0]
 
 
-async def test_revoke_agent(client: httpx.AsyncClient) -> None:
+async def test_revoke_agent(client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch) -> None:
     """DELETE /agents/{id} sets revoked_at on the credential."""
     token = await _register_and_login(client)
     auth = {"Authorization": f"Bearer {token}"}
+    async def _ok_verify(*args: object, **kwargs: object) -> None:
+        return None
+    monkeypatch.setattr(auth_routes, "_verify_imap_connection", _ok_verify)
 
     # Create an agent
     create_resp = await client.post(
@@ -308,3 +327,60 @@ async def test_revoke_agent(client: httpx.AsyncClient) -> None:
     agents = list_resp.json()
     assert len(agents) == 1
     assert agents[0]["revoked_at"] is not None
+
+
+async def test_create_agent_imap_auth_failed_no_db_row(
+    client: httpx.AsyncClient, db_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    token = await _register_and_login(client)
+
+    async def _fail_verify(*args: object, **kwargs: object) -> None:
+        raise auth_routes.ImapValidationError("imap_auth_failed", "Wrong password")
+
+    monkeypatch.setattr(auth_routes, "_verify_imap_connection", _fail_verify)
+
+    resp = await client.post(
+        "/api/v1/agents",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "upstream_host": "imap.gmail.com",
+            "upstream_user": "me@gmail.com",
+            "upstream_password": "bad",
+        },
+    )
+    assert resp.status_code == 422
+    assert resp.json()["error"] == "imap_auth_failed"
+
+    async with get_db(db_path) as db:
+        async with db.execute("SELECT COUNT(*) FROM agent_credentials") as cur:
+            row = await cur.fetchone()
+    assert row is not None
+    assert row[0] == 0
+
+
+async def test_create_agent_imap_success_creates_row(
+    client: httpx.AsyncClient, db_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    token = await _register_and_login(client)
+
+    async def _ok_verify(*args: object, **kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr(auth_routes, "_verify_imap_connection", _ok_verify)
+
+    resp = await client.post(
+        "/api/v1/agents",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "upstream_host": "imap.gmail.com",
+            "upstream_user": "me@gmail.com",
+            "upstream_password": "good",
+        },
+    )
+    assert resp.status_code == 201
+
+    async with get_db(db_path) as db:
+        async with db.execute("SELECT COUNT(*) FROM agent_credentials") as cur:
+            row = await cur.fetchone()
+    assert row is not None
+    assert row[0] == 1

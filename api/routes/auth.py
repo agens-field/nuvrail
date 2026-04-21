@@ -14,12 +14,17 @@ Lane 2: AI agent → proxy (agent_username + agent_token as IMAP/SMTP password)
 """
 from __future__ import annotations
 
+import asyncio
+import imaplib
 import secrets
+import socket
+import ssl
 import time
 from pathlib import Path
-from typing import List
+from typing import List, Union
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import JSONResponse
 
 from api.auth import (
     generate_token,
@@ -28,7 +33,6 @@ from api.auth import (
     hash_password,
     verify_password,
 )
-from gateway.credentials import encrypt_credential
 from gateway.credentials import encrypt_credential
 from api.models import (
     AgentCreateRequest,
@@ -43,6 +47,87 @@ from api.routes.operations import get_db_path
 from gateway.state_db import get_db
 
 router = APIRouter()
+
+
+class ImapValidationError(Exception):
+    """Raised when upstream IMAP credential validation fails."""
+
+    def __init__(self, error: str, detail: str):
+        super().__init__(detail)
+        self.error = error
+        self.detail = detail
+
+
+def _build_auth_failure_detail(upstream_host: str) -> str:
+    host = upstream_host.lower()
+    if any(k in host for k in ("gmail.com", "icloud.com", "me.com", "mac.com")):
+        return (
+            "IMAP authentication failed. Wrong username or password. "
+            "For Gmail/iCloud, use an app-specific password."
+        )
+    return "IMAP authentication failed. Wrong username or password."
+
+
+def _verify_imap_connection_sync(
+    upstream_host: str,
+    upstream_imap_port: int,
+    upstream_user: str,
+    upstream_password: str,
+) -> None:
+    client: imaplib.IMAP4_SSL | None = None
+    try:
+        client = imaplib.IMAP4_SSL(upstream_host, upstream_imap_port, timeout=10)
+        client.login(upstream_user, upstream_password)
+        status_, _ = client.select("INBOX")
+        if status_.upper() != "OK":
+            raise imaplib.IMAP4.error("INBOX_SELECT_FAILED")
+    finally:
+        if client is not None:
+            try:
+                client.logout()
+            except Exception:
+                pass
+
+
+async def _verify_imap_connection(
+    upstream_host: str,
+    upstream_imap_port: int,
+    upstream_user: str,
+    upstream_password: str,
+) -> None:
+    try:
+        await asyncio.wait_for(
+            asyncio.to_thread(
+                _verify_imap_connection_sync,
+                upstream_host,
+                upstream_imap_port,
+                upstream_user,
+                upstream_password,
+            ),
+            timeout=10,
+        )
+    except asyncio.TimeoutError as exc:
+        raise ImapValidationError(
+            "imap_timeout", "Timed out while verifying IMAP connection (10s limit)."
+        ) from exc
+    except ssl.SSLError as exc:
+        raise ImapValidationError(
+            "imap_ssl_error", "IMAP SSL/TLS handshake failed. Check host and IMAP SSL port."
+        ) from exc
+    except (socket.timeout,) as exc:
+        raise ImapValidationError(
+            "imap_timeout", "Timed out while verifying IMAP connection (10s limit)."
+        ) from exc
+    except imaplib.IMAP4.abort as exc:
+        raise ImapValidationError(
+            "imap_connection_failed", "Unable to reach IMAP server. Check host and port."
+        ) from exc
+    except imaplib.IMAP4.error as exc:
+        raise ImapValidationError("imap_auth_failed", _build_auth_failure_detail(upstream_host)) from exc
+    except (socket.gaierror, ConnectionRefusedError, OSError) as exc:
+        raise ImapValidationError(
+            "imap_connection_failed", "Unable to reach IMAP server. Check host and port."
+        ) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -149,7 +234,7 @@ async def create_agent(
     body: AgentCreateRequest,
     current_user: dict = Depends(get_current_user),
     db_path: Path = Depends(get_db_path),
-) -> AgentCreateResponse:
+) -> Union[AgentCreateResponse, JSONResponse]:
     """Register upstream email credentials and generate an agent token.
 
     The plaintext agent_token is returned ONCE in this response.
@@ -160,6 +245,15 @@ async def create_agent(
     agent_token_plain = generate_token()
     hashed = hash_agent_token(agent_token_plain)
     label = body.label or "default"
+    try:
+        await _verify_imap_connection(
+            body.upstream_host,
+            body.upstream_imap_port,
+            body.upstream_user,
+            body.upstream_password,
+        )
+    except ImapValidationError as exc:
+        return JSONResponse(status_code=422, content={"error": exc.error, "detail": exc.detail})
 
     async with get_db(db_path) as db:
         cur = await db.execute(
