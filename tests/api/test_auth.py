@@ -202,7 +202,7 @@ async def test_create_agent(client: httpx.AsyncClient, monkeypatch: pytest.Monke
     token = await _register_and_login(client)
 
     async def _ok_verify(*args: object, **kwargs: object) -> None:
-        return None
+        pass
 
     monkeypatch.setattr(auth_routes, "_verify_imap_connection", _ok_verify)
     resp = await client.post(
@@ -235,8 +235,10 @@ async def test_agent_password_stored_encrypted(
 
     token = await _register_and_login(client)
     plaintext_password = "my-upstream-password"
+
     async def _ok_verify(*args: object, **kwargs: object) -> None:
-        return None
+        pass
+
     monkeypatch.setattr(auth_routes, "_verify_imap_connection", _ok_verify)
 
     resp = await client.post(
@@ -277,7 +279,7 @@ async def test_agent_token_not_repeated(
     auth = {"Authorization": f"Bearer {token}"}
 
     async def _ok_verify(*args: object, **kwargs: object) -> None:
-        return None
+        pass
 
     monkeypatch.setattr(auth_routes, "_verify_imap_connection", _ok_verify)
     await client.post(
@@ -301,8 +303,10 @@ async def test_revoke_agent(client: httpx.AsyncClient, monkeypatch: pytest.Monke
     """DELETE /agents/{id} sets revoked_at on the credential."""
     token = await _register_and_login(client)
     auth = {"Authorization": f"Bearer {token}"}
+
     async def _ok_verify(*args: object, **kwargs: object) -> None:
-        return None
+        pass
+
     monkeypatch.setattr(auth_routes, "_verify_imap_connection", _ok_verify)
 
     # Create an agent
@@ -364,7 +368,7 @@ async def test_create_agent_imap_success_creates_row(
     token = await _register_and_login(client)
 
     async def _ok_verify(*args: object, **kwargs: object) -> None:
-        return None
+        pass
 
     monkeypatch.setattr(auth_routes, "_verify_imap_connection", _ok_verify)
 

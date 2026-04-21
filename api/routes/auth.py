@@ -80,7 +80,7 @@ def _verify_imap_connection_sync(
         client.login(upstream_user, upstream_password)
         status_, _ = client.select("INBOX")
         if status_.upper() != "OK":
-            raise imaplib.IMAP4.error("INBOX_SELECT_FAILED")
+            raise imaplib.IMAP4.error("Failed to select INBOX folder")
     finally:
         if client is not None:
             try:
@@ -114,7 +114,7 @@ async def _verify_imap_connection(
         raise ImapValidationError(
             "imap_ssl_error", "IMAP SSL/TLS handshake failed. Check host and IMAP SSL port."
         ) from exc
-    except (socket.timeout,) as exc:
+    except socket.timeout as exc:
         raise ImapValidationError(
             "imap_timeout", "Timed out while verifying IMAP connection (10s limit)."
         ) from exc
