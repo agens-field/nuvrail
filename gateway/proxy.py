@@ -56,6 +56,7 @@ from gateway.imap_response_parser import (
 )
 from gateway.operation_parser import ParsedOperation, build_rich_description, parse_append, parse_copy, parse_move, parse_store
 from gateway.credentials import decrypt_credential
+from gateway.security_controls import build_auth_abuse_protector
 from gateway.staging import create_operation
 from gateway.state_db import (
     DB_PATH,
@@ -77,6 +78,7 @@ from gateway.state_db import (
 load_dotenv()
 
 logger = logging.getLogger(__name__)
+IMAP_AUTH_ABUSE_PROTECTOR = build_auth_abuse_protector("imap_proxy_login")
 
 _READ_CHUNK = 4096
 
@@ -990,8 +992,31 @@ async def handle_client(
             # Password may contain spaces if quoted — rejoin and strip quotes
             agent_pass = " ".join(parts[3:]).strip('"') if len(parts) > 3 else ""
 
+        decision = await IMAP_AUTH_ABUSE_PROTECTOR.start_attempt(ip=str(peer[0]), account=agent_user or "<unknown>")
+        if not decision.allowed:
+            try:
+                client_writer.write(
+                    f"* BYE Too many authentication attempts. Retry in {decision.retry_after_seconds}s\r\n"
+                    f"{login_tag} NO [AUTHLIMIT] Too many attempts\r\n".encode()
+                )
+                await client_writer.drain()
+            except OSError:
+                pass
+            logger.warning(
+                "[%s] Agent auth blocked user=%s reason=%s retry_after=%ss",
+                peer_str,
+                agent_user,
+                decision.reason,
+                decision.retry_after_seconds,
+            )
+            client_writer.close()
+            return
+
         credential = await _verify_agent_credential(agent_user, agent_pass, _db_path)
         if credential is None:
+            failure = await IMAP_AUTH_ABUSE_PROTECTOR.record_failure(
+                ip=str(peer[0]), account=agent_user or "<unknown>"
+            )
             try:
                 client_writer.write(
                     f"* BYE Authentication failed\r\n"
@@ -1000,10 +1025,20 @@ async def handle_client(
                 await client_writer.drain()
             except OSError:
                 pass
+            if failure.lockout_applied:
+                logger.warning(
+                    "[%s] IMAP auth lockout triggered user=%s retry_after=%ss",
+                    peer_str,
+                    agent_user,
+                    failure.retry_after_seconds,
+                )
             logger.warning("[%s] Agent auth failed for user=%s", peer_str, agent_user)
             client_writer.close()
             return
 
+        await IMAP_AUTH_ABUSE_PROTECTOR.record_success(
+            ip=str(peer[0]), account=agent_user or "<unknown>"
+        )
         logger.info(
             "[%s] Agent authenticated: %s → upstream %s:%d user=%s",
             peer_str, agent_user,

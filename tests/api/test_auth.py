@@ -23,7 +23,9 @@ import pytest
 
 from api.auth import get_auth_db_path
 from api.main import app
+from api.routes import auth as auth_routes
 from api.routes.operations import get_db_path
+from gateway.security_controls import AuthAbuseProtector
 from gateway.state_db import init_db
 
 
@@ -146,6 +148,41 @@ async def test_login_unknown_email(client: httpx.AsyncClient) -> None:
         json={"email": "nobody@example.com", "password": "anything"},
     )
     assert resp.status_code == 401
+
+
+async def test_login_rate_limit_and_lockout(client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Repeated failures should trigger lockout with HTTP 429 + Retry-After."""
+    test_protector = AuthAbuseProtector(
+        namespace="test_api_login",
+        attempt_window_seconds=60,
+        max_attempts_per_ip_window=50,
+        max_attempts_per_account_window=50,
+        failure_window_seconds=60,
+        max_failures_before_lockout=2,
+        base_lockout_seconds=30,
+        max_lockout_seconds=30,
+    )
+    monkeypatch.setattr(auth_routes, "LOGIN_ABUSE_PROTECTOR", test_protector)
+
+    await client.post(
+        "/api/v1/auth/register",
+        json={"email": "lockout@example.com", "password": "rightpass"},
+    )
+
+    # First bad attempt remains a normal 401.
+    bad1 = await client.post(
+        "/api/v1/auth/login",
+        json={"email": "lockout@example.com", "password": "wrongpass"},
+    )
+    assert bad1.status_code == 401
+
+    # Second bad attempt crosses the threshold and is locked out.
+    bad2 = await client.post(
+        "/api/v1/auth/login",
+        json={"email": "lockout@example.com", "password": "wrongpass"},
+    )
+    assert bad2.status_code == 429
+    assert bad2.headers.get("Retry-After") == "30"
 
 
 # ---------------------------------------------------------------------------
