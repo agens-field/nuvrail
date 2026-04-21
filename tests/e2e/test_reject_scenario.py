@@ -85,11 +85,14 @@ def _extract_op_id(text: str) -> Optional[str]:
 async def _smtp_send_via_proxy(
     host: str,
     port: int,
-    user: str,
-    password: str,
+    agent_user: str,
+    agent_token: str,
     subject: str,
+    envelope_sender: str,
+    envelope_recipient: Optional[str] = None,
 ) -> str:
     """Send a message via the SMTP proxy. Returns op_id from STAGED response."""
+    recipient = envelope_recipient or envelope_sender
     reader, writer = await _connect(host, port)
     try:
         await _read_line(reader)  # greeting
@@ -97,22 +100,25 @@ async def _smtp_send_via_proxy(
         await _send(writer, "EHLO test.client\r\n")
         await _read_response(reader)
 
-        creds = _auth_plain_b64(user, password)
+        creds = _auth_plain_b64(agent_user, agent_token)
         await _send(writer, f"AUTH PLAIN {creds}\r\n")
         auth_resp = await _read_response(reader)
         assert auth_resp[-1].startswith("235"), f"AUTH failed: {auth_resp!r}"
 
-        await _send(writer, f"MAIL FROM:<{user}>\r\n")
+        await _send(writer, f"MAIL FROM:<{envelope_sender}>\r\n")
         await _read_response(reader)
 
-        await _send(writer, f"RCPT TO:<{user}>\r\n")
+        await _send(writer, f"RCPT TO:<{recipient}>\r\n")
         await _read_response(reader)
 
         await _send(writer, "DATA\r\n")
         data_resp = await _read_response(reader)
         assert data_resp[-1].startswith("354"), f"Expected 354: {data_resp!r}"
 
-        await _send(writer, f"From: <{user}>\r\nTo: <{user}>\r\nSubject: {subject}\r\n\r\n")
+        await _send(
+            writer,
+            f"From: <{envelope_sender}>\r\nTo: <{recipient}>\r\nSubject: {subject}\r\n\r\n",
+        )
         await _send(writer, "Reject scenario test message.\r\n")
         await _send(writer, ".\r\n")
 
@@ -245,11 +251,20 @@ async def test_smtp_send_rejected_never_arrives(
     api_client = e2e_setup["api_client"]
     smtp_host = e2e_setup["smtp_host"]
     smtp_port = e2e_setup["smtp_port"]
-    user = upstream_smtp_cfg["user"]
-    password = upstream_smtp_cfg["password"]
+    agent_user = e2e_setup["proxy_agent_auth"]["smtp"]["username"]
+    agent_token = e2e_setup["proxy_agent_auth"]["smtp"]["token"]
+    upstream_user = upstream_smtp_cfg["user"]
 
     # Step 1: Send via proxy → STAGED
-    op_id = await _smtp_send_via_proxy(smtp_host, smtp_port, user, password, subject)
+    op_id = await _smtp_send_via_proxy(
+        smtp_host,
+        smtp_port,
+        agent_user,
+        agent_token,
+        subject,
+        envelope_sender=upstream_user,
+        envelope_recipient=upstream_user,
+    )
 
     # Step 2: Reject via API (Bearer auth required)
     reject_resp = await api_client.post(
@@ -291,8 +306,8 @@ async def test_imap_write_rejected_flag_unchanged(
     api_client = e2e_setup["api_client"]
     imap_proxy_host = e2e_setup["imap_host"]
     imap_proxy_port = e2e_setup["imap_port"]
-    user = upstream_smtp_cfg["user"]
-    password = upstream_smtp_cfg["password"]
+    user = e2e_setup["proxy_agent_auth"]["imap"]["username"]
+    password = e2e_setup["proxy_agent_auth"]["imap"]["token"]
 
     uid: Optional[int] = None
 

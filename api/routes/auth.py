@@ -23,7 +23,7 @@ import time
 from pathlib import Path
 from typing import List, Union
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 
 from api.auth import (
@@ -34,6 +34,7 @@ from api.auth import (
     verify_password,
 )
 from gateway.credentials import encrypt_credential
+from gateway.security_controls import build_auth_abuse_protector
 from api.models import (
     AgentCreateRequest,
     AgentCreateResponse,
@@ -47,6 +48,7 @@ from api.routes.operations import get_db_path
 from gateway.state_db import get_db
 
 router = APIRouter()
+LOGIN_ABUSE_PROTECTOR = build_auth_abuse_protector("api_login")
 
 
 class ImapValidationError(Exception):
@@ -183,12 +185,26 @@ async def register(
 @router.post("/auth/login", response_model=LoginResponse)
 async def login(
     body: LoginRequest,
+    request: Request,
     db_path: Path = Depends(get_db_path),
 ) -> LoginResponse:
     """Exchange email + password for a long-lived bearer token.
 
     Returns 401 on bad credentials (deliberately vague).
     """
+    client_host = request.client.host if request.client and request.client.host else "unknown"
+    decision = await LOGIN_ABUSE_PROTECTOR.start_attempt(ip=client_host, account=body.email)
+    if not decision.allowed:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail={
+                "error": "Too many login attempts",
+                "reason": decision.reason,
+                "retry_after_seconds": decision.retry_after_seconds,
+            },
+            headers={"Retry-After": str(decision.retry_after_seconds)},
+        )
+
     async with get_db(db_path) as db:
         async with db.execute(
             "SELECT * FROM users WHERE email = ?", (body.email,)
@@ -196,12 +212,24 @@ async def login(
             row = await cur.fetchone()
 
     if row is None or not verify_password(body.password, row["hashed_password"]):
+        failure = await LOGIN_ABUSE_PROTECTOR.record_failure(ip=client_host, account=body.email)
+        if failure.lockout_applied:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail={
+                    "error": "Too many login attempts",
+                    "reason": "temporary_lockout",
+                    "retry_after_seconds": failure.retry_after_seconds,
+                },
+                headers={"Retry-After": str(failure.retry_after_seconds)},
+            )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid email or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
+    await LOGIN_ABUSE_PROTECTOR.record_success(ip=client_host, account=body.email)
     user = dict(row)
     return LoginResponse(
         token=user["api_token"],

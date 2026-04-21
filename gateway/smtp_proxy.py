@@ -68,12 +68,14 @@ from typing import Optional
 from dotenv import load_dotenv
 
 from gateway.credentials import decrypt_credential
+from gateway.security_controls import build_auth_abuse_protector
 from gateway.staging import create_operation
 from gateway.state_db import DB_PATH, get_db
 
 load_dotenv()
 
 logger = logging.getLogger(__name__)
+SMTP_AUTH_ABUSE_PROTECTOR = build_auth_abuse_protector("smtp_proxy_auth")
 
 # Regex helpers for envelope extraction
 _MAIL_FROM_RE = re.compile(r"MAIL FROM:\s*<([^>]*)>", re.IGNORECASE)
@@ -324,10 +326,39 @@ async def handle_smtp_client(
                         agent_pass_plain = auth_parts[2].decode("utf-8", errors="replace") if len(auth_parts) >= 3 else ""
                     except Exception:
                         agent_user, agent_pass_plain = "", ""
+                    decision = await SMTP_AUTH_ABUSE_PROTECTOR.start_attempt(
+                        ip=str(peer[0]), account=agent_user or "<unknown>"
+                    )
+                    if not decision.allowed:
+                        client_writer.write(
+                            f"454 4.7.0 Too many auth attempts. Retry in {decision.retry_after_seconds}s\r\n".encode()
+                        )
+                        await client_writer.drain()
+                        logger.warning(
+                            "[%s] SMTP auth blocked user=%s reason=%s retry_after=%ss",
+                            peer_str,
+                            agent_user,
+                            decision.reason,
+                            decision.retry_after_seconds,
+                        )
+                        break
                     cred = await _verify_smtp_agent_credential(agent_user, agent_pass_plain)
                     if cred:
+                        await SMTP_AUTH_ABUSE_PROTECTOR.record_success(
+                            ip=str(peer[0]), account=agent_user or "<unknown>"
+                        )
                         logger.info("[%s] SMTP agent authenticated: %s", peer_str, agent_user)
                     else:
+                        failure = await SMTP_AUTH_ABUSE_PROTECTOR.record_failure(
+                            ip=str(peer[0]), account=agent_user or "<unknown>"
+                        )
+                        if failure.lockout_applied:
+                            logger.warning(
+                                "[%s] SMTP auth lockout triggered user=%s retry_after=%ss",
+                                peer_str,
+                                agent_user,
+                                failure.retry_after_seconds,
+                            )
                         logger.warning("[%s] SMTP AUTH PLAIN failed for user=%s", peer_str, agent_user)
 
                 elif mech == "PLAIN" and len(parts) < 3:
@@ -343,7 +374,31 @@ async def handle_smtp_client(
                         agent_pass_plain = auth_parts[2].decode("utf-8", errors="replace") if len(auth_parts) >= 3 else ""
                     except Exception:
                         agent_user, agent_pass_plain = "", ""
+                    decision = await SMTP_AUTH_ABUSE_PROTECTOR.start_attempt(
+                        ip=str(peer[0]), account=agent_user or "<unknown>"
+                    )
+                    if not decision.allowed:
+                        client_writer.write(
+                            f"454 4.7.0 Too many auth attempts. Retry in {decision.retry_after_seconds}s\r\n".encode()
+                        )
+                        await client_writer.drain()
+                        logger.warning(
+                            "[%s] SMTP auth blocked user=%s reason=%s retry_after=%ss",
+                            peer_str,
+                            agent_user,
+                            decision.reason,
+                            decision.retry_after_seconds,
+                        )
+                        break
                     cred = await _verify_smtp_agent_credential(agent_user, agent_pass_plain)
+                    if cred:
+                        await SMTP_AUTH_ABUSE_PROTECTOR.record_success(
+                            ip=str(peer[0]), account=agent_user or "<unknown>"
+                        )
+                    else:
+                        await SMTP_AUTH_ABUSE_PROTECTOR.record_failure(
+                            ip=str(peer[0]), account=agent_user or "<unknown>"
+                        )
 
                 elif mech == "LOGIN":
                     # AUTH LOGIN multi-step
@@ -359,7 +414,31 @@ async def handle_smtp_client(
                         agent_pass_plain = _b64l.b64decode(pass_b64.strip()).decode("utf-8", errors="replace")
                     except Exception:
                         agent_user, agent_pass_plain = "", ""
+                    decision = await SMTP_AUTH_ABUSE_PROTECTOR.start_attempt(
+                        ip=str(peer[0]), account=agent_user or "<unknown>"
+                    )
+                    if not decision.allowed:
+                        client_writer.write(
+                            f"454 4.7.0 Too many auth attempts. Retry in {decision.retry_after_seconds}s\r\n".encode()
+                        )
+                        await client_writer.drain()
+                        logger.warning(
+                            "[%s] SMTP auth blocked user=%s reason=%s retry_after=%ss",
+                            peer_str,
+                            agent_user,
+                            decision.reason,
+                            decision.retry_after_seconds,
+                        )
+                        break
                     cred = await _verify_smtp_agent_credential(agent_user, agent_pass_plain)
+                    if cred:
+                        await SMTP_AUTH_ABUSE_PROTECTOR.record_success(
+                            ip=str(peer[0]), account=agent_user or "<unknown>"
+                        )
+                    else:
+                        await SMTP_AUTH_ABUSE_PROTECTOR.record_failure(
+                            ip=str(peer[0]), account=agent_user or "<unknown>"
+                        )
 
                 else:
                     client_writer.write(b"504 Authentication mechanism not supported\r\n")

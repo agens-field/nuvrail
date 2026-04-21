@@ -107,8 +107,8 @@ async def test_rejection_injects_unsolicited_fetch_on_noop(
     api_client = e2e_setup["api_client"]
     imap_host = e2e_setup["imap_host"]
     imap_port = e2e_setup["imap_port"]
-    user = upstream_imap_cfg["user"]
-    password = upstream_imap_cfg["password"]
+    user = e2e_setup["proxy_agent_auth"]["imap"]["username"]
+    password = e2e_setup["proxy_agent_auth"]["imap"]["token"]
 
     uid: Optional[int] = None
     reader: Optional[asyncio.StreamReader] = None
@@ -212,8 +212,8 @@ async def test_rejection_revert_does_not_fire_for_write_commands(
     api_client = e2e_setup["api_client"]
     imap_host = e2e_setup["imap_host"]
     imap_port = e2e_setup["imap_port"]
-    user = upstream_imap_cfg["user"]
-    password = upstream_imap_cfg["password"]
+    user = e2e_setup["proxy_agent_auth"]["imap"]["username"]
+    password = e2e_setup["proxy_agent_auth"]["imap"]["token"]
 
     uid: Optional[int] = None
     reader: Optional[asyncio.StreamReader] = None

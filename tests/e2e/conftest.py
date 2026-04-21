@@ -208,6 +208,52 @@ async def e2e_setup(tmp_path_factory: pytest.TempPathFactory) -> dict:
     bearer_token = login_resp.json()["token"]
     auth_headers = {"Authorization": f"Bearer {bearer_token}"}
 
+    # 9. Create per-protocol agent credentials for proxy authentication.
+    #    Proxy LOGIN/AUTH expects agent_username + agent_token, not upstream creds.
+    smtp_agent_resp = await api_client.post(
+        "/api/v1/agents",
+        headers=auth_headers,
+        json={
+            "label": "e2e-smtp-agent",
+            "upstream_host": os.environ["NUVRAIL_TEST_SMTP_HOST"],
+            "upstream_imap_port": int(os.environ.get("NUVRAIL_TEST_IMAP_PORT", "993")),
+            "upstream_smtp_port": int(os.environ.get("NUVRAIL_TEST_SMTP_PORT", "587")),
+            "upstream_user": os.environ["NUVRAIL_TEST_SMTP_USER"],
+            "upstream_password": os.environ["NUVRAIL_TEST_SMTP_PASS"],
+        },
+    )
+    assert smtp_agent_resp.status_code == 201, (
+        "e2e_setup: failed to create SMTP agent credential: "
+        f"{smtp_agent_resp.status_code} {smtp_agent_resp.text}"
+    )
+
+    imap_agent_resp = await api_client.post(
+        "/api/v1/agents",
+        headers=auth_headers,
+        json={
+            "label": "e2e-imap-agent",
+            "upstream_host": os.environ["NUVRAIL_TEST_IMAP_HOST"],
+            "upstream_imap_port": int(os.environ.get("NUVRAIL_TEST_IMAP_PORT", "993")),
+            "upstream_smtp_port": int(os.environ.get("NUVRAIL_TEST_SMTP_PORT", "587")),
+            "upstream_user": os.environ["NUVRAIL_TEST_IMAP_USER"],
+            "upstream_password": os.environ["NUVRAIL_TEST_IMAP_PASS"],
+        },
+    )
+    assert imap_agent_resp.status_code == 201, (
+        "e2e_setup: failed to create IMAP agent credential: "
+        f"{imap_agent_resp.status_code} {imap_agent_resp.text}"
+    )
+    proxy_agent_auth = {
+        "smtp": {
+            "username": smtp_agent_resp.json()["agent_username"],
+            "token": smtp_agent_resp.json()["agent_token"],
+        },
+        "imap": {
+            "username": imap_agent_resp.json()["agent_username"],
+            "token": imap_agent_resp.json()["agent_token"],
+        },
+    }
+
     yield {
         "imap_host": imap_host,
         "imap_port": imap_port,
@@ -216,9 +262,10 @@ async def e2e_setup(tmp_path_factory: pytest.TempPathFactory) -> dict:
         "api_client": api_client,
         "db_path": db_path,
         "auth_headers": auth_headers,
+        "proxy_agent_auth": proxy_agent_auth,
     }
 
-    # 9. Teardown — close everything and restore patches.
+    # 10. Teardown — close everything and restore patches.
     await api_client.aclose()
     app.dependency_overrides.clear()
 

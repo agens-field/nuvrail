@@ -166,14 +166,17 @@ async def test_smtp_send_staged_then_approved_arrives(
     api_client = e2e_setup["api_client"]
     smtp_host = e2e_setup["smtp_host"]
     smtp_port = e2e_setup["smtp_port"]
-    user = upstream_smtp_cfg["user"]
-    password = upstream_smtp_cfg["password"]
+    agent_user = e2e_setup["proxy_agent_auth"]["smtp"]["username"]
+    agent_token = e2e_setup["proxy_agent_auth"]["smtp"]["token"]
+    recipient = upstream_smtp_cfg["user"]
 
     uid_to_delete: Optional[int] = None
 
     try:
         # Step 1–3: Send via proxy, get staged op_id
-        op_id = await _smtp_send_via_proxy(smtp_host, smtp_port, user, password, subject)
+        op_id = await _smtp_send_via_proxy(
+            smtp_host, smtp_port, agent_user, agent_token, subject, to_addr=recipient
+        )
 
         # Step 4: Verify op appears in API as pending (Bearer auth required)
         resp = await api_client.get(
@@ -222,8 +225,9 @@ async def test_smtp_send_staged_multiple_then_approve_all(
     api_client = e2e_setup["api_client"]
     smtp_host = e2e_setup["smtp_host"]
     smtp_port = e2e_setup["smtp_port"]
-    user = upstream_smtp_cfg["user"]
-    password = upstream_smtp_cfg["password"]
+    agent_user = e2e_setup["proxy_agent_auth"]["smtp"]["username"]
+    agent_token = e2e_setup["proxy_agent_auth"]["smtp"]["token"]
+    recipient = upstream_smtp_cfg["user"]
 
     timestamp = time.time()
     subjects = [f"E2E Multi Test {timestamp:.0f}-{i}" for i in range(3)]
@@ -233,7 +237,9 @@ async def test_smtp_send_staged_multiple_then_approve_all(
     try:
         # Step 1: Send 3 messages via proxy
         for subject in subjects:
-            op_id = await _smtp_send_via_proxy(smtp_host, smtp_port, user, password, subject)
+            op_id = await _smtp_send_via_proxy(
+                smtp_host, smtp_port, agent_user, agent_token, subject, to_addr=recipient
+            )
             op_ids.append(op_id)
 
         # Step 2: Verify all 3 appear as pending (Bearer auth required)
