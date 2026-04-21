@@ -341,16 +341,16 @@ Core proxy is functional and deployed. These are the remaining gaps before Phase
 |---|---|---|---|
 | Upstream execution (1.3) | ✅ Done | — | — |
 | Per-agent upstream routing | ✅ Done | — | — |
+| Upstream credential encryption (AES-256-GCM) | ✅ Done (`gateway/credentials.py`) | — | — |
 | Deploy to `test.nuvrail.com` | ✅ Done (2026-04-13) | — | — |
 | Rich operation descriptions (sender/subject) | ✅ Done (2026-04-20) | — | — |
 | RFC822 literal FETCH header extraction | ✅ Done (2026-04-20) | — | — |
-| SMTP 550 rejection response to AI | ❌ Not built | 🟡 High | ~1 day |
-| Upstream credential encryption (AES-256-GCM) | ❌ Not built | 🟡 High | ~2 days |
+| CORS locked to production domains | ✅ Env-var driven; set `NUVRAIL_CORS_ORIGINS` on server | — | — |
 | Operation batching engine (30s window) | ❌ Stub (`NotImplementedError`) | 🟠 Medium | ~2 days |
 | TLS on proxy listen side | ❌ Not built | 🟠 Medium | ~1 day |
 | Rate limiting on proxy connections | ❌ Not built | 🟠 Medium | ~1 day |
+| SMTP rejection signal to AI agent | ⏳ Deferred — connection is gone by reject time; needs design | 🟠 Medium | TBD |
 | Gmail XOAUTH2 (0.3) | ⏳ Deferred to Phase 2 | 🟠 Medium | ~2 days |
-| CORS locked to production domain | ❌ Currently `*` | 🟡 High (pre-public) | ~0.5 day |
 
 ---
 
@@ -389,9 +389,10 @@ All of the following must be true before Phase 0 is done:
 - [x] All of the above logged to audit trail
 - [x] `docker-compose up` starts the full system
 - [x] Deployed and accessible at `test.nuvrail.com`
-- [ ] Upstream credentials encrypted at rest (AES-256-GCM)
-- [ ] SMTP 550 rejection response wired to AI agent on rejected/expired sends
-- [ ] CORS locked to production domain (not `*`)
+- [x] Upstream credentials encrypted at rest (AES-256-GCM) — `gateway/credentials.py`
+- [x] CORS locked via `NUVRAIL_CORS_ORIGINS` env var — set on server
+- [ ] SMTP rejection signal to AI — connection is gone by reject time, needs design
+- [ ] Operation batching engine (30s window grouping)
 
 ---
 
@@ -496,14 +497,15 @@ Core proxy stack ✅ DONE (as of 2026-04-20)
   ├── Rejection revert (snapshot → unsolicited FETCH)
   ├── Upstream execution (approve path) — aioimaplib + aiosmtplib
   ├── React PWA + Web Push (VAPID)
-  ├── Per-agent credential routing + credential encryption
+  ├── Per-agent credential routing
+  ├── Credential encryption at rest (AES-256-GCM)
+  ├── CORS — env-var driven, locked to test + mail domains
   ├── test.nuvrail.com deployed + TLS via nginx/Let's Encrypt
   └── Rich op descriptions: RFC822 header extraction → sender/subject
 
 MVP polish [IN PROGRESS] ← active work
-  ├── Credential encryption at rest (AES-256-GCM) ← NEXT
-  ├── SMTP 550 rejection response to AI on reject/expire
-  ├── CORS locked to production domain
+  ├── SMTP rejection signal design (connection gone by reject time)
+  ├── Operation batching engine (30s window)
   └── TLS + rate limiting on proxy listen side
           │
   ┌───────┴────────┐
