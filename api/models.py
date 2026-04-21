@@ -6,7 +6,7 @@ Sub-milestone: 1.0
 from __future__ import annotations
 
 import json
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 from pydantic import BaseModel, field_validator
 
@@ -113,6 +113,43 @@ class BatchRejectResponse(BaseModel):
     failed: List[BatchRejectResult]
     skipped: List[BatchRejectResult]  # not pending (already decided) or not found
     total: int
+
+
+# ---------------------------------------------------------------------------
+# Auto-approval rule models
+# ---------------------------------------------------------------------------
+
+
+class AutoApprovalRule(BaseModel):
+    id: int
+    enabled: bool
+    priority: int
+    op_type: Optional[str] = None
+    sender_pattern: Optional[str] = None
+    folder_from: Optional[str] = None
+    action: Literal["approve", "reject"]
+    description: str
+    created_at: int
+
+
+class AutoApprovalRuleCreateRequest(BaseModel):
+    enabled: bool = True
+    priority: int = 0
+    op_type: Optional[str] = None
+    sender_pattern: Optional[str] = None
+    folder_from: Optional[str] = None
+    action: Literal["approve", "reject"]
+    description: str
+
+
+class AutoApprovalRuleUpdateRequest(BaseModel):
+    enabled: Optional[bool] = None
+    priority: Optional[int] = None
+    op_type: Optional[str] = None
+    sender_pattern: Optional[str] = None
+    folder_from: Optional[str] = None
+    action: Optional[Literal["approve", "reject"]] = None
+    description: Optional[str] = None
 
 
 class AuditEntry(BaseModel):

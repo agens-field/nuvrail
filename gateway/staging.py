@@ -12,6 +12,7 @@ Sub-milestone: 1.0
 from __future__ import annotations
 
 import json
+import logging
 import secrets
 import string
 import time
@@ -20,7 +21,9 @@ from typing import Optional
 
 import asyncio
 
+from gateway.rules import evaluate_rules, get_matching_rule
 from gateway.state_db import DB_PATH, get_db
+from gateway.state_db import insert_pending_reverts, restore_from_snapshot
 
 OP_ID_PREFIX = "op_"
 _ID_ALPHABET = string.ascii_letters + string.digits
@@ -34,6 +37,58 @@ def _generate_op_id() -> str:
 
 
 _URGENT_OP_TYPES = {"smtp_send", "trash"}
+_logger = logging.getLogger(__name__)
+
+
+def _decision_to_status(action: str) -> Optional[str]:
+    if action == "approve":
+        return "approved"
+    if action == "reject":
+        return "rejected"
+    return None
+
+
+async def _apply_auto_rule_decision(
+    op_id: str,
+    action: str,
+    rule: dict,
+    db_path: Path,
+) -> None:
+    """Apply a matched auto-rule decision and write audit trail."""
+    status = _decision_to_status(action)
+    if status is None:
+        return
+
+    await update_operation_status(op_id, status, decided_by="auto_rule", db_path=db_path)
+
+    now = int(time.time())
+    detail = json.dumps(
+        {
+            "rule_id": rule.get("id"),
+            "rule_description": rule.get("description"),
+        }
+    )
+    async with get_db(db_path) as db:
+        await db.execute(
+            """
+            INSERT INTO audit_log (timestamp, operation_id, event, actor, agent_id, detail)
+            VALUES (?, ?, ?, 'auto_rule', NULL, ?)
+            """,
+            (now, op_id, status, detail),
+        )
+        await db.commit()
+
+    # Rejected operations must roll back optimistic local state immediately.
+    if status == "rejected":
+        try:
+            reverts = await restore_from_snapshot(op_id, db_path=db_path)
+            await insert_pending_reverts(op_id, reverts, db_path=db_path)
+        except Exception as exc:  # noqa: BLE001
+            _logger.warning(
+                "[auto_rule] Snapshot revert failed for op %s (non-fatal): %s",
+                op_id,
+                exc,
+            )
 
 
 async def create_operation(
@@ -104,16 +159,44 @@ async def create_operation(
         )
         await db.commit()
 
-    # Fire-and-forget Web Push notification. Non-fatal — staging always succeeds.
-    try:
-        from gateway.push import notify_staged as _notify
-        asyncio.create_task(
-            _notify(op_id, description, is_urgent=bool(is_urgent), db_path=db_path),
-            name=f"push-notify-{op_id}",
+    # Evaluate auto-rules before push notifications. Auto-approved/rejected
+    # operations should not create pending-review push noise.
+    auto_action = await evaluate_rules(
+        {
+            "id": op_id,
+            "op_type": op_type,
+            "sender": (smtp_envelope or {}).get("from") if smtp_envelope else None,
+            "smtp_envelope": smtp_envelope,
+            "folder_from": folder_from,
+            "snapshot": snapshot,
+        },
+        db_path=db_path,
+    )
+    if auto_action in {"approve", "reject"}:
+        matched_rule = await get_matching_rule(
+            {
+                "id": op_id,
+                "op_type": op_type,
+                "sender": (smtp_envelope or {}).get("from") if smtp_envelope else None,
+                "smtp_envelope": smtp_envelope,
+                "folder_from": folder_from,
+                "snapshot": snapshot,
+            },
+            db_path=db_path,
         )
-    except Exception as _exc:
-        import logging as _logging
-        _logging.getLogger(__name__).debug("push notify skipped: %s", _exc)
+        if matched_rule is not None:
+            await _apply_auto_rule_decision(op_id, auto_action, matched_rule, db_path)
+
+    if auto_action is None:
+        # Fire-and-forget Web Push notification. Non-fatal — staging always succeeds.
+        try:
+            from gateway.push import notify_staged as _notify
+            asyncio.create_task(
+                _notify(op_id, description, is_urgent=bool(is_urgent), db_path=db_path),
+                name=f"push-notify-{op_id}",
+            )
+        except Exception as _exc:
+            _logger.debug("push notify skipped: %s", _exc)
 
     return op_id
 
