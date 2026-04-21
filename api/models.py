@@ -122,6 +122,7 @@ class AuditEntry(BaseModel):
     event: str
     actor: Optional[str] = None
     agent_id: Optional[str] = None
+    agent_label: Optional[str] = None
     detail: Optional[dict] = None       # parsed JSON from audit_log.detail
     # Joined from staged_operations (None if operation record no longer exists)
     op_description: Optional[str] = None

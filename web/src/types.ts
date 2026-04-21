@@ -77,6 +77,7 @@ export interface AuditEntry {
   event: string
   actor?: string
   agent_id?: string
+  agent_label?: string
   detail?: Record<string, unknown>
   // Joined from staged_operations
   op_description?: string

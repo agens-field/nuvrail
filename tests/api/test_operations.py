@@ -105,6 +105,53 @@ async def test_list_operations_status_filter(
     assert resp2.json()["total"] == 0
 
 
+async def test_list_operations_agent_filter(
+    client: httpx.AsyncClient, db_path: Path
+) -> None:
+    """GET /api/v1/operations?agent_id= filters correctly."""
+    async with get_db(db_path) as db:
+        cur1 = await db.execute(
+            """INSERT INTO agent_credentials
+               (user_id, label, agent_username, hashed_token,
+                upstream_host, upstream_imap_port, upstream_smtp_port,
+                upstream_user, upstream_password, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (1, "A1", "nuvrail_a1", "x", "imap.example.com", 993, 587, "a1@example.com", "pass", 0),
+        )
+        cur2 = await db.execute(
+            """INSERT INTO agent_credentials
+               (user_id, label, agent_username, hashed_token,
+                upstream_host, upstream_imap_port, upstream_smtp_port,
+                upstream_user, upstream_password, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (1, "A2", "nuvrail_a2", "x", "imap.example.com", 993, 587, "a2@example.com", "pass", 0),
+        )
+        await db.commit()
+        agent_id_1 = cur1.lastrowid
+        agent_id_2 = cur2.lastrowid
+
+    op_id_1 = await create_operation(
+        op_type="move",
+        protocol="imap",
+        description="Agent 1 op",
+        agent_id=agent_id_1,
+        db_path=db_path,
+    )
+    await create_operation(
+        op_type="move",
+        protocol="imap",
+        description="Agent 2 op",
+        agent_id=agent_id_2,
+        db_path=db_path,
+    )
+
+    resp = await client.get(f"/api/v1/operations?agent_id={agent_id_1}")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] == 1
+    assert data["operations"][0]["id"] == op_id_1
+
+
 async def test_get_operation_detail(
     client: httpx.AsyncClient, db_path: Path
 ) -> None:
