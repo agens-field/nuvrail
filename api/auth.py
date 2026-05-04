@@ -27,7 +27,11 @@ BASE58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
 
 
 def generate_token(nbytes: int = 32) -> str:
-    """Generate a URL-safe base58-encoded random token."""
+    """Generate a URL-safe base58-encoded random token.
+
+    The returned value is plaintext — show it to the client once, then store
+    only hash_token_for_storage(token) in the DB.  Never store the plaintext.
+    """
     raw = secrets.token_bytes(nbytes)
     # Simple base58 encoding
     num = int.from_bytes(raw, "big")
@@ -36,6 +40,17 @@ def generate_token(nbytes: int = 32) -> str:
         num, rem = divmod(num, 58)
         result.append(BASE58_ALPHABET[rem])
     return "".join(reversed(result)).zfill(44)
+
+
+def hash_token_for_storage(token: str) -> str:
+    """Return SHA-256 hex digest of a bearer token for safe DB storage.
+
+    SHA-256 is deterministic and fast, making it suitable for lookup without
+    bcrypt's per-call overhead.  The token itself has 32 bytes of entropy
+    (256 bits), so a fast hash is acceptable — brute-force is infeasible.
+    """
+    import hashlib  # noqa: PLC0415
+    return hashlib.sha256(token.encode()).hexdigest()
 
 
 def hash_password(plain: str) -> str:
@@ -54,10 +69,14 @@ def verify_password(plain: str, hashed: str) -> bool:
 
 
 async def get_user_by_token(token: str, db_path: Path = DB_PATH) -> Optional[dict]:
-    """Look up a user row by their API bearer token."""
+    """Look up a user row by their API bearer token.
+
+    The incoming token is plaintext; the DB stores sha256(token) so we hash
+    before querying.  See hash_token_for_storage().
+    """
     async with get_db(db_path) as db:
         async with db.execute(
-            "SELECT * FROM users WHERE api_token = ?", (token,)
+            "SELECT * FROM users WHERE api_token = ?", (hash_token_for_storage(token),)
         ) as cur:
             row = await cur.fetchone()
     return dict(row) if row else None

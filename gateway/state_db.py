@@ -115,7 +115,7 @@ CREATE TABLE IF NOT EXISTS users (
     email           TEXT NOT NULL UNIQUE,
     display_name    TEXT,
     hashed_password TEXT NOT NULL,       -- bcrypt hash of human password
-    api_token       TEXT UNIQUE,         -- long-lived bearer token (32 bytes, base58)
+    api_token       TEXT UNIQUE,         -- SHA-256 hex digest of bearer token (never plaintext)
     created_at      INTEGER NOT NULL
 );
 
@@ -150,10 +150,29 @@ CREATE TABLE IF NOT EXISTS pending_reverts (
 
 async def init_db(path: Path = DB_PATH) -> None:
     """Initialize the database, creating tables if they don't exist."""
+    import hashlib  # noqa: PLC0415
     path.parent.mkdir(parents=True, exist_ok=True)
     async with aiosqlite.connect(path) as db:
+        db.row_factory = aiosqlite.Row
         await db.executescript(SCHEMA)
         await db.executescript(_STAGING_SCHEMA)
+
+        # Migration: re-hash any api_token values that are not already
+        # SHA-256 hex digests (64 lowercase hex chars).  This handles
+        # existing plaintext tokens from before the security hardening.
+        async with db.execute(
+            "SELECT id, api_token FROM users WHERE api_token IS NOT NULL"
+        ) as cur:
+            rows = await cur.fetchall()
+        for row in rows:
+            token = row["api_token"]
+            if len(token) != 64 or not all(c in "0123456789abcdef" for c in token):
+                hashed = hashlib.sha256(token.encode()).hexdigest()
+                await db.execute(
+                    "UPDATE users SET api_token = ? WHERE id = ?",
+                    (hashed, row["id"]),
+                )
+
         await db.commit()
 
 

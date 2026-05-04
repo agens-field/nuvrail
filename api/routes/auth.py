@@ -31,6 +31,7 @@ from api.auth import (
     get_current_user,
     hash_agent_token,
     hash_password,
+    hash_token_for_storage,
     verify_password,
 )
 from gateway.credentials import encrypt_credential
@@ -169,7 +170,7 @@ async def register(
             INSERT INTO users (email, display_name, hashed_password, api_token, created_at)
             VALUES (?, ?, ?, ?, ?)
             """,
-            (body.email, body.display_name, hashed, api_token, now),
+            (body.email, body.display_name, hashed, hash_token_for_storage(api_token), now),
         )
         await db.commit()
         user_id = cur2.lastrowid
@@ -231,8 +232,20 @@ async def login(
 
     await LOGIN_ABUSE_PROTECTOR.record_success(ip=client_host, account=body.email)
     user = dict(row)
+
+    # Generate a fresh plaintext token for this session; store only its SHA-256
+    # hash so the DB never holds a recoverable secret.  Each login invalidates
+    # the previous token (only the latest hash is stored).
+    fresh_token = generate_token()
+    async with get_db(db_path) as db:
+        await db.execute(
+            "UPDATE users SET api_token = ? WHERE id = ?",
+            (hash_token_for_storage(fresh_token), user["id"]),
+        )
+        await db.commit()
+
     return LoginResponse(
-        token=user["api_token"],
+        token=fresh_token,  # plaintext — shown once, not stored
         token_type="bearer",
         user_id=user["id"],
         email=user["email"],

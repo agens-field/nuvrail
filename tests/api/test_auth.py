@@ -398,6 +398,40 @@ async def test_create_agent_imap_auth_failed_no_db_row(
     assert row[0] == 0
 
 
+async def test_human_token_stored_as_sha256(
+    client: httpx.AsyncClient, db_path: Path
+) -> None:
+    """Bearer token must be stored as SHA-256 hex digest, not plaintext."""
+    import hashlib
+
+    resp = await client.post(
+        "/api/v1/auth/register",
+        json={"email": "sha@example.com", "password": "pw"},
+    )
+    assert resp.status_code == 201
+
+    login_resp = await client.post(
+        "/api/v1/auth/login",
+        json={"email": "sha@example.com", "password": "pw"},
+    )
+    assert login_resp.status_code == 200
+    plaintext_token = login_resp.json()["token"]
+
+    async with get_db(db_path) as db:
+        async with db.execute(
+            "SELECT api_token FROM users WHERE email = ?", ("sha@example.com",)
+        ) as cur:
+            row = await cur.fetchone()
+
+    assert row is not None
+    stored = row[0]
+    expected_hash = hashlib.sha256(plaintext_token.encode()).hexdigest()
+
+    assert stored != plaintext_token, "Token stored as plaintext — must be SHA-256"
+    assert len(stored) == 64, f"Expected 64-char hex digest, got {len(stored)} chars"
+    assert stored == expected_hash, "Stored hash doesn't match sha256(token)"
+
+
 async def test_create_agent_imap_success_creates_row(
     client: httpx.AsyncClient, db_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
