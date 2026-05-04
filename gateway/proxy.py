@@ -1046,12 +1046,18 @@ async def handle_client(
             credential["upstream_user"],
         )
 
-        # Rewrite LOGIN with upstream credentials for forwarding after connection
+        # Build upstream auth command: XOAUTH2 if oauth2_provider is set,
+        # otherwise fall back to plain LOGIN.
         upstream_user = credential["upstream_user"]
-        upstream_password = decrypt_credential(credential["upstream_password"])
-        login_line_bytes = (
-            f"{login_tag} LOGIN {upstream_user} {upstream_password}\r\n".encode()
-        )
+        if credential.get("oauth2_provider"):
+            login_line_bytes = None  # determined after upstream connection (needs DB path)
+            _use_xoauth2 = True
+        else:
+            upstream_password = decrypt_credential(credential["upstream_password"])
+            login_line_bytes = (
+                f"{login_tag} LOGIN {upstream_user} {upstream_password}\r\n".encode()
+            )
+            _use_xoauth2 = False
 
     # --- Step 3: Open upstream connection using per-agent host/port -----------
     upstream_host = credential["upstream_host"]
@@ -1085,23 +1091,53 @@ async def handle_client(
         upstream_writer.close()
         return
 
-    # --- Step 5: Forward the rewritten LOGIN to upstream ---------------------
+    # --- Step 5: Authenticate to upstream (LOGIN or XOAUTH2) ----------------
+    if _use_xoauth2:
+        from gateway.oauth2_tokens import OAuth2Error, get_xoauth2_string  # noqa: PLC0415
+        try:
+            xoauth2_str = await get_xoauth2_string(str(credential["id"]), _db_path)
+        except OAuth2Error as exc:
+            logger.error("[%s] XOAUTH2 token fetch failed: %s", peer_str, exc)
+            try:
+                client_writer.write(
+                    f"{login_tag} NO Upstream OAuth2 authentication failed\r\n".encode()
+                )
+                await client_writer.drain()
+            except OSError:
+                pass
+            client_writer.close()
+            upstream_writer.close()
+            return
+        auth_bytes = (
+            f"{login_tag} AUTHENTICATE XOAUTH2 {xoauth2_str}\r\n".encode()
+        )
+    else:
+        auth_bytes = login_line_bytes
+
     try:
-        upstream_writer.write(login_line_bytes)
+        upstream_writer.write(auth_bytes)
         await upstream_writer.drain()
     except (OSError, BrokenPipeError) as exc:
-        logger.error("[%s] Failed to forward LOGIN to upstream: %s", peer_str, exc)
+        logger.error("[%s] Failed to send upstream auth: %s", peer_str, exc)
         client_writer.close()
         upstream_writer.close()
         return
 
-    # Read the upstream LOGIN response and forward to client
+    # Read the upstream auth response and forward to client
     try:
         login_resp = await upstream_reader.readline()
+        if _use_xoauth2 and not login_resp.upper().startswith(b"* OK") and b" OK " not in login_resp.upper():
+            # XOAUTH2 failure — the tagged response may contain a challenge;
+            # log at ERROR but never expose the token.
+            logger.error(
+                "[%s] Upstream XOAUTH2 authentication failed (response redacted)",
+                peer_str,
+            )
+            # Forward the failure response to client so it gets a clean error.
         client_writer.write(login_resp)
         await client_writer.drain()
     except (OSError, asyncio.IncompleteReadError) as exc:
-        logger.error("[%s] Failed to forward LOGIN response: %s", peer_str, exc)
+        logger.error("[%s] Failed to forward upstream auth response: %s", peer_str, exc)
         client_writer.close()
         upstream_writer.close()
         return

@@ -456,7 +456,6 @@ async def handle_smtp_client(
                 upstream_host = cred["upstream_host"]
                 upstream_port = int(cred["upstream_smtp_port"])
                 up_user = cred["upstream_user"]
-                up_pass = decrypt_credential(cred["upstream_password"])
 
                 try:
                     upstream_reader, upstream_writer, _ = await _connect_upstream_starttls(
@@ -474,19 +473,44 @@ async def handle_smtp_client(
                 # Drain the post-STARTTLS EHLO response
                 await _read_smtp_response(upstream_reader)
 
-                # Authenticate to upstream with real credentials
-                import base64 as _b64u  # noqa: PLC0415
-                rewritten_b64 = _b64u.b64encode(
-                    f"\x00{up_user}\x00{up_pass}".encode()
-                ).decode()
-                upstream_writer.write(f"AUTH PLAIN {rewritten_b64}\r\n".encode())
-                await upstream_writer.drain()
-                upstream_auth_resp = await _read_smtp_response(upstream_reader)
-                if not upstream_auth_resp or not upstream_auth_resp[0].startswith(b"235"):
-                    logger.error("[%s] Upstream AUTH failed: %r", peer_str, upstream_auth_resp)
-                    client_writer.write(b"535 5.7.8 Upstream authentication failed\r\n")
-                    await client_writer.drain()
-                    break
+                # Authenticate to upstream: XOAUTH2 if oauth2_provider is set,
+                # else AUTH PLAIN with real credentials.
+                if cred.get("oauth2_provider"):
+                    import gateway.state_db as _state_db_mod  # noqa: PLC0415
+                    from gateway.oauth2_tokens import OAuth2Error, get_xoauth2_string  # noqa: PLC0415
+                    try:
+                        xoauth2_str = await get_xoauth2_string(str(cred["id"]), _state_db_mod.DB_PATH)
+                    except OAuth2Error as exc:
+                        logger.error("[%s] SMTP XOAUTH2 token fetch failed: %s", peer_str, exc)
+                        client_writer.write(b"535 5.7.8 Upstream OAuth2 authentication failed\r\n")
+                        await client_writer.drain()
+                        break
+                    upstream_writer.write(f"AUTH XOAUTH2 {xoauth2_str}\r\n".encode())
+                    await upstream_writer.drain()
+                    upstream_auth_resp = await _read_smtp_response(upstream_reader)
+                    # 334 = challenge/error frame from Google; 235 = success
+                    if not upstream_auth_resp or not upstream_auth_resp[0].startswith(b"235"):
+                        logger.error(
+                            "[%s] Upstream SMTP XOAUTH2 AUTH failed (response redacted)",
+                            peer_str,
+                        )
+                        client_writer.write(b"535 5.7.8 Upstream authentication failed\r\n")
+                        await client_writer.drain()
+                        break
+                else:
+                    import base64 as _b64u  # noqa: PLC0415
+                    up_pass = decrypt_credential(cred["upstream_password"])
+                    rewritten_b64 = _b64u.b64encode(
+                        f"\x00{up_user}\x00{up_pass}".encode()
+                    ).decode()
+                    upstream_writer.write(f"AUTH PLAIN {rewritten_b64}\r\n".encode())
+                    await upstream_writer.drain()
+                    upstream_auth_resp = await _read_smtp_response(upstream_reader)
+                    if not upstream_auth_resp or not upstream_auth_resp[0].startswith(b"235"):
+                        logger.error("[%s] Upstream AUTH failed: %r", peer_str, upstream_auth_resp)
+                        client_writer.write(b"535 5.7.8 Upstream authentication failed\r\n")
+                        await client_writer.drain()
+                        break
 
                 upstream_credential = cred
                 client_writer.write(b"235 2.7.0 Authentication succeeded\r\n")

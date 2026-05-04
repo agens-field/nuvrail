@@ -1,0 +1,266 @@
+"""
+Tests for gateway/oauth2_tokens.py
+
+Covers:
+  - _build_xoauth2_string: correct base64 encoding
+  - get_xoauth2_string: cache hit (no refresh), cache miss (refresh called),
+    OAuth2Error on missing provider/credentials
+  - _refresh_google_token: success path via httpx mock, HTTP error path
+  - DB schema: oauth2 columns present after init_db()
+"""
+from __future__ import annotations
+
+import base64
+import json
+import time
+from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
+from gateway.credentials import encrypt_credential
+from gateway.oauth2_tokens import (
+    OAuth2Error,
+    _build_xoauth2_string,
+    _refresh_google_token,
+    get_xoauth2_string,
+)
+from gateway.state_db import get_db, init_db
+
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+async def db_path(tmp_path: Path) -> Path:
+    path = tmp_path / "oauth2_test.db"
+    await init_db(path)
+    return path
+
+
+async def _insert_agent(
+    db_path: Path,
+    *,
+    oauth2_provider: str | None = None,
+    oauth2_refresh_token_plain: str | None = None,
+    oauth2_client_id: str | None = None,
+    oauth2_client_secret_plain: str | None = None,
+    oauth2_access_token_plain: str | None = None,
+    oauth2_access_token_expires_at: int | None = None,
+    upstream_user: str = "user@example.com",
+) -> int:
+    """Insert a minimal agent_credentials row and return its id."""
+    async with get_db(db_path) as db:
+        # Need a parent user first
+        async with db.execute(
+            "SELECT id FROM users LIMIT 1"
+        ) as cur:
+            user_row = await cur.fetchone()
+        if user_row is None:
+            cur2 = await db.execute(
+                "INSERT INTO users (email, hashed_password, created_at) VALUES (?,?,?)",
+                ("test@example.com", "fakehash", int(time.time())),
+            )
+            user_id = cur2.lastrowid
+        else:
+            user_id = user_row["id"]
+
+        cur3 = await db.execute(
+            """
+            INSERT INTO agent_credentials
+                (user_id, label, agent_username, hashed_token,
+                 upstream_host, upstream_user, upstream_password,
+                 oauth2_provider, oauth2_refresh_token, oauth2_client_id,
+                 oauth2_client_secret, oauth2_access_token,
+                 oauth2_access_token_expires_at, created_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                user_id,
+                "test",
+                "nuvrail_test01",
+                "fakehash",
+                "imap.gmail.com",
+                upstream_user,
+                encrypt_credential("fake_password"),
+                oauth2_provider,
+                encrypt_credential(oauth2_refresh_token_plain) if oauth2_refresh_token_plain else None,
+                oauth2_client_id,
+                encrypt_credential(oauth2_client_secret_plain) if oauth2_client_secret_plain else None,
+                encrypt_credential(oauth2_access_token_plain) if oauth2_access_token_plain else None,
+                oauth2_access_token_expires_at,
+            ),
+        )
+        await db.commit()
+        return cur3.lastrowid  # type: ignore[return-value]
+
+
+# ---------------------------------------------------------------------------
+# _build_xoauth2_string
+# ---------------------------------------------------------------------------
+
+
+def test_build_xoauth2_string_format() -> None:
+    """XOAUTH2 string must be base64(user=<email>\\x01auth=Bearer <token>\\x01\\x01)."""
+    result = _build_xoauth2_string("user@example.com", "ya29.token")
+    decoded = base64.b64decode(result).decode("ascii")
+    assert decoded == "user=user@example.com\x01auth=Bearer ya29.token\x01\x01"
+
+
+# ---------------------------------------------------------------------------
+# get_xoauth2_string — error cases
+# ---------------------------------------------------------------------------
+
+
+async def test_get_xoauth2_string_no_provider(db_path: Path) -> None:
+    """Raises OAuth2Error if agent has no oauth2_provider."""
+    agent_id = await _insert_agent(db_path, oauth2_provider=None)
+    with pytest.raises(OAuth2Error, match="oauth2_provider"):
+        await get_xoauth2_string(str(agent_id), db_path)
+
+
+async def test_get_xoauth2_string_missing_agent(db_path: Path) -> None:
+    """Raises OAuth2Error for unknown agent_id."""
+    with pytest.raises(OAuth2Error, match="not found"):
+        await get_xoauth2_string("9999", db_path)
+
+
+async def test_get_xoauth2_string_no_refresh_token(db_path: Path) -> None:
+    """Raises OAuth2Error if refresh token not configured."""
+    agent_id = await _insert_agent(
+        db_path,
+        oauth2_provider="google",
+        oauth2_client_id="client_id",
+        oauth2_client_secret_plain="secret",
+    )
+    with pytest.raises(OAuth2Error, match="refresh_token"):
+        await get_xoauth2_string(str(agent_id), db_path)
+
+
+# ---------------------------------------------------------------------------
+# get_xoauth2_string — cache hit
+# ---------------------------------------------------------------------------
+
+
+async def test_get_xoauth2_string_cache_hit(db_path: Path) -> None:
+    """Returns cached token without calling refresh when not expired."""
+    future_expiry = int(time.time()) + 3600  # 1 hour from now
+    agent_id = await _insert_agent(
+        db_path,
+        oauth2_provider="google",
+        oauth2_access_token_plain="cached_access_token",
+        oauth2_access_token_expires_at=future_expiry,
+    )
+
+    with patch("gateway.oauth2_tokens._refresh_google_token") as mock_refresh:
+        result = await get_xoauth2_string(str(agent_id), db_path)
+
+    mock_refresh.assert_not_called()
+    decoded = base64.b64decode(result).decode("ascii")
+    assert "Bearer cached_access_token" in decoded
+
+
+# ---------------------------------------------------------------------------
+# get_xoauth2_string — cache miss / refresh
+# ---------------------------------------------------------------------------
+
+
+async def test_get_xoauth2_string_cache_miss_refreshes(db_path: Path) -> None:
+    """Calls refresh and stores new token when cache is expired."""
+    past_expiry = int(time.time()) - 10  # already expired
+    agent_id = await _insert_agent(
+        db_path,
+        oauth2_provider="google",
+        oauth2_refresh_token_plain="refresh_tok",
+        oauth2_client_id="client_id",
+        oauth2_client_secret_plain="secret",
+        oauth2_access_token_plain="old_token",
+        oauth2_access_token_expires_at=past_expiry,
+    )
+    new_expires = int(time.time()) + 3600
+
+    with patch(
+        "gateway.oauth2_tokens._refresh_google_token",
+        new_callable=AsyncMock,
+        return_value=("new_access_token", new_expires),
+    ):
+        result = await get_xoauth2_string(str(agent_id), db_path)
+
+    decoded = base64.b64decode(result).decode("ascii")
+    assert "Bearer new_access_token" in decoded
+
+    # Verify DB was updated with new token
+    async with get_db(db_path) as db:
+        async with db.execute(
+            "SELECT oauth2_access_token_expires_at FROM agent_credentials WHERE id = ?",
+            (agent_id,),
+        ) as cur:
+            row = await cur.fetchone()
+    assert row is not None
+    assert row["oauth2_access_token_expires_at"] == new_expires
+
+
+# ---------------------------------------------------------------------------
+# _refresh_google_token — httpx path
+# ---------------------------------------------------------------------------
+
+
+async def test_refresh_google_token_success() -> None:
+    """Returns (access_token, expires_at) on HTTP 200."""
+    fake_resp = MagicMock()
+    fake_resp.status_code = 200
+    fake_resp.text = json.dumps({
+        "access_token": "ya29.new",
+        "expires_in": 3600,
+    })
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    mock_client.post = AsyncMock(return_value=fake_resp)
+
+    with patch("httpx.AsyncClient", return_value=mock_client):
+        token, expires_at = await _refresh_google_token("cid", "csecret", "refresh")
+
+    assert token == "ya29.new"
+    assert expires_at > int(time.time())
+
+
+async def test_refresh_google_token_http_error() -> None:
+    """Raises OAuth2Error on non-200 HTTP response."""
+    fake_resp = MagicMock()
+    fake_resp.status_code = 400
+    fake_resp.text = json.dumps({"error": "invalid_grant"})
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    mock_client.post = AsyncMock(return_value=fake_resp)
+
+    with patch("httpx.AsyncClient", return_value=mock_client):
+        with pytest.raises(OAuth2Error, match="HTTP 400"):
+            await _refresh_google_token("cid", "csecret", "refresh")
+
+
+# ---------------------------------------------------------------------------
+# DB schema: oauth2 columns present after init_db
+# ---------------------------------------------------------------------------
+
+
+async def test_oauth2_columns_in_schema(db_path: Path) -> None:
+    """All oauth2 columns must exist in agent_credentials after init_db."""
+    async with get_db(db_path) as db:
+        async with db.execute("PRAGMA table_info(agent_credentials)") as cur:
+            cols = {row["name"] for row in await cur.fetchall()}
+
+    expected = {
+        "oauth2_provider",
+        "oauth2_refresh_token",
+        "oauth2_client_id",
+        "oauth2_client_secret",
+        "oauth2_access_token",
+        "oauth2_access_token_expires_at",
+    }
+    assert expected <= cols, f"Missing columns: {expected - cols}"

@@ -125,13 +125,18 @@ CREATE TABLE IF NOT EXISTS agent_credentials (
     label              TEXT NOT NULL DEFAULT 'default',
     agent_username     TEXT NOT NULL UNIQUE,  -- e.g. "nuvrail_<hex8>"
     hashed_token       TEXT NOT NULL,          -- bcrypt hash of the agent token
-    -- Upstream email connection config (stored in plaintext for Phase 0)
-    -- TODO: encrypt at rest with AES-256 per-user key in a later milestone
     upstream_host      TEXT NOT NULL,
     upstream_imap_port INTEGER NOT NULL DEFAULT 993,
     upstream_smtp_port INTEGER NOT NULL DEFAULT 587,
     upstream_user      TEXT NOT NULL,
-    upstream_password  TEXT NOT NULL,          -- upstream IMAP/SMTP password (plaintext for Phase 0)
+    upstream_password  TEXT NOT NULL,          -- AES-256-GCM encrypted upstream password
+    -- OAuth2 fields (NULL for password-auth agents)
+    oauth2_provider              TEXT,         -- 'google' | NULL
+    oauth2_refresh_token         TEXT,         -- encrypted at rest (AES-256-GCM)
+    oauth2_client_id             TEXT,         -- GCP OAuth2 client ID (not a secret)
+    oauth2_client_secret         TEXT,         -- encrypted at rest (AES-256-GCM)
+    oauth2_access_token          TEXT,         -- cached access token — encrypted
+    oauth2_access_token_expires_at INTEGER,    -- unix timestamp; NULL = not yet cached
     created_at         INTEGER NOT NULL,
     revoked_at         INTEGER                 -- NULL = active
 );
@@ -171,6 +176,28 @@ async def init_db(path: Path = DB_PATH) -> None:
                 await db.execute(
                     "UPDATE users SET api_token = ? WHERE id = ?",
                     (hashed, row["id"]),
+                )
+
+        # Migration: add OAuth2 columns to agent_credentials if not present.
+        # SQLite supports ADD COLUMN but not IF NOT EXISTS; we check the
+        # schema directly to stay idempotent across repeated startups.
+        async with db.execute(
+            "PRAGMA table_info(agent_credentials)"
+        ) as cur:
+            existing_cols = {row["name"] for row in await cur.fetchall()}
+
+        oauth2_columns = [
+            ("oauth2_provider",              "TEXT"),
+            ("oauth2_refresh_token",         "TEXT"),
+            ("oauth2_client_id",             "TEXT"),
+            ("oauth2_client_secret",         "TEXT"),
+            ("oauth2_access_token",          "TEXT"),
+            ("oauth2_access_token_expires_at", "INTEGER"),
+        ]
+        for col_name, col_type in oauth2_columns:
+            if col_name not in existing_cols:
+                await db.execute(
+                    f"ALTER TABLE agent_credentials ADD COLUMN {col_name} {col_type}"  # noqa: S608
                 )
 
         await db.commit()
