@@ -10,7 +10,7 @@ _Prepared for launch day: 2026-05-19_
 
 **Body:**
 
-AI agents with email access can read, send, and permanently delete messages with no review step — there's no equivalent of a pull request for email actions. Nuvrail is an IMAP/SMTP proxy that intercepts every proposed action (send, delete, move) and stages it for human approval before it touches the real mailbox, with an immutable audit log of every decision. The core proxy is open source and you can self-host the entire stack; we also offer a hosted cloud version with a managed review UI. Try it at nuvrail.com or read the code at [GITHUB_URL].
+AI agents with email access can read, send, and permanently delete messages with no review step — there's no equivalent of a pull request for email actions. Nuvrail is an IMAP/SMTP proxy that intercepts every proposed action (send, delete, move) and stages it for human approval before it touches the real mailbox, with an immutable audit log of every decision. We also ship auto-approval rules for deterministic low-risk actions (e.g. "auto-approve folder moves from approved senders"), so the approval layer stays out of the way when it doesn't need to be there. The core proxy is open source and you can self-host the entire stack; we also offer a hosted cloud version with a managed review UI. Try it at nuvrail.com or read the code at [GITHUB_URL].
 
 ---
 
@@ -38,7 +38,7 @@ Primarily mistakes, not adversaries. Most AI agent email incidents aren't attack
 
 **Q: "How does this scale if every action needs human approval?"**
 
-For most teams building AI email agents, the workflow is already human-in-the-loop — the agent proposes, a person reviews, it executes. Nuvrail just makes that explicit and auditable rather than an informal practice. For genuinely autonomous, high-volume pipelines, Nuvrail isn't the right fit and we're honest about that. We do support trusted read-only actions without approval (configurable), and we're looking at auto-approval rules for deterministic low-risk actions (e.g., "auto-approve folder moves if sender is in approved list"). That's on the roadmap.
+For most teams building AI email agents, the workflow is already human-in-the-loop — the agent proposes, a person reviews, it executes. Nuvrail just makes that explicit and auditable rather than an informal practice. For genuinely autonomous, high-volume pipelines, Nuvrail isn't the right fit and we're honest about that. We do support trusted read-only actions without approval (configurable), and we ship auto-approval rules today — you can define conditions under which specific action types execute without review (e.g. "auto-approve folder moves from approved senders"). For actions that genuinely need a human, the review cycle on mobile is typically under two minutes.
 
 ---
 
