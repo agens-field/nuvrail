@@ -43,7 +43,7 @@ from typing import Optional
 # ---------------------------------------------------------------------------
 
 SCOPE = "https://mail.google.com/"
-REDIRECT_URI = "http://localhost:8080"
+REDIRECT_URI = "http://localhost:8080/oauth2/callback"
 AUTH_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth"
 TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token"
 
@@ -60,6 +60,9 @@ class _CallbackHandler(http.server.BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         global _auth_code, _server_error
         parsed = urllib.parse.urlparse(self.path)
+        if parsed.path != "/oauth2/callback":
+            self._respond("Unexpected path — waiting for /oauth2/callback.")
+            return
         params = urllib.parse.parse_qs(parsed.query)
 
         if "error" in params:
