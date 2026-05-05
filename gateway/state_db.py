@@ -184,7 +184,13 @@ async def init_db(path: Path = DB_PATH) -> None:
         async with db.execute(
             "PRAGMA table_info(agent_credentials)"
         ) as cur:
-            existing_cols = {row["name"] for row in await cur.fetchall()}
+            col_rows = await cur.fetchall()
+            existing_cols = {row["name"] for row in col_rows}
+            # Also capture whether upstream_password still has NOT NULL
+            password_col = next(
+                (row for row in col_rows if row["name"] == "upstream_password"), None
+            )
+            password_is_not_null = password_col is not None and password_col["notnull"] == 1
 
         oauth2_columns = [
             ("oauth2_provider",              "TEXT"),
@@ -199,6 +205,48 @@ async def init_db(path: Path = DB_PATH) -> None:
                 await db.execute(
                     f"ALTER TABLE agent_credentials ADD COLUMN {col_name} {col_type}"  # noqa: S608
                 )
+
+        # Migration: drop NOT NULL from upstream_password to support OAuth2 agents.
+        # SQLite has no ALTER COLUMN — we must rename, recreate, copy, and drop.
+        # This is idempotent: the PRAGMA notnull flag is checked first.
+        if password_is_not_null:
+            await db.execute(
+                "ALTER TABLE agent_credentials RENAME TO agent_credentials_old"
+            )
+            await db.execute("""
+                CREATE TABLE agent_credentials (
+                    id                           INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id                      INTEGER NOT NULL REFERENCES users(id),
+                    label                        TEXT NOT NULL DEFAULT 'default',
+                    agent_username               TEXT NOT NULL UNIQUE,
+                    hashed_token                 TEXT NOT NULL,
+                    upstream_host                TEXT NOT NULL,
+                    upstream_imap_port           INTEGER NOT NULL DEFAULT 993,
+                    upstream_smtp_port           INTEGER NOT NULL DEFAULT 587,
+                    upstream_user                TEXT NOT NULL,
+                    upstream_password            TEXT,
+                    oauth2_provider              TEXT,
+                    oauth2_refresh_token         TEXT,
+                    oauth2_client_id             TEXT,
+                    oauth2_client_secret         TEXT,
+                    oauth2_access_token          TEXT,
+                    oauth2_access_token_expires_at INTEGER,
+                    created_at                   INTEGER NOT NULL,
+                    revoked_at                   INTEGER
+                )
+            """)
+            await db.execute("""
+                INSERT INTO agent_credentials
+                    SELECT id, user_id, label, agent_username, hashed_token,
+                           upstream_host, upstream_imap_port, upstream_smtp_port,
+                           upstream_user, upstream_password,
+                           oauth2_provider, oauth2_refresh_token, oauth2_client_id,
+                           oauth2_client_secret, oauth2_access_token,
+                           oauth2_access_token_expires_at,
+                           created_at, revoked_at
+                    FROM agent_credentials_old
+            """)
+            await db.execute("DROP TABLE agent_credentials_old")
 
         await db.commit()
 
