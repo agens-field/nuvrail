@@ -179,9 +179,19 @@ async def _refresh_google_token(
         )
 
     if status_code != 200:
+        # Extract just the error code from Google's JSON response — safe to log,
+        # contains no credential material (e.g. "invalid_grant", "invalid_client").
+        error_code = "unknown"
+        error_desc = ""
+        try:
+            err_data = json.loads(body)
+            error_code = err_data.get("error", "unknown")
+            error_desc = err_data.get("error_description", "")
+        except json.JSONDecodeError:
+            pass
         raise OAuth2Error(
             f"Google token refresh failed: HTTP {status_code} "
-            f"(details redacted — check Google API credentials)"
+            f"error={error_code!r} description={error_desc!r}"
         )
 
     try:
