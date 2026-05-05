@@ -278,23 +278,76 @@ async def create_agent(
 ) -> Union[AgentCreateResponse, JSONResponse]:
     """Register upstream email credentials and generate an agent token.
 
+    Supports two auth modes (mutually exclusive):
+      - Password auth: provide upstream_password.
+      - OAuth2/XOAUTH2: provide oauth2_provider, oauth2_client_id,
+        oauth2_client_secret, and oauth2_refresh_token.
+
     The plaintext agent_token is returned ONCE in this response.
     It is NEVER stored and NEVER returned again — the caller must save it.
     """
+    # --- Validate auth mode -------------------------------------------------
+    using_oauth2 = bool(body.oauth2_provider)
+    using_password = bool(body.upstream_password)
+
+    if using_oauth2 and using_password:
+        return JSONResponse(
+            status_code=422,
+            content={
+                "error": "conflicting_auth",
+                "detail": "Provide either upstream_password or oauth2_* fields, not both.",
+            },
+        )
+    if not using_oauth2 and not using_password:
+        return JSONResponse(
+            status_code=422,
+            content={
+                "error": "missing_auth",
+                "detail": "Provide either upstream_password or oauth2_provider + oauth2_client_id + oauth2_client_secret + oauth2_refresh_token.",
+            },
+        )
+    if using_oauth2:
+        missing = [
+            f for f in ("oauth2_client_id", "oauth2_client_secret", "oauth2_refresh_token")
+            if not getattr(body, f)
+        ]
+        if missing:
+            return JSONResponse(
+                status_code=422,
+                content={
+                    "error": "incomplete_oauth2",
+                    "detail": f"oauth2_provider set but missing required fields: {', '.join(missing)}",
+                },
+            )
+        supported_providers = ("google",)
+        if body.oauth2_provider not in supported_providers:
+            return JSONResponse(
+                status_code=422,
+                content={
+                    "error": "unsupported_oauth2_provider",
+                    "detail": f"Supported providers: {', '.join(supported_providers)}",
+                },
+            )
+
+    # --- Validate IMAP connectivity (password path only) --------------------
+    if using_password:
+        try:
+            await _verify_imap_connection(
+                body.upstream_host,
+                body.upstream_imap_port,
+                body.upstream_user,
+                body.upstream_password,  # type: ignore[arg-type]
+            )
+        except ImapValidationError as exc:
+            return JSONResponse(status_code=422, content={"error": exc.error, "detail": exc.detail})
+    # OAuth2 path: connection validation deferred to first proxy use (issue #46).
+
+    # --- Persist credentials ------------------------------------------------
     now = int(time.time())
     agent_username = "nuvrail_" + secrets.token_hex(8)
     agent_token_plain = generate_token()
     hashed = hash_agent_token(agent_token_plain)
     label = body.label or "default"
-    try:
-        await _verify_imap_connection(
-            body.upstream_host,
-            body.upstream_imap_port,
-            body.upstream_user,
-            body.upstream_password,
-        )
-    except ImapValidationError as exc:
-        return JSONResponse(status_code=422, content={"error": exc.error, "detail": exc.detail})
 
     async with get_db(db_path) as db:
         cur = await db.execute(
@@ -302,8 +355,11 @@ async def create_agent(
             INSERT INTO agent_credentials
                 (user_id, label, agent_username, hashed_token,
                  upstream_host, upstream_imap_port, upstream_smtp_port,
-                 upstream_user, upstream_password, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 upstream_user, upstream_password,
+                 oauth2_provider, oauth2_client_id,
+                 oauth2_client_secret, oauth2_refresh_token,
+                 created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 current_user["id"],
@@ -314,7 +370,11 @@ async def create_agent(
                 body.upstream_imap_port,
                 body.upstream_smtp_port,
                 body.upstream_user,
-                encrypt_credential(body.upstream_password),
+                encrypt_credential(body.upstream_password) if body.upstream_password else None,
+                body.oauth2_provider,
+                body.oauth2_client_id,
+                encrypt_credential(body.oauth2_client_secret) if body.oauth2_client_secret else None,
+                encrypt_credential(body.oauth2_refresh_token) if body.oauth2_refresh_token else None,
                 now,
             ),
         )

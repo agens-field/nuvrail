@@ -129,7 +129,7 @@ CREATE TABLE IF NOT EXISTS agent_credentials (
     upstream_imap_port INTEGER NOT NULL DEFAULT 993,
     upstream_smtp_port INTEGER NOT NULL DEFAULT 587,
     upstream_user      TEXT NOT NULL,
-    upstream_password  TEXT NOT NULL,          -- AES-256-GCM encrypted upstream password
+    upstream_password  TEXT,                   -- AES-256-GCM encrypted; NULL for OAuth2 agents
     -- OAuth2 fields (NULL for password-auth agents)
     oauth2_provider              TEXT,         -- 'google' | NULL
     oauth2_refresh_token         TEXT,         -- encrypted at rest (AES-256-GCM)

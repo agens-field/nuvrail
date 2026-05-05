@@ -211,7 +211,13 @@ class AgentCreateRequest(BaseModel):
     upstream_imap_port: int = 993
     upstream_smtp_port: int = 587
     upstream_user: str
-    upstream_password: str
+    # Password auth (mutually exclusive with OAuth2 fields below)
+    upstream_password: Optional[str] = None
+    # OAuth2 / XOAUTH2 fields (all required together if oauth2_provider is set)
+    oauth2_provider: Optional[str] = None          # e.g. "google"
+    oauth2_client_id: Optional[str] = None
+    oauth2_client_secret: Optional[str] = None
+    oauth2_refresh_token: Optional[str] = None
 
 
 class AgentCreateResponse(BaseModel):

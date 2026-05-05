@@ -91,6 +91,7 @@ async def _insert_agent(
                 encrypt_credential(oauth2_client_secret_plain) if oauth2_client_secret_plain else None,
                 encrypt_credential(oauth2_access_token_plain) if oauth2_access_token_plain else None,
                 oauth2_access_token_expires_at,
+                int(time.time()),
             ),
         )
         await db.commit()

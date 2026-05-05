@@ -63,17 +63,21 @@ async def client(db_path: Path) -> httpx.AsyncClient:
 # ---------------------------------------------------------------------------
 
 
-async def _register_and_login(client: httpx.AsyncClient) -> str:
+async def _register_and_login(
+    client: httpx.AsyncClient,
+    email: str = "test@example.com",
+    password: str = "hunter2",
+) -> str:
     """Register a user and return their bearer token."""
     resp = await client.post(
         "/api/v1/auth/register",
-        json={"email": "test@example.com", "password": "hunter2", "display_name": "Tester"},
+        json={"email": email, "password": password, "display_name": "Tester"},
     )
     assert resp.status_code == 201
     # Log in to get the token
     resp2 = await client.post(
         "/api/v1/auth/login",
-        json={"email": "test@example.com", "password": "hunter2"},
+        json={"email": email, "password": password},
     )
     assert resp2.status_code == 200
     return resp2.json()["token"]
@@ -458,3 +462,119 @@ async def test_create_agent_imap_success_creates_row(
             row = await cur.fetchone()
     assert row is not None
     assert row[0] == 1
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_create_agent_oauth2_no_password_required(
+    client: httpx.AsyncClient, db_path: Path
+) -> None:
+    """OAuth2 agent creation succeeds without upstream_password.
+    No IMAP validation is attempted for OAuth2 agents.
+    """
+    token = await _register_and_login(client, email="oauth2test@example.com")
+
+    resp = await client.post(
+        "/api/v1/agents",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "upstream_host": "imap.gmail.com",
+            "upstream_imap_port": 993,
+            "upstream_smtp_port": 587,
+            "upstream_user": "mmodahl@animalhorde.com",
+            "oauth2_provider": "google",
+            "oauth2_client_id": "fake_client_id",
+            "oauth2_client_secret": "fake_client_secret",
+            "oauth2_refresh_token": "fake_refresh_token",
+            "label": "gmail-xoauth2-test",
+        },
+    )
+    assert resp.status_code == 201
+    data = resp.json()
+    assert data["upstream_user"] == "mmodahl@animalhorde.com"
+    assert "agent_token" in data
+
+    # Verify OAuth2 fields are stored in DB (encrypted, not plaintext)
+    async with get_db(db_path) as db:
+        async with db.execute(
+            "SELECT oauth2_provider, oauth2_client_id, oauth2_refresh_token, "
+            "oauth2_client_secret, upstream_password "
+            "FROM agent_credentials WHERE upstream_user = ?",
+            ("mmodahl@animalhorde.com",),
+        ) as cur:
+            row = await cur.fetchone()
+
+    assert row is not None
+    assert row["oauth2_provider"] == "google"
+    assert row["oauth2_client_id"] == "fake_client_id"  # not a secret, stored plaintext
+    assert row["oauth2_refresh_token"] != "fake_refresh_token"  # must be encrypted
+    assert row["oauth2_client_secret"] != "fake_client_secret"  # must be encrypted
+    assert row["upstream_password"] is None  # no password for OAuth2 agents
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_create_agent_oauth2_rejects_conflicting_auth(
+    client: httpx.AsyncClient,
+) -> None:
+    """Providing both upstream_password and oauth2_provider is rejected."""
+    token = await _register_and_login(client, email="oauth2conflict@example.com")
+
+    resp = await client.post(
+        "/api/v1/agents",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "upstream_host": "imap.gmail.com",
+            "upstream_user": "mmodahl@animalhorde.com",
+            "upstream_password": "some_password",
+            "oauth2_provider": "google",
+            "oauth2_client_id": "fake_client_id",
+            "oauth2_client_secret": "fake_client_secret",
+            "oauth2_refresh_token": "fake_refresh_token",
+        },
+    )
+    assert resp.status_code == 422
+    assert resp.json()["error"] == "conflicting_auth"
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_create_agent_oauth2_rejects_incomplete_fields(
+    client: httpx.AsyncClient,
+) -> None:
+    """oauth2_provider set but missing oauth2_refresh_token is rejected."""
+    token = await _register_and_login(client, email="oauth2incomplete@example.com")
+
+    resp = await client.post(
+        "/api/v1/agents",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "upstream_host": "imap.gmail.com",
+            "upstream_user": "mmodahl@animalhorde.com",
+            "oauth2_provider": "google",
+            "oauth2_client_id": "fake_client_id",
+            # oauth2_client_secret and oauth2_refresh_token intentionally omitted
+        },
+    )
+    assert resp.status_code == 422
+    assert resp.json()["error"] == "incomplete_oauth2"
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_create_agent_oauth2_rejects_unsupported_provider(
+    client: httpx.AsyncClient,
+) -> None:
+    """Unsupported oauth2_provider value is rejected."""
+    token = await _register_and_login(client, email="oauth2badprovider@example.com")
+
+    resp = await client.post(
+        "/api/v1/agents",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "upstream_host": "imap.example.com",
+            "upstream_user": "user@example.com",
+            "oauth2_provider": "yahoo",  # not supported
+            "oauth2_client_id": "fake_client_id",
+            "oauth2_client_secret": "fake_client_secret",
+            "oauth2_refresh_token": "fake_refresh_token",
+        },
+    )
+    assert resp.status_code == 422
+    assert resp.json()["error"] == "unsupported_oauth2_provider"
