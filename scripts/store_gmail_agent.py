@@ -64,7 +64,7 @@ def main() -> None:
     }).encode("utf-8")
 
     req = urllib.request.Request(
-        f"{NUVRAIL_API_URL}/agents",
+        f"{NUVRAIL_API_URL}/api/v1/agents",
         data=payload,
         headers={
             "Content-Type": "application/json",
