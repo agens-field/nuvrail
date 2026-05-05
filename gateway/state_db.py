@@ -97,6 +97,7 @@ CREATE TABLE IF NOT EXISTS staged_operations (
     decided_by      TEXT,
     executed_at     INTEGER,
     undo_expires_at INTEGER,
+    rejection_notified INTEGER NOT NULL DEFAULT 0,  -- 1 once SMTP 550 notice sent to agent
     error           TEXT
 );
 
@@ -191,6 +192,16 @@ async def init_db(path: Path = DB_PATH) -> None:
                 (row for row in col_rows if row["name"] == "upstream_password"), None
             )
             password_is_not_null = password_col is not None and password_col["notnull"] == 1
+
+        # Migration: add rejection_notified column to staged_operations if absent.
+        # (existing_cols above is from agent_credentials — query staged_operations separately)
+        async with db.execute("PRAGMA table_info(staged_operations)") as cur:
+            staged_cols = {row["name"] for row in await cur.fetchall()}
+        if "rejection_notified" not in staged_cols:
+            await db.execute(
+                "ALTER TABLE staged_operations "
+                "ADD COLUMN rejection_notified INTEGER NOT NULL DEFAULT 0"
+            )
 
         oauth2_columns = [
             ("oauth2_provider",              "TEXT"),

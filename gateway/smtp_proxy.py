@@ -231,6 +231,77 @@ async def _connect_upstream_starttls(
 # ---------------------------------------------------------------------------
 
 
+async def _send_smtp_rejection_notices(
+    writer: asyncio.StreamWriter,
+    agent_id: str,
+    db_path: object,
+) -> None:
+    """After successful auth, send 214 notices for any unnotified rejected SMTP ops.
+
+    SMTP has no out-of-band push mechanism, so rejections are delivered
+    in-band as RFC 2821 § 4.2.2 informational 214 responses immediately
+    after the 235 auth success, before the agent's first command.
+
+    Format:
+      214 [NUVRAIL] REJECTED op_id: <human reason or 'human decision'>
+
+    The agent should parse 214 lines for op IDs it sent previously.
+    After delivery, the ops are marked rejection_notified=1 in the DB
+    so they are not re-sent on the next connection.
+
+    Phase 2 note: relies on a rejection_notified column added by migration.
+    If the column is absent (pre-migration DB), notices are skipped silently.
+    """
+    from pathlib import Path  # noqa: PLC0415
+
+    if not isinstance(db_path, Path):
+        db_path = Path(str(db_path))
+
+    async with get_db(db_path) as db:
+        # Check for the rejection_notified column (idempotent guard)
+        async with db.execute("PRAGMA table_info(staged_operations)") as cur:
+            cols = {row["name"] for row in await cur.fetchall()}
+        if "rejection_notified" not in cols:
+            return  # pre-migration DB — skip silently
+
+        async with db.execute(
+            """
+            SELECT id, description, decided_at
+            FROM staged_operations
+            WHERE protocol = 'smtp'
+              AND status = 'rejected'
+              AND agent_id = ?
+              AND (rejection_notified IS NULL OR rejection_notified = 0)
+            ORDER BY decided_at ASC
+            LIMIT 10
+            """,
+            (agent_id,),
+        ) as cur:
+            rows = [dict(r) for r in await cur.fetchall()]
+
+        if not rows:
+            return
+
+        for row in rows:
+            notice = (
+                f"214 [NUVRAIL] REJECTED {row['id']}: "
+                f"{row.get('description', 'send rejected by approver')}"
+                f"\r\n"
+            ).encode()
+            writer.write(notice)
+
+        await writer.drain()
+
+        # Mark all as notified
+        ids = [row["id"] for row in rows]
+        placeholders = ",".join("?" * len(ids))
+        await db.execute(
+            f"UPDATE staged_operations SET rejection_notified = 1 WHERE id IN ({placeholders})",  # noqa: S608
+            ids,
+        )
+        await db.commit()
+
+
 async def handle_smtp_client(
     client_reader: asyncio.StreamReader,
     client_writer: asyncio.StreamWriter,
@@ -519,6 +590,22 @@ async def handle_smtp_client(
                     "[%s] Upstream authenticated: %s:%d user=%s",
                     peer_str, upstream_host, upstream_port, up_user,
                 )
+
+                # Notify agent of any previously-rejected SMTP sends.
+                # SMTP has no unsolicited push; we deliver rejection notices
+                # as informational 214 lines immediately after auth success.
+                # The agent sees them before its first command is accepted.
+                try:
+                    import gateway.state_db as _state_db_mod2  # noqa: PLC0415
+                    await _send_smtp_rejection_notices(
+                        client_writer, str(cred["id"]),
+                        _state_db_mod2.DB_PATH,
+                    )
+                except Exception as _notice_exc:  # noqa: BLE001
+                    logger.warning(
+                        "[%s] Failed to send rejection notices: %s",
+                        peer_str, _notice_exc,
+                    )
                 continue
 
             # ----------------------------------------------------------------

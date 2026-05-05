@@ -57,6 +57,7 @@ import aiosmtplib
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from api.auth import get_current_user
+from api.undo import UndoError, undo_operation
 from api.models import (
     ApproveResponse,
     BatchApproveRequest,
@@ -69,6 +70,7 @@ from api.models import (
     OperationListResponse,
     OperationResponse,
     RejectResponse,
+    UndoResponse,
 )
 from gateway.staging import get_operation, list_operations, update_operation_status
 from gateway.state_db import DB_PATH, get_db, insert_pending_reverts, restore_from_snapshot
@@ -124,13 +126,23 @@ async def _execute_imap_upstream(row: dict, db_path: Path) -> None:
     """
     from gateway.credentials import decrypt_credential  # noqa: PLC0415
 
+    op_type = row.get("op_type", "")
+
+    # APPEND: body not stored — skip upstream execution entirely (no credentials needed)
+    if op_type == "append":
+        logger.info(
+            "[imap_execute] Skipping APPEND op %s — body not stored in staging DB", row["id"]
+        )
+        return
+
     agent_id = row.get("agent_id")
     cred = await _get_agent_credential(agent_id, db_path)
     if cred:
         imap_host = cred["upstream_host"]
         imap_port = int(cred["upstream_imap_port"])
         imap_user = cred["upstream_user"]
-        imap_pass = decrypt_credential(cred["upstream_password"])
+        raw_pass = cred.get("upstream_password")
+        imap_pass = decrypt_credential(raw_pass) if raw_pass else None
     else:
         # Fallback for ops staged before agent_id was tracked
         imap_host = os.environ.get("NUVRAIL_TEST_IMAP_HOST", "")
@@ -142,7 +154,6 @@ async def _execute_imap_upstream(row: dict, db_path: Path) -> None:
                 f"Operation {row['id']} has no agent_id and no fallback env vars set"
             )
 
-    op_type = row.get("op_type", "")
     imap_command = row.get("imap_command") or ""
     folder_from = row.get("folder_from") or "INBOX"
 
@@ -162,13 +173,6 @@ async def _execute_imap_upstream(row: dict, db_path: Path) -> None:
         else (raw_flags_remove or [])
     )
     folder_to = row.get("folder_to") or ""
-
-    # APPEND: body not stored — skip upstream execution
-    if op_type == "append":
-        logger.info(
-            "[imap_execute] Skipping APPEND op %s — body not stored in staging DB", row["id"]
-        )
-        return
 
     client = aioimaplib.IMAP4_SSL(host=imap_host, port=imap_port)
     try:
@@ -738,3 +742,28 @@ async def reject_op(
             detail=f"Operation {op_id!r} is already in status '{row['status']}'",
         )
     return await _do_reject(op_id, row, db_path)
+
+
+@router.post("/operations/{op_id}/undo", response_model=UndoResponse)
+async def undo_op(
+    op_id: str,
+    db_path: Path = Depends(get_db_path),
+    current_user: dict = Depends(get_current_user),
+) -> UndoResponse:
+    """Undo an executed operation within the undo window.
+
+    Reverses the IMAP command that was applied when the operation was approved.
+    Only operations with status 'executed' and op_type in the undoable set
+    (move, trash, archive, mark_read, mark_unread, star, unstar) can be undone.
+    The undo window defaults to 24h and is configurable via UNDO_WINDOW_HOURS.
+    """
+    try:
+        result = await undo_operation(op_id, db_path=db_path)
+    except UndoError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return UndoResponse(
+        id=op_id,
+        status="reverted",
+        op_type=result["op_type"],
+        reverted=result["reverted"],
+    )

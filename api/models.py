@@ -75,6 +75,13 @@ class RejectResponse(BaseModel):
     status: str
 
 
+class UndoResponse(BaseModel):
+    id: str
+    status: str  # 'reverted'
+    op_type: str
+    reverted: str  # human-readable description of what was reversed
+
+
 # ---------------------------------------------------------------------------
 # Batch operation models
 # ---------------------------------------------------------------------------
