@@ -9,6 +9,7 @@ RUN pip install --no-cache-dir -e .
 COPY gateway/ ./gateway/
 COPY api/ ./api/
 COPY logging_config.py ./logging_config.py
+COPY scripts/ ./scripts/
 COPY docker-entrypoint.sh ./docker-entrypoint.sh
 
 ENV NUVRAIL_DATA_DIR=/data
