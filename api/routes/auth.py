@@ -354,12 +354,13 @@ async def create_agent(
             """
             INSERT INTO agent_credentials
                 (user_id, label, agent_username, hashed_token,
-                 upstream_host, upstream_imap_port, upstream_smtp_port,
+                 upstream_host, upstream_smtp_host,
+                 upstream_imap_port, upstream_smtp_port,
                  upstream_user, upstream_password,
                  oauth2_provider, oauth2_client_id,
                  oauth2_client_secret, oauth2_refresh_token,
                  created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 current_user["id"],
@@ -367,6 +368,7 @@ async def create_agent(
                 agent_username,
                 hashed,
                 body.upstream_host,
+                body.upstream_smtp_host,  # NULL if not provided; proxy falls back to upstream_host
                 body.upstream_imap_port,
                 body.upstream_smtp_port,
                 body.upstream_user,

@@ -127,6 +127,7 @@ CREATE TABLE IF NOT EXISTS agent_credentials (
     agent_username     TEXT NOT NULL UNIQUE,  -- e.g. "nuvrail_<hex8>"
     hashed_token       TEXT NOT NULL,          -- bcrypt hash of the agent token
     upstream_host      TEXT NOT NULL,
+    upstream_smtp_host TEXT,                   -- NULL → falls back to upstream_host (e.g. smtp.gmail.com vs imap.gmail.com)
     upstream_imap_port INTEGER NOT NULL DEFAULT 993,
     upstream_smtp_port INTEGER NOT NULL DEFAULT 587,
     upstream_user      TEXT NOT NULL,
@@ -203,15 +204,16 @@ async def init_db(path: Path = DB_PATH) -> None:
                 "ADD COLUMN rejection_notified INTEGER NOT NULL DEFAULT 0"
             )
 
-        oauth2_columns = [
+        new_columns = [
             ("oauth2_provider",              "TEXT"),
             ("oauth2_refresh_token",         "TEXT"),
             ("oauth2_client_id",             "TEXT"),
             ("oauth2_client_secret",         "TEXT"),
             ("oauth2_access_token",          "TEXT"),
             ("oauth2_access_token_expires_at", "INTEGER"),
+            ("upstream_smtp_host",           "TEXT"),  # NULL → falls back to upstream_host
         ]
-        for col_name, col_type in oauth2_columns:
+        for col_name, col_type in new_columns:
             if col_name not in existing_cols:
                 await db.execute(
                     f"ALTER TABLE agent_credentials ADD COLUMN {col_name} {col_type}"  # noqa: S608

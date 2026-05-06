@@ -53,6 +53,7 @@ def main() -> None:
 
     payload = json.dumps({
         "upstream_host": "imap.gmail.com",
+        "upstream_smtp_host": "smtp.gmail.com",
         "upstream_imap_port": 993,
         "upstream_smtp_port": 587,
         "upstream_user": gmail,

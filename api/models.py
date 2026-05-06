@@ -215,6 +215,7 @@ class LoginResponse(BaseModel):
 class AgentCreateRequest(BaseModel):
     label: Optional[str] = "default"
     upstream_host: str
+    upstream_smtp_host: Optional[str] = None  # defaults to upstream_host if not set (e.g. smtp.gmail.com)
     upstream_imap_port: int = 993
     upstream_smtp_port: int = 587
     upstream_user: str

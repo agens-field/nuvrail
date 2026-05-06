@@ -413,7 +413,7 @@ async def _do_approve(op_id: str, row: dict, db_path: Path) -> ApproveResponse:
         agent_id = row.get("agent_id")
         cred = await _get_agent_credential(agent_id, db_path)
         if cred:
-            smtp_host = cred["upstream_host"]
+            smtp_host = cred["upstream_smtp_host"] or cred["upstream_host"]
             smtp_port = int(cred["upstream_smtp_port"])
             smtp_user = cred["upstream_user"]
             smtp_pass = decrypt_credential(cred["upstream_password"])

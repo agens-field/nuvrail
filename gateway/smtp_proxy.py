@@ -524,7 +524,7 @@ async def handle_smtp_client(
                     break
 
                 # Auth succeeded — open upstream using per-agent host/port
-                upstream_host = cred["upstream_host"]
+                upstream_host = cred["upstream_smtp_host"] or cred["upstream_host"]
                 upstream_port = int(cred["upstream_smtp_port"])
                 up_user = cred["upstream_user"]
 
