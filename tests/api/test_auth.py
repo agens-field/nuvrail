@@ -480,7 +480,7 @@ async def test_create_agent_oauth2_no_password_required(
             "upstream_host": "imap.gmail.com",
             "upstream_imap_port": 993,
             "upstream_smtp_port": 587,
-            "upstream_user": "mmodahl@animalhorde.com",
+            "upstream_user": "martin@animalhorde.com",
             "oauth2_provider": "google",
             "oauth2_client_id": "fake_client_id",
             "oauth2_client_secret": "fake_client_secret",
@@ -490,7 +490,7 @@ async def test_create_agent_oauth2_no_password_required(
     )
     assert resp.status_code == 201
     data = resp.json()
-    assert data["upstream_user"] == "mmodahl@animalhorde.com"
+    assert data["upstream_user"] == "martin@animalhorde.com"
     assert "agent_token" in data
 
     # Verify OAuth2 fields are stored in DB (encrypted, not plaintext)
@@ -499,7 +499,7 @@ async def test_create_agent_oauth2_no_password_required(
             "SELECT oauth2_provider, oauth2_client_id, oauth2_refresh_token, "
             "oauth2_client_secret, upstream_password "
             "FROM agent_credentials WHERE upstream_user = ?",
-            ("mmodahl@animalhorde.com",),
+            ("martin@animalhorde.com",),
         ) as cur:
             row = await cur.fetchone()
 
@@ -523,7 +523,7 @@ async def test_create_agent_oauth2_rejects_conflicting_auth(
         headers={"Authorization": f"Bearer {token}"},
         json={
             "upstream_host": "imap.gmail.com",
-            "upstream_user": "mmodahl@animalhorde.com",
+            "upstream_user": "martin@animalhorde.com",
             "upstream_password": "some_password",
             "oauth2_provider": "google",
             "oauth2_client_id": "fake_client_id",
@@ -547,7 +547,7 @@ async def test_create_agent_oauth2_rejects_incomplete_fields(
         headers={"Authorization": f"Bearer {token}"},
         json={
             "upstream_host": "imap.gmail.com",
-            "upstream_user": "mmodahl@animalhorde.com",
+            "upstream_user": "martin@animalhorde.com",
             "oauth2_provider": "google",
             "oauth2_client_id": "fake_client_id",
             # oauth2_client_secret and oauth2_refresh_token intentionally omitted

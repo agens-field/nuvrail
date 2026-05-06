@@ -11,7 +11,7 @@ Usage (on server):
     docker compose exec gateway python3 scripts/store_gmail_agent.py
 
 Required env vars (all must be set in .env or passed inline):
-    GMAIL_ADDRESS          - the Gmail / Google Workspace address, e.g. mmodahl@animalhorde.com
+    GMAIL_ADDRESS          - the Gmail / Google Workspace address, e.g. martin@animalhorde.com
     GOOGLE_CLIENT_ID       - OAuth2 client ID from Google Cloud Console
     GOOGLE_CLIENT_SECRET   - OAuth2 client secret
     GOOGLE_REFRESH_TOKEN   - refresh token from fetch_google_token.py
