@@ -7,6 +7,7 @@ import AuditView from './views/AuditView'
 import RulesView from './views/RulesView'
 import AgentsView from './views/AgentsView'
 import LoginView from './views/LoginView'
+import OAuthCallbackView from './views/OAuthCallbackView'
 import SetupView from './views/SetupView'
 import { getToken, setupPushNotifications } from './api/client'
 
@@ -113,6 +114,7 @@ export default function App() {
                 <Route path="/rules" element={<RulesView />} />
                 <Route path="/audit" element={<AuditView />} />
                 <Route path="/agents" element={<AgentsView />} />
+                <Route path="/oauth2/callback" element={<OAuthCallbackView />} />
                 <Route path="/setup" element={<SetupView />} />
                 <Route path="/login" element={<LoginView />} />
               </Routes>

@@ -197,6 +197,31 @@ export async function revokeAgent(id: number): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// OAuth2 Gmail flow
+// ---------------------------------------------------------------------------
+
+export interface OAuthStartResponse {
+  auth_url: string
+  state: string
+}
+
+export interface OAuthResultResponse {
+  agent_username: string
+  agent_token: string
+  label: string
+  upstream_user: string
+}
+
+export async function startGmailOAuth(label?: string): Promise<OAuthStartResponse> {
+  const qs = label ? `?label=${encodeURIComponent(label)}` : ''
+  return apiFetch<OAuthStartResponse>(`/api/v1/oauth2/google/start${qs}`)
+}
+
+export async function getOAuthResult(state: string): Promise<OAuthResultResponse> {
+  return apiFetch<OAuthResultResponse>(`/api/v1/oauth2/google/result?state=${encodeURIComponent(state)}`)
+}
+
+// ---------------------------------------------------------------------------
 // Operations endpoints
 // ---------------------------------------------------------------------------
 

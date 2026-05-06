@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Bot, Trash2, Plus, RefreshCw } from 'lucide-react'
-import { fetchAgents, revokeAgent } from '../api/client'
+import { Bot, Mail, Plus, RefreshCw, Trash2 } from 'lucide-react'
+import { fetchAgents, revokeAgent, startGmailOAuth } from '../api/client'
 import type { AgentResponse } from '../api/client'
 import { useNavigate } from 'react-router-dom'
 
@@ -99,6 +99,81 @@ function AgentCard({
   )
 }
 
+// ---------------------------------------------------------------------------
+// Connect Gmail inline widget
+// ---------------------------------------------------------------------------
+
+function ConnectGmailButton() {
+  const [open, setOpen] = useState(false)
+  const [label, setLabel] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  async function handleConnect() {
+    setError(null)
+    setLoading(true)
+    try {
+      const res = await startGmailOAuth(label.trim() || undefined)
+      window.location.href = res.auth_url
+    } catch (err) {
+      setLoading(false)
+      const msg = err instanceof Error ? err.message : String(err)
+      if (msg.includes('oauth2_not_configured')) {
+        setError('Gmail OAuth2 is not configured on this server.')
+      } else {
+        setError(msg)
+      }
+    }
+  }
+
+  if (!open) {
+    return (
+      <button
+        onClick={() => setOpen(true)}
+        className="flex items-center gap-1.5 bg-red-600 hover:bg-red-700 text-white text-sm font-medium px-3 py-1.5 rounded transition-colors"
+      >
+        <Mail className="w-3.5 h-3.5" />
+        Connect Gmail
+      </button>
+    )
+  }
+
+  return (
+    <div className="flex items-center gap-2">
+      <input
+        autoFocus
+        type="text"
+        value={label}
+        onChange={(e) => setLabel(e.target.value)}
+        onKeyDown={(e) => { if (e.key === 'Enter') void handleConnect() }}
+        placeholder="Label (optional)"
+        disabled={loading}
+        className="bg-slate-700 border border-slate-600 rounded px-2 py-1 text-sm text-slate-100 w-36 focus:outline-none focus:ring-1 focus:ring-red-500 disabled:opacity-50"
+      />
+      <button
+        onClick={() => void handleConnect()}
+        disabled={loading}
+        className="flex items-center gap-1 bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white text-sm font-medium px-3 py-1.5 rounded transition-colors"
+      >
+        <Mail className="w-3.5 h-3.5" />
+        {loading ? 'Redirecting…' : 'Connect'}
+      </button>
+      <button
+        onClick={() => { setOpen(false); setLabel(''); setError(null) }}
+        disabled={loading}
+        className="text-slate-400 hover:text-slate-200 text-sm disabled:opacity-50"
+      >
+        Cancel
+      </button>
+      {error && <p className="text-red-400 text-xs">{error}</p>}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// AgentsView
+// ---------------------------------------------------------------------------
+
 export default function AgentsView() {
   const navigate = useNavigate()
   const qc = useQueryClient()
@@ -122,7 +197,7 @@ export default function AgentsView() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-semibold text-slate-100">Agents</h1>
-        <div className="flex gap-2">
+        <div className="flex items-center gap-2">
           <button
             onClick={() => refetch()}
             className="text-slate-400 hover:text-slate-200 transition-colors"
@@ -130,6 +205,7 @@ export default function AgentsView() {
           >
             <RefreshCw className="w-4 h-4" />
           </button>
+          <ConnectGmailButton />
           <button
             onClick={() => navigate('/setup')}
             className="flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium px-3 py-1.5 rounded transition-colors"

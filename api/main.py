@@ -26,7 +26,7 @@ from typing import AsyncGenerator
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from api.routes import audit, auth, operations, push, rules
+from api.routes import audit, auth, oauth2, operations, push, rules
 from gateway.expiry import run_expiry_loop
 from gateway.state_db import DB_PATH, init_db
 
@@ -88,4 +88,5 @@ app.include_router(operations.router, prefix="/api/v1")
 app.include_router(audit.router, prefix="/api/v1")
 app.include_router(push.router, prefix="/api/v1")
 app.include_router(auth.router, prefix="/api/v1")
+app.include_router(oauth2.router, prefix="/api/v1")
 app.include_router(rules.router, prefix="/api/v1")
