@@ -69,7 +69,38 @@ async def main() -> None:
     import time
     print(f"cached token   : {'(set, expires in ' + str(int(cached_exp - time.time())) + 's)' if row['oauth2_access_token'] else '(none)'}")
 
-    # 2. Force a fresh token refresh (bypass cache) to confirm the refresh token works.
+    # 2. Verify the cached access token if one exists.
+    if row["oauth2_access_token"]:
+        print("\n--- Checking cached access token via tokeninfo ---")
+        try:
+            cached_access_token = decrypt_credential(row["oauth2_access_token"])
+        except Exception as exc:
+            print(f"ERROR: Failed to decrypt cached token: {exc}", file=sys.stderr)
+            print("      NUVRAIL_MASTER_KEY mismatch or corrupt cached token — proxy is sending garbage to Gmail.")
+            cached_access_token = None
+
+        if cached_access_token:
+            url = f"{TOKENINFO_URL}?access_token={cached_access_token}"
+            try:
+                with urllib.request.urlopen(url, timeout=10) as resp:
+                    info = json.loads(resp.read().decode("utf-8"))
+                print(f"Cached scope   : {info.get('scope', '(none)')}")
+                print(f"Cached expires : {info.get('exp', '?')}")
+                if "https://mail.google.com/" in info.get("scope", ""):
+                    print("✓  Cached token is valid and has the required scope")
+                else:
+                    print("✗  Cached token is MISSING required scope — proxy is using this bad token")
+            except urllib.error.HTTPError as exc:  # type: ignore[attr-defined]
+                body = exc.read().decode("utf-8", errors="replace")
+                print(f"✗  Cached token INVALID (tokeninfo HTTP {exc.code}): {body}")
+                print("   Proxy is sending this invalid token to Gmail — that's your 400.")
+                print("   Fix: clear the cached token from the DB so the proxy force-refreshes.")
+                print("   Run inside the container:")
+                print(f"     sqlite3 /data/nuvrail.db \"UPDATE agent_credentials SET oauth2_access_token=NULL, oauth2_access_token_expires_at=NULL WHERE agent_username='{agent_username}'\"")
+    else:
+        print("\nNo cached access token in DB — proxy will refresh on next connection.")
+
+    # 3. Force a fresh token refresh (bypass cache) to confirm the refresh token works.
     print("\n--- Refreshing access token from Google ---")
     if not row["oauth2_refresh_token"] or not row["oauth2_client_id"] or not row["oauth2_client_secret"]:
         print("ERROR: Missing one or more OAuth2 credential fields in DB.", file=sys.stderr)
