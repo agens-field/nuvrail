@@ -44,11 +44,11 @@ async def main() -> None:
     async with get_db(DB_PATH) as db:
         async with db.execute(
             """
-            SELECT id, upstream_user, oauth2_provider,
+            SELECT id, agent_username, upstream_user, oauth2_provider,
                    oauth2_refresh_token, oauth2_client_id, oauth2_client_secret,
                    oauth2_access_token, oauth2_access_token_expires_at
             FROM agent_credentials
-            WHERE id = ?
+            WHERE agent_username = ?
             """,
             (agent_username,),
         ) as cur:
