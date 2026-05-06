@@ -1123,17 +1123,72 @@ async def handle_client(
         upstream_writer.close()
         return
 
-    # Read the upstream auth response and forward to client
+    # Read the upstream auth response and forward to client.
+    #
+    # XOAUTH2 SASL exchange on failure (RFC 4422 / Gmail-specific):
+    #
+    #   C: TAG AUTHENTICATE XOAUTH2 <b64token>
+    #   S: + <b64 JSON error>          ← SASL challenge (status/scope only, safe to log)
+    #   C: \r\n                         ← empty abort; REQUIRED to complete the exchange
+    #   S: TAG NO [AUTHENTICATIONFAILED] ...
+    #
+    # On success Gmail skips the challenge and sends TAG OK directly.
+    # If we don't send the empty abort, Gmail hangs and the client gets
+    # a raw '+' continuation it can't interpret.
     try:
         login_resp = await upstream_reader.readline()
-        if _use_xoauth2 and not login_resp.upper().startswith(b"* OK") and b" OK " not in login_resp.upper():
-            # XOAUTH2 failure — the tagged response may contain a challenge;
-            # log at ERROR but never expose the token.
+
+        if _use_xoauth2 and login_resp.startswith(b"+ "):
+            # SASL challenge — auth has already failed on Gmail's side.
+            # Decode the base64 JSON to surface the error code; it contains
+            # only status/schemes/scope — no credential material.
+            import base64 as _b64
+            import json as _json
+            try:
+                challenge_json = _json.loads(_b64.b64decode(login_resp[2:].strip()))
+                logger.error(
+                    "[%s] Upstream XOAUTH2 rejected: status=%s scope=%s",
+                    peer_str,
+                    challenge_json.get("status", "?"),
+                    challenge_json.get("scope", "?"),
+                )
+            except Exception:
+                logger.error(
+                    "[%s] Upstream XOAUTH2 rejected (challenge decode failed)",
+                    peer_str,
+                )
+
+            # Send the empty abort to complete the SASL exchange.
+            try:
+                upstream_writer.write(b"\r\n")
+                await upstream_writer.drain()
+                # Read the final tagged NO.
+                login_resp = await upstream_reader.readline()
+            except (OSError, asyncio.IncompleteReadError) as exc:
+                logger.error("[%s] Failed to read XOAUTH2 final NO: %s", peer_str, exc)
+                client_writer.close()
+                upstream_writer.close()
+                return
+
+            # Send a clean NO to the client and close.
+            try:
+                client_writer.write(
+                    f"{login_tag} NO Upstream XOAUTH2 authentication failed\r\n".encode()
+                )
+                await client_writer.drain()
+            except OSError:
+                pass
+            client_writer.close()
+            upstream_writer.close()
+            return
+
+        elif _use_xoauth2 and b" OK " not in login_resp.upper():
+            # Unexpected non-OK, non-challenge response.
             logger.error(
-                "[%s] Upstream XOAUTH2 authentication failed (response redacted)",
+                "[%s] Upstream XOAUTH2 authentication failed (unexpected response)",
                 peer_str,
             )
-            # Forward the failure response to client so it gets a clean error.
+
         client_writer.write(login_resp)
         await client_writer.drain()
     except (OSError, asyncio.IncompleteReadError) as exc:
