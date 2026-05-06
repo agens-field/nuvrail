@@ -41,7 +41,11 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-_DATA_DIR = Path(os.environ.get("NUVRAIL_DATA_DIR", str(Path.home() / ".nuvrail")))
+# expanduser() is required: if NUVRAIL_DATA_DIR is set to "~/.nuvrail" in a .env
+# file, the shell does NOT expand ~ — Python must do it explicitly. Without this,
+# Path("~/.nuvrail") creates a literal '~' directory in the cwd, which can end
+# up committed to git if the cwd is the repo root.
+_DATA_DIR = Path(os.environ.get("NUVRAIL_DATA_DIR", str(Path.home() / ".nuvrail"))).expanduser()
 _MASTER_KEY_FILE = _DATA_DIR / "master.key"
 _MASTER_KEY_ENV = "NUVRAIL_MASTER_KEY"
 

@@ -38,7 +38,7 @@ The result: the AI can propose email changes freely, but nothing reaches the rea
 
 | Environment | Base URL | Purpose |
 |---|---|---|
-| **Internal testing** | `test.nuvrail.com` | Development, QA, dogfooding |
+| **Internal testing** | *(self-hosted)* | Development, QA, dogfooding |
 | **Production** | `mail.nuvrail.com` | Live customer traffic |
 
 **Ports:**

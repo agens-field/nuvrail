@@ -17,6 +17,19 @@ htmlcov/
 client_secret.json
 *.json.bak
 
+# Key material — must never be committed
+*.key
+*.pem
+*.p12
+*.pfx
+
+# Nuvrail runtime data dirs
+# (created if NUVRAIL_DATA_DIR is set to a relative path or ~ is not expanded)
+.nuvrail/
+~/
+~
+/data/
+
 # Data
 *.db
 *.db-journal
