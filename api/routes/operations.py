@@ -416,8 +416,21 @@ async def _do_approve(op_id: str, row: dict, db_path: Path) -> ApproveResponse:
             smtp_host = cred["upstream_smtp_host"] or cred["upstream_host"]
             smtp_port = int(cred["upstream_smtp_port"])
             smtp_user = cred["upstream_user"]
-            smtp_pass = decrypt_credential(cred["upstream_password"])
+            is_oauth2 = bool(cred.get("oauth2_provider"))
+            smtp_pass: str | None = None
+            if not is_oauth2:
+                raw_pass = cred.get("upstream_password")
+                if not raw_pass:
+                    raise HTTPException(
+                        status_code=500,
+                        detail=(
+                            f"Agent for operation {op_id} has no upstream_password. "
+                            "Re-add the agent credentials."
+                        ),
+                    )
+                smtp_pass = decrypt_credential(raw_pass)
         else:
+            is_oauth2 = False
             smtp_host = os.environ.get("NUVRAIL_TEST_SMTP_HOST", "")
             smtp_port = int(os.environ.get("NUVRAIL_TEST_SMTP_PORT", "587"))
             smtp_user = os.environ.get("NUVRAIL_TEST_SMTP_USER", "")
@@ -434,14 +447,30 @@ async def _do_approve(op_id: str, row: dict, db_path: Path) -> ApproveResponse:
         msg["Subject"] = subject
 
         try:
-            await aiosmtplib.send(
-                msg,
-                hostname=smtp_host,
-                port=smtp_port,
-                username=smtp_user,
-                password=smtp_pass,
-                start_tls=True,
-            )
+            if is_oauth2:
+                # OAuth2 agents: authenticate with XOAUTH2 via aiosmtplib native support.
+                from gateway.oauth2_tokens import OAuth2Error, get_access_token  # noqa: PLC0415
+                try:
+                    _email, access_token = await get_access_token(str(cred["id"]), db_path)
+                except OAuth2Error as exc:
+                    raise HTTPException(
+                        status_code=500,
+                        detail=f"OAuth2 token error for operation {op_id}: {exc}",
+                    ) from exc
+                async with aiosmtplib.SMTP(
+                    hostname=smtp_host, port=smtp_port, start_tls=True
+                ) as smtp:
+                    await smtp.auth_xoauth2(smtp_user, access_token)
+                    await smtp.sendmail(smtp_user, recipients, msg.as_string())
+            else:
+                await aiosmtplib.send(
+                    msg,
+                    hostname=smtp_host,
+                    port=smtp_port,
+                    username=smtp_user,
+                    password=smtp_pass,
+                    start_tls=True,
+                )
             logger.info("[approve] SMTP relay succeeded for %s", op_id)
         except Exception as exc:
             logger.error("[approve] SMTP relay failed for %s: %s", op_id, exc)

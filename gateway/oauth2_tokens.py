@@ -56,14 +56,19 @@ class OAuth2Error(Exception):
     """Raised on OAuth2 token exchange failures."""
 
 
-async def get_xoauth2_string(agent_id: str, db_path: Path) -> str:
-    """Return the base64-encoded XOAUTH2 string for the given agent.
+async def get_access_token(agent_id: str, db_path: Path) -> tuple[str, str]:
+    """Return (email, access_token) for the given agent.
 
     Checks the cached access token first; refreshes from the provider
     if absent or expiring within _EXPIRY_BUFFER_SECONDS.
 
     Raises OAuth2Error on any failure (missing credentials, HTTP error,
     bad response).  Never logs access tokens.
+
+    Callers that need the full XOAUTH2-encoded string (e.g. the IMAP/SMTP
+    proxy raw protocol layer) should use get_xoauth2_string() instead.
+    Callers with library support for XOAUTH2 (e.g. aiosmtplib.auth_xoauth2)
+    should call this directly to avoid double-encoding.
     """
     async with get_db(db_path) as db:
         async with db.execute(
@@ -97,7 +102,7 @@ async def get_xoauth2_string(agent_id: str, db_path: Path) -> str:
     # Use cached token if still fresh enough.
     if cached_token_enc and (expires_at - time.time()) > _EXPIRY_BUFFER_SECONDS:
         access_token = decrypt_credential(cached_token_enc)
-        return _build_xoauth2_string(email, access_token)
+        return email, access_token
 
     # Need to refresh.
     refresh_token_enc = row.get("oauth2_refresh_token")
@@ -134,6 +139,16 @@ async def get_xoauth2_string(agent_id: str, db_path: Path) -> str:
         )
         await db.commit()
 
+    return email, access_token
+
+
+async def get_xoauth2_string(agent_id: str, db_path: Path) -> str:
+    """Return the base64-encoded XOAUTH2 string for the given agent.
+
+    Wraps get_access_token() and encodes the result for use in the raw
+    IMAP/SMTP AUTHENTICATE/AUTH XOAUTH2 command.
+    """
+    email, access_token = await get_access_token(agent_id, db_path)
     return _build_xoauth2_string(email, access_token)
 
 
