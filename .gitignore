@@ -43,3 +43,21 @@ web/dist/
 .DS_Store
 *.swp
 *.swo
+
+# Internal company docs — live in nuvrail-internal only
+CompanySOUL.md
+HEALTH_BASELINE.md
+MarketingEthos.md
+MarketingPlan.md
+brand-voice-guide.md
+contractor-analogy-post.md
+launch-asset-checklist.md
+launch-copy.md
+long-form-post.md
+newsletter-pitches.md
+onboarding-call-script.md
+positioning-audit.md
+user-feedback-channel.md
+
+# GitHub Actions — managed separately
+.github/
