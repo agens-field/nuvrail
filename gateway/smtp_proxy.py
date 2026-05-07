@@ -657,23 +657,18 @@ async def handle_smtp_client(
             # DATA — intercept: consume body, do NOT forward, return STAGED
             # ----------------------------------------------------------------
             elif cmd == "DATA":
-                # 1. Forward DATA command to upstream
-                upstream_writer.write(b"DATA\r\n")
-                await upstream_writer.drain()
-
-                # 2. Read upstream 354 "go ahead" — don't forward to client
-                data_go_ahead = await _read_smtp_response(upstream_reader)
-                logger.debug(
-                    "[%s] Upstream DATA response: %r", peer_str, b"".join(data_go_ahead)
-                )
-
-                if not data_go_ahead or not data_go_ahead[0].startswith(b"354"):
-                    # Upstream rejected DATA; relay the error to the client
-                    client_writer.write(b"".join(data_go_ahead))
-                    await client_writer.drain()
-                    continue
-
-                # 3. Send 354 to client so it starts sending the body
+                # Respond 354 directly to client without touching upstream.
+                #
+                # We do NOT forward DATA upstream here.  The prior approach
+                # forwarded DATA to upstream for a pre-check (354), read and
+                # staged the body without sending it, then left upstream
+                # hanging in DATA state.  When the agent sent QUIT, upstream
+                # was still waiting for the body terminator (\.\r\n), so
+                # _read_smtp_response() blocked forever.
+                #
+                # The upstream transaction (MAIL FROM + RCPT TO already
+                # forwarded) is cancelled via RSET after staging (step 9).
+                # Relay-side validation happens at approve time.
                 client_writer.write(b"354 Start mail input; end with <CRLF>.<CRLF>\r\n")
                 await client_writer.drain()
 
@@ -732,7 +727,18 @@ async def handle_smtp_client(
                 client_writer.write(staged_resp.encode())
                 await client_writer.drain()
 
-                # 9. Reset envelope tracking for potential next message
+                # 9. RSET upstream to cancel the open MAIL FROM/RCPT TO
+                # transaction.  Upstream never saw DATA, so it has a pending
+                # envelope; RSET clears it and leaves the connection ready
+                # for the next command (including QUIT).
+                try:
+                    upstream_writer.write(b"RSET\r\n")
+                    await upstream_writer.drain()
+                    await _read_smtp_response(upstream_reader)
+                except Exception as rset_exc:
+                    logger.warning("[%s] RSET after staging failed (non-fatal): %s", peer_str, rset_exc)
+
+                # 10. Reset envelope tracking for potential next message
                 sender = None
                 recipients = []
 
