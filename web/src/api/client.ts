@@ -36,7 +36,7 @@ export function clearToken(): void {
 // Core fetch wrapper — injects Bearer token and handles 401
 // ---------------------------------------------------------------------------
 
-async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
+async function apiFetch<T>(path: string, options?: RequestInit & { skipRedirectOn401?: boolean }): Promise<T> {
   const token = getToken()
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
@@ -49,9 +49,14 @@ async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${path}`, { ...options, headers })
 
   if (res.status === 401) {
-    // Token expired or invalid — clear and redirect to login
+    // Token expired or invalid — clear local token.
+    // By default, redirect to login. Pass skipRedirectOn401 to suppress the
+    // redirect (e.g. OAuth callback polling, where a redirect would destroy
+    // the credential display before the user sees it).
     clearToken()
-    window.location.hash = '#/login'
+    if (!options?.skipRedirectOn401) {
+      window.location.hash = '#/login'
+    }
     throw new Error('Session expired — please log in again')
   }
 
@@ -218,7 +223,13 @@ export async function startGmailOAuth(label?: string): Promise<OAuthStartRespons
 }
 
 export async function getOAuthResult(state: string): Promise<OAuthResultResponse> {
-  return apiFetch<OAuthResultResponse>(`/api/v1/oauth2/google/result?state=${encodeURIComponent(state)}`)
+  // skipRedirectOn401: a 401 here must NOT force-navigate away from the
+  // callback page — that would destroy the credential display before the
+  // user has a chance to copy their token.
+  return apiFetch<OAuthResultResponse>(
+    `/api/v1/oauth2/google/result?state=${encodeURIComponent(state)}`,
+    { skipRedirectOn401: true },
+  )
 }
 
 // ---------------------------------------------------------------------------

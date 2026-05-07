@@ -7,6 +7,10 @@
  * Retries up to 10 times with 1s delay while the backend is still processing
  * (404 = not ready yet).
  *
+ * Result is cached in sessionStorage under OAUTH_RESULT_KEY so a page
+ * reload does not lose the credentials before the user copies them.
+ * The cache is cleared when the user navigates to /agents via "Done".
+ *
  * Shows:
  *   - Spinner while polling
  *   - Credential card (same style as SetupView) on success
@@ -21,6 +25,23 @@ import type { OAuthResultResponse } from '../api/client'
 const PROXY_HOST = import.meta.env.VITE_PROXY_HOST ?? 'test.nuvrail.com'
 const MAX_POLLS = 10
 const POLL_INTERVAL_MS = 1000
+const OAUTH_RESULT_KEY = 'nuvrail_oauth_result'
+
+// Maps raw server/Google error codes to human-readable messages.
+const OAUTH_ERROR_MESSAGES: Record<string, string> = {
+  no_code:
+    'Google did not return an authorization code. The request may have been cancelled or denied. Please try again.',
+  access_denied:
+    'Access was denied by Google. Please try connecting again and allow the requested permissions.',
+  invalid_state:
+    'The OAuth2 session expired or was invalid. Please try again.',
+  oauth2_not_configured:
+    'Gmail OAuth2 is not configured on this server. Contact your administrator.',
+}
+
+function humanizeOAuthError(raw: string): string {
+  return OAUTH_ERROR_MESSAGES[raw] ?? raw
+}
 
 export default function OAuthCallbackView() {
   const location = useLocation()
@@ -30,22 +51,25 @@ export default function OAuthCallbackView() {
   const state = params.get('state') ?? ''
   const urlError = params.get('error')
 
-  const [status, setStatus] = useState<'polling' | 'success' | 'error'>('polling')
-  const [result, setResult] = useState<OAuthResultResponse | null>(null)
+  // Restore from sessionStorage so a page reload doesn't lose the credentials.
+  const cachedRaw = sessionStorage.getItem(OAUTH_RESULT_KEY)
+  const cached: OAuthResultResponse | null = cachedRaw
+    ? (JSON.parse(cachedRaw) as OAuthResultResponse)
+    : null
+
+  const [status, setStatus] = useState<'polling' | 'success' | 'error'>(cached ? 'success' : 'polling')
+  const [result, setResult] = useState<OAuthResultResponse | null>(cached)
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
 
   useEffect(() => {
+    // Already restored from sessionStorage — nothing to poll.
+    if (cached) return
+
     // Immediate failure cases from the URL itself
     if (!state || urlError) {
       setStatus('error')
-      setErrorMsg(
-        urlError === 'invalid_state'
-          ? 'The OAuth2 session expired or was invalid. Please try again.'
-          : urlError
-            ? `Google returned an error: ${urlError}`
-            : 'Missing OAuth2 state parameter.',
-      )
+      setErrorMsg(humanizeOAuthError(urlError ?? ''))
       return
     }
 
@@ -58,6 +82,9 @@ export default function OAuthCallbackView() {
         try {
           const data = await getOAuthResult(state)
           if (!cancelled) {
+            // Cache so a page reload doesn't lose the credentials before
+            // the user copies them. Cleared when they click Done.
+            sessionStorage.setItem(OAUTH_RESULT_KEY, JSON.stringify(data))
             setResult(data)
             setStatus('success')
           }
@@ -69,10 +96,12 @@ export default function OAuthCallbackView() {
             await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS))
             continue
           }
-          // Any other error (400, network, etc.) is terminal.
+          // Any other error (400, 401, network, etc.) is terminal.
           if (!cancelled) {
             setStatus('error')
-            setErrorMsg(msg.replace(/^API \d+[^:]*: /, ''))
+            // Strip the raw API prefix and humanize known error codes.
+            const bare = msg.replace(/^API \d+[^:]*: /, '')
+            setErrorMsg(humanizeOAuthError(bare))
           }
           return
         }
@@ -86,6 +115,7 @@ export default function OAuthCallbackView() {
 
     void poll()
     return () => { cancelled = true }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state, urlError])
 
   async function copyToken() {
@@ -174,7 +204,11 @@ export default function OAuthCallbackView() {
       )}
 
       <button
-        onClick={() => navigate('/agents')}
+        onClick={() => {
+          // Clear the sessionStorage cache now that the user has seen the credentials.
+          sessionStorage.removeItem(OAUTH_RESULT_KEY)
+          navigate('/agents')
+        }}
         className="bg-indigo-600 hover:bg-indigo-700 text-white font-medium py-2 px-4 rounded transition-colors"
       >
         Done
