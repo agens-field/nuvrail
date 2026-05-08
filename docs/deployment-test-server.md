@@ -1,5 +1,9 @@
 # Nuvrail — Test Server Deployment Guide
 
+> ⚠️ **Superseded.** This document describes the old bare-metal / systemd deployment.
+> The current approach uses Docker Compose. See **[README.md](../README.md)** for the
+> up-to-date guide (nginx TLS stream for proxy ports, Docker Compose for services).
+
 **Audience:** Developer setting up a test instance on a Linux server with nginx already running.  
 **Assumes:** Ubuntu 22.04 LTS, Python 3.11+, nginx installed, a domain or subdomain pointed at the server (e.g. `test.nuvrail.com`), a working MXrouting account in `.env`.
 
