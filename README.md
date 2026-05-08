@@ -10,29 +10,34 @@ The approval layer between AI agents and your inbox.
 ```
 Internet
     │
-    ├──► :80   HTTP  ──► nginx ──────────────────► redirect to HTTPS
+    ├──► :80   HTTP  ───► nginx ───────────────────► redirect to HTTPS
     │
-    ├──► :443  HTTPS ──► nginx ──► web :3000  ──► React approval PWA
-    │                               (approval UI)    /api/ → gateway :8080
+    ├──► :443  HTTPS ───► nginx http  ──► 127.0.0.1:3000  web container
+    │             (TLS)                               React PWA + /api/ → gateway
     │
-    ├──► :443  HTTPS ──► nginx ──► landing :3001 ── Next.js landing page
-    │                               (nuvrail.com)
+    ├──► :443  HTTPS ───► nginx http  ──► 127.0.0.1:3001  landing container
+    │             (TLS)                               Next.js landing page
     │
-    ├──► :993  IMAP SSL ──► nginx stream ──► gateway :10143  IMAP proxy
-    │                        (TLS termination)  (plain TCP, container)
+    ├──► :993  IMAPS ───► nginx stream ─► 127.0.0.1:10143  IMAP proxy (plain TCP)
+    │             (TLS)  terminate SSL                no TLS inside container —
+    │                                                 proxy speaks plain IMAP inbound,
+    │                                                 SSL/TLS to upstream
     │
-    └──► :465  SMTPS    ──► nginx stream ──► gateway :10587  SMTP proxy
-                             (TLS termination)  (plain TCP, container)
+    └──► :465  SMTPS ───► nginx stream ─► 127.0.0.1:10587  SMTP proxy (plain TCP)
+                  (TLS)  terminate SSL                no TLS inside container —
+                                                      proxy strips STARTTLS from EHLO
+                                                      (client already encrypted via nginx),
+                                                      STARTTLS to upstream
 
-Docker Compose (on the host)
-    gateway   IMAP :10143  SMTP :10587  REST API :8080
-    web       Approval PWA + nginx (/api/ → gateway)  :3000
-    landing   Next.js landing page                    :3001
+Docker Compose — all ports bound to 127.0.0.1 only (never 0.0.0.0)
+    gateway   127.0.0.1:10143  127.0.0.1:10587  127.0.0.1:8080
+    web       127.0.0.1:3000
+    landing   127.0.0.1:3001
 ```
 
-AI agents connect to `:993` (IMAP) and `:465` (SMTP). nginx terminates TLS and
-forwards plain TCP to the proxy containers. The approval UI and API are served
-over HTTPS at `test.nuvrail.com`.
+All externally reachable ports terminate TLS at nginx. The Docker containers are
+bound to `127.0.0.1` only — no plain-text port is reachable from outside the
+host. There is no hop where email traffic crosses a network unencrypted.
 
 ---
 
@@ -142,12 +147,24 @@ sudo mkdir -p /etc/nginx/stream.d
 
 #### 3b. Stream config — IMAP and SMTP proxy ports
 
+The proxies listen on **plain TCP** inside their containers. nginx terminates TLS
+here and forwards plain TCP to `127.0.0.1` on the host. A few things worth knowing:
+
+- *IMAP proxy:* speaks plain IMAP inbound; opens an SSL/TLS connection to the
+  real upstream (blizzard.mxrouting.net:993) independently.
+- *SMTP proxy:* speaks plain SMTP inbound and **strips `STARTTLS` from its EHLO
+  capabilities** — because the client already has a TLS session via nginx, and
+  advertising STARTTLS a second time would confuse clients into trying to
+  negotiate it again. The proxy opens STARTTLS to the real upstream itself.
+
 Create `/etc/nginx/stream.d/nuvrail-proxy.conf`:
 
 ```nginx
 # /etc/nginx/stream.d/nuvrail-proxy.conf
 # TLS termination for the Nuvrail IMAP and SMTP proxies.
 # nginx unwraps SSL here and forwards plain TCP to the containers.
+# All Docker ports are bound to 127.0.0.1 — no plain-text port is
+# reachable from the network.
 
 # IMAP SSL (:993) → gateway container (:10143)
 server {
@@ -261,6 +278,11 @@ sudo systemctl reload nginx
 ---
 
 ### Step 4 — Docker Compose build and start
+
+> ⚠️ **Security note:** `docker-compose.yml` binds all host ports to `127.0.0.1`.
+> This is intentional. All external TLS is provided by nginx (Steps 2–3).
+> Never change these to `0.0.0.0` — that would expose plain-text proxy ports to
+> the public internet, bypassing TLS entirely.
 
 ```bash
 cd /opt/nuvrail

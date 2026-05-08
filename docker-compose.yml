@@ -4,9 +4,9 @@ services:
       context: .
       dockerfile: Dockerfile.gateway
     ports:
-      - "10143:10143"   # IMAP proxy (AI agent connects here)
-      - "10587:10587"   # SMTP proxy (AI agent connects here)
-      - "8080:8080"     # REST API (internal; fronted by web service in prod)
+      - "127.0.0.1:10143:10143"   # IMAP proxy — localhost only; nginx stream provides TLS on :993
+      - "127.0.0.1:10587:10587"   # SMTP proxy — localhost only; nginx stream provides TLS on :465
+      - "127.0.0.1:8080:8080"     # REST API — localhost only; nginx/web proxies externally
     volumes:
       - nuvrail_data:/data
     env_file: .env
@@ -20,7 +20,7 @@ services:
         VITE_API_URL: https://test.nuvrail.com
         VITE_PROXY_HOST: test.nuvrail.com
     ports:
-      - "3000:80"       # Approval web app
+      - "127.0.0.1:3000:80"       # Approval web app — localhost only; nginx proxies HTTPS
     depends_on:
       - gateway
     restart: unless-stopped
@@ -30,7 +30,7 @@ services:
       context: web/landing
       dockerfile: Dockerfile
     ports:
-      - "3001:3001"     # Landing page (Next.js)
+      - "127.0.0.1:3001:3001"     # Landing page — localhost only; nginx proxies HTTPS
     environment:
       - LOOPS_API_KEY=${LOOPS_API_KEY}
     restart: unless-stopped
