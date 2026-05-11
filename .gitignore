@@ -59,5 +59,4 @@ onboarding-call-script.md
 positioning-audit.md
 user-feedback-channel.md
 
-# GitHub Actions — managed separately
-.github/
+# Note: .github/ is tracked — CI workflows live in .github/workflows/
