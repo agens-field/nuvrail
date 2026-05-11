@@ -25,15 +25,8 @@ services:
       - gateway
     restart: unless-stopped
 
-  landing:
-    build:
-      context: web/landing
-      dockerfile: Dockerfile
-    ports:
-      - "127.0.0.1:3001:3001"     # Landing page — localhost only; nginx proxies HTTPS
-    environment:
-      - LOOPS_API_KEY=${LOOPS_API_KEY}
-    restart: unless-stopped
+  # landing: moved to agens-field/nuvrail-internal (web/landing)
+  # Build and run separately from that repo; nginx still proxies :3001 → HTTPS.
 
 volumes:
   nuvrail_data:
