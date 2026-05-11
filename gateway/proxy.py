@@ -55,6 +55,13 @@ from gateway.imap_response_parser import (
     parse_select_response,
 )
 from gateway.operation_parser import ParsedOperation, build_rich_description, parse_append, parse_copy, parse_move, parse_store
+from gateway.provider_profiles import (
+    PendingCopyIntent,
+    ProviderProfile,
+    copy_archive_intent,
+    detect_provider,
+    should_suppress_append,
+)
 from gateway.credentials import decrypt_credential
 from gateway.security_controls import build_auth_abuse_protector
 from gateway.staging import create_operation
@@ -367,18 +374,29 @@ async def _client_to_upstream(
                 break
 
             try:
-                parsed_op = parse_append(tag, append_folder, append_flags, literal_size)
-                op_id = await create_operation(
-                    op_type=parsed_op.op_type,
-                    protocol="imap",
-                    agent_id=session.get("agent_id"),
-                    description=parsed_op.description,
-                    imap_command=parsed_op.imap_command,
-                    folder_to=parsed_op.folder_to,
-                    flags_add=parsed_op.flags_add,
-                    db_path=db_path,
-                )
-                resp = f"{tag} OK [STAGED] Operation queued — ID: {op_id}\r\n"
+                _profile: ProviderProfile = session.get("provider_profile")
+                if _profile and should_suppress_append(append_folder, _profile):
+                    # Provider auto-adds to sent folder after SMTP send;
+                    # suppress APPEND to avoid duplicates. Respond OK so the
+                    # agent doesn't see an error (it doesn't need to know).
+                    resp = f"{tag} OK APPEND completed\r\n"
+                    logger.info(
+                        "[%s] SUPPRESSED APPEND to %r (sent-dedup: %s provider)",
+                        peer, append_folder, _profile.name,
+                    )
+                else:
+                    parsed_op = parse_append(tag, append_folder, append_flags, literal_size)
+                    op_id = await create_operation(
+                        op_type=parsed_op.op_type,
+                        protocol="imap",
+                        agent_id=session.get("agent_id"),
+                        description=parsed_op.description,
+                        imap_command=parsed_op.imap_command,
+                        folder_to=parsed_op.folder_to,
+                        flags_add=parsed_op.flags_add,
+                        db_path=db_path,
+                    )
+                    resp = f"{tag} OK [STAGED] Operation queued — ID: {op_id}\r\n"
             except Exception as exc:
                 logger.error("[%s] Failed to stage APPEND: %s", peer, exc)
                 resp = f"{tag} OK [STAGED] Operation queued for approval\r\n"
@@ -422,6 +440,78 @@ async def _client_to_upstream(
                 break
 
         elif action == "write":
+            # -----------------------------------------------------------------
+            # Provider normalization: COPY+STORE(\Deleted) → UID MOVE
+            #
+            # When a provider profile is active, we track COPY commands to
+            # known archive/trash folders and hold them instead of staging
+            # immediately.  When STORE \Deleted follows for the same UIDs,
+            # we rewrite the pair as a single UID MOVE operation (cleaner
+            # for approval, correct for providers like Gmail that require MOVE).
+            #
+            # Flush the held COPY as a normal staged operation if any
+            # non-matching write command arrives before the STORE \Deleted.
+            # -----------------------------------------------------------------
+            _profile: ProviderProfile = session.get("provider_profile")
+            _pending: Optional[PendingCopyIntent] = session.get("pending_copy_intent")
+            _is_store_deleted = (
+                parsed.command.upper() == "STORE"
+                and len(parsed.args) >= 3
+                and "deleted" in parsed.args[2].lower()
+                and parsed.args[1].upper().replace(".SILENT", "") in ("+FLAGS", "+FLAGS.SILENT")
+            )
+            _is_archive_copy = (
+                parsed.command.upper() == "COPY"
+                and _profile is not None
+                and copy_archive_intent(parsed.args[1] if len(parsed.args) > 1 else "", _profile) is not None
+            )
+
+            # If we're holding a COPY intent and the next write is NOT a
+            # matching STORE \Deleted, flush the held COPY as staged before
+            # processing the new command.
+            if _pending is not None and not _is_store_deleted:
+                try:
+                    _flush_op = parse_copy(_pending.tag, _pending.uid_set, _pending.destination)
+                    _flush_op_id = await create_operation(
+                        op_type=_flush_op.op_type,
+                        protocol="imap",
+                        agent_id=session.get("agent_id"),
+                        description=_flush_op.description,
+                        imap_command=_flush_op.imap_command,
+                        message_ids=[_pending.uid_set],
+                        folder_from=session.get("folder"),
+                        folder_to=_flush_op.folder_to,
+                        db_path=db_path,
+                    )
+                    logger.info(
+                        "[%s] FLUSHED held COPY to %r as staged op %s",
+                        peer, _pending.destination, _flush_op_id,
+                    )
+                except Exception as _flush_exc:  # noqa: BLE001
+                    logger.warning("[%s] Failed to flush held COPY (non-fatal): %s", peer, _flush_exc)
+                finally:
+                    session["pending_copy_intent"] = None
+
+            # Hold archive-intent COPY; respond with synthetic OK (not STAGED).
+            if _is_archive_copy:
+                _copy_uid_set = parsed.args[0] if parsed.args else "?"
+                _copy_dest = parsed.args[1] if len(parsed.args) > 1 else "?"
+                session["pending_copy_intent"] = PendingCopyIntent(
+                    tag=parsed.tag,
+                    uid_set=_copy_uid_set,
+                    destination=_copy_dest,
+                )
+                logger.info(
+                    "[%s] HELD COPY to %r — waiting for STORE \\Deleted to rewrite as MOVE (%s)",
+                    peer, _copy_dest, _profile.name,
+                )
+                try:
+                    client_writer.write(f"{parsed.tag} OK COPY completed\r\n".encode())
+                    await client_writer.drain()
+                except (ConnectionResetError, BrokenPipeError, OSError):
+                    break
+                continue  # don't stage yet
+
             # Reject non-UID write commands.
             # Sequence numbers are positional and shift whenever messages are
             # added/removed from a folder. Staged operations may be held
@@ -444,7 +534,37 @@ async def _client_to_upstream(
 
             # Intercept — don't forward, stage the operation, respond locally.
             try:
-                parsed_op = _build_parsed_op(parsed)
+                # Provider normalization: COPY+STORE(\Deleted) → UID MOVE
+                # If STORE \Deleted matches a held COPY intent, rewrite the pair
+                # as a single UID MOVE to the COPY destination and clear the intent.
+                _pending_now: Optional[PendingCopyIntent] = session.get("pending_copy_intent")
+                if (
+                    _pending_now is not None
+                    and _is_store_deleted
+                    and parsed.args
+                    and parsed.args[0] == _pending_now.uid_set
+                ):
+                    _folder_label = (
+                        "archive"
+                        if _pending_now.destination == (_profile.archive_folder if _profile else None)
+                        else "delete"
+                    )
+                    parsed_op = parse_move(
+                        parsed.tag, _pending_now.uid_set, _pending_now.destination
+                    )
+                    parsed_op.description = (
+                        f"{_folder_label}: rewrote COPY+DELETE to UID MOVE — "
+                        f"UIDs {_pending_now.uid_set} → {_pending_now.destination} "
+                        f"({(_profile.name if _profile else 'unknown')} provider normalization)"
+                    )
+                    session["pending_copy_intent"] = None
+                    logger.info(
+                        "[%s] REWRITE %s: COPY+STORE(\\Deleted) → UID MOVE %r for %s",
+                        peer, _folder_label, _pending_now.destination,
+                        (_profile.name if _profile else "?"),
+                    )
+                else:
+                    parsed_op = _build_parsed_op(parsed)
                 if parsed_op is not None:
                     # For flag operations (STORE), take a pre-op snapshot of
                     # affected messages and apply the optimistic update so the
@@ -1197,6 +1317,14 @@ async def handle_client(
         upstream_writer.close()
         return
 
+    # Detect provider profile from upstream hostname for normalization rules.
+    # Used to suppress duplicate Sent Mail APPENDs, rewrite COPY+DELETE→MOVE, etc.
+    provider_profile = detect_provider(upstream_host)
+    logger.info(
+        "[%s] Provider profile: %s (upstream=%s)",
+        peer_str, provider_profile.name, upstream_host,
+    )
+
     # Per-connection state shared between c2u (tracks SELECT) and u2c (syncs responses).
     session: dict = {
         "folder": None,              # currently selected folder name
@@ -1206,6 +1334,9 @@ async def handle_client(
         "revert_trigger_tag": None,  # tag of last SELECT/NOOP/FETCH (triggers revert injection)
         "agent_id": credential["id"],  # agent_credentials.id for staging
         "search_uid_mode": False,    # True if last SEARCH was UID SEARCH
+        # Provider normalization
+        "provider_profile": provider_profile,
+        "pending_copy_intent": None,  # PendingCopyIntent | None — held COPY awaiting STORE \Deleted
     }
     c2u = asyncio.create_task(
         _client_to_upstream(client_reader, upstream_writer, client_writer, session, peer_str, _db_path)
