@@ -156,6 +156,7 @@ async def test_get_operation_detail(
     client: httpx.AsyncClient, db_path: Path
 ) -> None:
     """GET /api/v1/operations/{id} returns correct fields."""
+    full_body = "Hello, this is the complete message body for approval review."
     op_id = await create_operation(
         op_type="smtp_send",
         protocol="smtp",
@@ -164,7 +165,8 @@ async def test_get_operation_detail(
             "from": "testing@nuvrail.com",
             "to": ["testing@nuvrail.com"],
             "subject": "Test",
-            "body_preview": "Hello",
+            "body": full_body,
+            "body_preview": full_body[:200],
         },
         db_path=db_path,
     )
@@ -176,6 +178,45 @@ async def test_get_operation_detail(
     assert data["protocol"] == "smtp"
     assert data["status"] == "pending"
     assert data["smtp_envelope"]["subject"] == "Test"
+    # Verify full body is returned in the approval card payload (not truncated)
+    assert data["smtp_envelope"]["body"] == full_body
+    assert data["smtp_envelope"]["body_preview"] == full_body[:200]
+
+
+async def test_smtp_envelope_full_body_stored_and_returned(
+    client: httpx.AsyncClient, db_path: Path
+) -> None:
+    """
+    Regression test for GitHub #4: SMTP approval must use full body, not 200-char preview.
+
+    The smtp_envelope stored in staging must contain both `body` (full text) and
+    `body_preview` (truncated). The GET response must expose both so the approver
+    can read the complete message before deciding.
+    """
+    long_body = "A" * 500  # deliberately longer than 200-char preview limit
+    preview = long_body[:200]
+    op_id = await create_operation(
+        op_type="smtp_send",
+        protocol="smtp",
+        description="Send long email",
+        smtp_envelope={
+            "from": "agent@test.nuvrail.com",
+            "to": ["human@example.com"],
+            "subject": "Long body test",
+            "body": long_body,
+            "body_preview": preview,
+        },
+        db_path=db_path,
+    )
+    resp = await client.get(f"/api/v1/operations/{op_id}")
+    assert resp.status_code == 200
+    envelope = resp.json()["smtp_envelope"]
+    # Full body must be present and complete
+    assert envelope["body"] == long_body, "Full body must not be truncated in approval payload"
+    assert len(envelope["body"]) == 500
+    # Preview is still present for quick-scan display
+    assert envelope["body_preview"] == preview
+    assert len(envelope["body_preview"]) == 200
 
 
 async def test_get_operation_not_found(client: httpx.AsyncClient) -> None:
@@ -325,6 +366,7 @@ async def test_approve_smtp_operation(
             "from": "testing@nuvrail.com",
             "to": ["testing@nuvrail.com"],
             "subject": "Milestone 1.0 test",
+            "body": "This is an automated test from the Nuvrail approval gateway.",
             "body_preview": "This is an automated test from the Nuvrail approval gateway.",
         },
         db_path=db_path,

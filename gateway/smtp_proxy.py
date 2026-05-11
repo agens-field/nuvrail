@@ -699,7 +699,7 @@ async def handle_smtp_client(
 
                 # 7. Create Operation record in staging engine
                 body_text = b"".join(body_lines).decode("utf-8", errors="replace")
-                body_preview = body_text[:200]
+                body_preview = body_text[:200]  # kept for quick-scan display only
                 try:
                     op_id = await create_operation(
                         op_type="smtp_send",
@@ -713,7 +713,8 @@ async def handle_smtp_client(
                             "from": sender or "",
                             "to": recipients,
                             "subject": subject,
-                            "body_preview": body_preview,
+                            "body": body_text,       # full message body for approval
+                            "body_preview": body_preview,  # truncated for quick-scan display
                         },
                     )
                     staged_resp = (

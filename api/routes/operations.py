@@ -407,7 +407,9 @@ async def _do_approve(op_id: str, row: dict, db_path: Path) -> ApproveResponse:
         sender = envelope.get("from", "")
         recipients = envelope.get("to", [])
         subject = envelope.get("subject", "<no subject>")
-        body_preview = envelope.get("body_preview", "")
+        # Use full body when available; fall back to body_preview for ops staged
+        # before this field was introduced.
+        body_text = envelope.get("body") or envelope.get("body_preview", "")
 
         from gateway.credentials import decrypt_credential  # noqa: PLC0415
         agent_id = row.get("agent_id")
@@ -441,7 +443,7 @@ async def _do_approve(op_id: str, row: dict, db_path: Path) -> ApproveResponse:
                     detail=f"Operation {op_id} has no agent_id and no fallback env vars set",
                 )
 
-        msg = MIMEText(body_preview or "(no body)", "plain")
+        msg = MIMEText(body_text or "(no body)", "plain")
         msg["From"] = smtp_user  # always use real upstream address
         msg["To"] = ", ".join(recipients) if isinstance(recipients, list) else recipients
         msg["Subject"] = subject
