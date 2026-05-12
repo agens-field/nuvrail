@@ -443,10 +443,22 @@ async def _do_approve(op_id: str, row: dict, db_path: Path) -> ApproveResponse:
                     detail=f"Operation {op_id} has no agent_id and no fallback env vars set",
                 )
 
-        msg = MIMEText(body_text or "(no body)", "plain")
-        msg["From"] = smtp_user  # always use real upstream address
-        msg["To"] = ", ".join(recipients) if isinstance(recipients, list) else recipients
-        msg["Subject"] = subject
+        # body_text is the raw RFC 2822 DATA payload from the agent
+        # (headers + blank line + body). Parse it properly so we don't wrap
+        # the original headers as the text body of a new MIMEText.
+        # If it has no recognisable headers, fall back to a plain MIMEText.
+        import email as _email_stdlib  # noqa: PLC0415
+        _parsed = _email_stdlib.message_from_string(body_text or "")
+        if _parsed.keys():  # at least one header present — treat as full RFC 2822
+            msg = _parsed
+        else:
+            msg = MIMEText(body_text or "(no body)", "plain")
+            msg["To"] = ", ".join(recipients) if isinstance(recipients, list) else recipients
+            msg["Subject"] = subject
+        # Always use the real authenticated upstream address as From.
+        if "From" in msg:
+            del msg["From"]
+        msg["From"] = smtp_user
 
         try:
             if is_oauth2:

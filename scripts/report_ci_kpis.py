@@ -49,7 +49,7 @@ def _post_kpi(path_id: str, kpi_id: str, value: float, note: str) -> None:
 
     payload = json.dumps({"value": round(value, 4), "note": note}).encode("utf-8")
     req = urllib.request.Request(
-        f"{BASE_URL}/api/agent/paths/{path_id}/kpis/{kpi_id}",
+        f"{BASE_URL}/api/agent/paths/{path_id}/key-results/{kpi_id}",
         data=payload,
         headers={
             "Content-Type": "application/json",
