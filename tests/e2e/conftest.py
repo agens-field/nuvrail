@@ -143,6 +143,13 @@ async def e2e_setup(tmp_path_factory: pytest.TempPathFactory) -> dict:
       - api_client            — httpx.AsyncClient wired to the FastAPI app
       - db_path               — Path to the shared SQLite DB
     """
+    # Skip cleanly when upstream credentials are absent (no env vars set).
+    if not os.environ.get("NUVRAIL_TEST_IMAP_HOST") or not os.environ.get("NUVRAIL_TEST_SMTP_HOST"):
+        pytest.skip(
+            "NUVRAIL_TEST_IMAP_HOST / NUVRAIL_TEST_SMTP_HOST not set — "
+            "skipping e2e tests. See .env.example for required variables."
+        )
+
     # 1. Create an isolated DB for this test module.
     tmp_dir = tmp_path_factory.mktemp("e2e")
     db_path = tmp_dir / "nuvrail.db"
@@ -295,8 +302,11 @@ async def e2e_setup(tmp_path_factory: pytest.TempPathFactory) -> dict:
 
 @pytest.fixture(scope="function")
 def upstream_imap_cfg() -> dict:
+    host = os.environ.get("NUVRAIL_TEST_IMAP_HOST")
+    if not host:
+        pytest.skip("NUVRAIL_TEST_IMAP_HOST not set — skipping e2e tests.")
     return {
-        "host": os.environ["NUVRAIL_TEST_IMAP_HOST"],
+        "host": host,
         "port": int(os.environ.get("NUVRAIL_TEST_IMAP_PORT", "993")),
         "user": os.environ["NUVRAIL_TEST_IMAP_USER"],
         "password": os.environ["NUVRAIL_TEST_IMAP_PASS"],
@@ -305,8 +315,11 @@ def upstream_imap_cfg() -> dict:
 
 @pytest.fixture(scope="function")
 def upstream_smtp_cfg() -> dict:
+    host = os.environ.get("NUVRAIL_TEST_SMTP_HOST")
+    if not host:
+        pytest.skip("NUVRAIL_TEST_SMTP_HOST not set — skipping e2e tests.")
     return {
-        "host": os.environ["NUVRAIL_TEST_SMTP_HOST"],
+        "host": host,
         "port": int(os.environ.get("NUVRAIL_TEST_SMTP_PORT", "587")),
         "user": os.environ["NUVRAIL_TEST_SMTP_USER"],
         "password": os.environ["NUVRAIL_TEST_SMTP_PASS"],
