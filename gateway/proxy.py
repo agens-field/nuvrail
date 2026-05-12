@@ -70,6 +70,7 @@ from gateway.state_db import (
     apply_optimistic_flag_update,
     get_db,
     get_message,
+    get_pending_flag_changes_for_uid,
     get_pending_move_uids_for_folder,
     get_pending_reverts,
     init_db,
@@ -462,8 +463,18 @@ async def _client_to_upstream(
             )
             _is_archive_copy = (
                 parsed.command.upper() == "COPY"
-                and _profile is not None
-                and copy_archive_intent(parsed.args[1] if len(parsed.args) > 1 else "", _profile) is not None
+                and parsed.uid  # UID COPY only — non-UID COPY rejected below
+                and len(parsed.args) >= 2
+                and (
+                    # With profile: only hold known archive/trash destinations.
+                    # Without profile: hold ALL UID COPY — if STORE \Deleted
+                    # follows for the same UIDs we rewrite to MOVE; otherwise
+                    # the held COPY is flushed as a normal staged COPY op.
+                    # This covers naive agents that use COPY+STORE+EXPUNGE
+                    # without a configured provider profile.
+                    _profile is None
+                    or copy_archive_intent(parsed.args[1], _profile) is not None
+                )
             )
 
             # If we're holding a COPY intent and the next write is NOT a
@@ -647,7 +658,10 @@ async def _client_to_upstream(
                     # in local state DB so the agent sees a consistent view
                     # (message appears moved immediately, before human approves).
                     # The snapshot captured above enables full rollback on rejection.
-                    is_move_op = parsed.command.upper() == "MOVE" and parsed_op.message_ids
+                    # Check op_type (not parsed.command) so the COPY+STORE→MOVE
+                    # rewrite path is also covered: in that case parsed.command
+                    # is still "STORE" but parsed_op.op_type is "move".
+                    is_move_op = parsed_op.op_type == "move" and parsed_op.message_ids
                     if is_move_op and folder_id is not None and parsed_op.message_ids:
                         uid_set_str = parsed_op.message_ids[0]
                         try:
@@ -924,6 +938,51 @@ async def _upstream_to_client(
                                 continue
                     except Exception as exc:  # noqa: BLE001
                         logger.warning("[%s] Pending-move filter error (non-fatal): %s", peer, exc)
+
+            # Patch FLAGS in FETCH responses for pending STORE ops.
+            #
+            # If the agent staged a flag change (e.g. STORE +FLAGS \Deleted)
+            # the upstream server hasn't executed it yet, so its FETCH response
+            # reflects the pre-staged state.  We rewrite the FLAGS field inline
+            # so the agent sees its own staged change immediately — consistent
+            # with how pending-MOVE UIDs are suppressed entirely.
+            #
+            # Flow:
+            #   upstream line  ──► parse UID + FLAGS
+            #              ──► get_pending_flag_changes_for_uid
+            #              ──► merge flags  ──► rewrite FLAGS(…) in line
+            #              ──► forward patched line to agent
+            if re.match(r"^\* \d+ FETCH\b", line, re.IGNORECASE):
+                folder_name = session.get("folder")
+                if folder_name:
+                    try:
+                        fetch_info = parse_fetch_line(line)
+                        if fetch_info and fetch_info.uid is not None:
+                            f_add, f_rem = await get_pending_flag_changes_for_uid(
+                                folder_name, fetch_info.uid, db_path=db_path
+                            )
+                            if f_add or f_rem:
+                                # Merge: start from upstream flags, apply staged delta.
+                                current = set(fetch_info.flags or [])
+                                current.update(f_add)
+                                current.difference_update(f_rem)
+                                new_flags_str = " ".join(sorted(current))
+                                patched = re.sub(
+                                    r"\bFLAGS \([^)]*\)",
+                                    f"FLAGS ({new_flags_str})",
+                                    line,
+                                    count=1,
+                                    flags=re.IGNORECASE,
+                                )
+                                if patched != line:
+                                    line = patched
+                                    line_with_crlf = line.encode() + b"\r\n"
+                                    logger.debug(
+                                        "[%s] Patched FLAGS for pending STORE UID %s: %s",
+                                        peer, fetch_info.uid, new_flags_str,
+                                    )
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning("[%s] FETCH flag-patch error (non-fatal): %s", peer, exc)
 
             # Forward this line to the client.
             try:

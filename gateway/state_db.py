@@ -579,6 +579,70 @@ async def get_pending_move_uids_for_folder(
     return pending
 
 
+async def get_pending_flag_changes_for_uid(
+    folder_name: str,
+    uid: int,
+    db_path: Path = DB_PATH,
+) -> "tuple[list[str], list[str]]":
+    """Return (flags_to_add, flags_to_remove) aggregated from all pending STORE ops
+    that affect the given UID in folder_name.
+
+    Used by the u2c pump to patch FLAGS in upstream FETCH responses so the agent
+    sees the staged flag state immediately without waiting for human approval.
+    Only considers ops whose op_type indicates a flag mutation (store, trash,
+    mark_read, mark_unread, flag, unflag).
+    """
+    FLAG_OP_TYPES = ("store", "trash", "mark_read", "mark_unread", "flag", "unflag")
+    placeholders = ",".join("?" * len(FLAG_OP_TYPES))
+    async with get_db(db_path) as db:
+        async with db.execute(
+            f"SELECT message_ids, flags_add, flags_remove FROM staged_operations "  # noqa: S608
+            f"WHERE status = 'pending' AND op_type IN ({placeholders}) AND folder_from = ?",
+            (*FLAG_OP_TYPES, folder_name),
+        ) as cur:
+            rows = await cur.fetchall()
+
+    flags_to_add: list[str] = []
+    flags_to_remove: list[str] = []
+
+    def _uid_in_set(uid_set_raw: "list[str]") -> bool:
+        for entry in uid_set_raw:
+            s = str(entry).strip()
+            if s.isdigit() and int(s) == uid:
+                return True
+            if ":" in s:
+                parts = s.split(":")
+                if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
+                    if int(parts[0]) <= uid <= int(parts[1]):
+                        return True
+        return False
+
+    for row in rows:
+        raw_ids = row["message_ids"] if isinstance(row, dict) else row[0]
+        raw_add = row["flags_add"] if isinstance(row, dict) else row[1]
+        raw_remove = row["flags_remove"] if isinstance(row, dict) else row[2]
+        if not raw_ids:
+            continue
+        try:
+            ids = json.loads(raw_ids)
+        except Exception:  # noqa: BLE001
+            continue
+        if not _uid_in_set(ids):
+            continue
+        if raw_add:
+            try:
+                flags_to_add.extend(json.loads(raw_add))
+            except Exception:  # noqa: BLE001
+                pass
+        if raw_remove:
+            try:
+                flags_to_remove.extend(json.loads(raw_remove))
+            except Exception:  # noqa: BLE001
+                pass
+
+    return flags_to_add, flags_to_remove
+
+
 async def remove_messages_from_folder(
     folder_id: int,
     uid_set_str: str,

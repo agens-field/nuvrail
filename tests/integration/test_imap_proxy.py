@@ -503,3 +503,92 @@ async def test_uid_search_filters_pending_move(
         except OSError:
             pass
         await _close(writer)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_copy_store_deleted_rewrites_to_move_without_profile(
+    proxy_server: tuple,
+    upstream_imap_config: dict,
+) -> None:
+    """COPY + STORE \\Deleted without a provider profile must be rewritten to a
+    pending MOVE op, and subsequent UID FETCH for that UID must be suppressed.
+
+    This covers the naive agent pattern: COPY to archive folder, then
+    STORE +FLAGS \\Deleted — the proxy should treat this as an archive move
+    even when no provider profile is configured.
+    """
+    host, port, agent_user, agent_token = proxy_server
+    if not upstream_imap_config.get("host"):
+        pytest.skip("NUVRAIL_TEST_IMAP_HOST not set")
+
+    reader, writer = await _connect(host, port)
+    try:
+        await _read_line(reader)  # greeting
+        writer.write(f"e001 LOGIN {agent_user} {agent_token}\r\n".encode())
+        await writer.drain()
+        await _read_until_ok_or_no(reader, "e001")
+
+        writer.write(b"e002 SELECT INBOX\r\n")
+        await writer.drain()
+        await _read_until_ok_or_no(reader, "e002")
+
+        # Find a real UID to work with.
+        writer.write(b"e003 UID SEARCH ALL\r\n")
+        await writer.drain()
+        search_lines = await _read_until_ok_or_no(reader, "e003")
+        uids: list[int] = []
+        for line in search_lines:
+            m = re.match(r"^\* SEARCH (.*)", line, re.IGNORECASE)
+            if m:
+                uids = [int(u) for u in m.group(1).split() if u.strip().isdigit()]
+        if not uids:
+            pytest.skip("No messages in INBOX to test against")
+        target_uid = uids[0]
+        uid_str = str(target_uid).encode()
+
+        # COPY to an arbitrary destination (simulating naive archive attempt).
+        writer.write(b"e004 UID COPY " + uid_str + b' "[Gmail]/All Mail"\r\n')
+        await writer.drain()
+        copy_resp = await _read_until_ok_or_no(reader, "e004")
+        assert any("OK" in l.upper() for l in copy_resp), (
+            f"Expected OK for held COPY, got: {copy_resp!r}"
+        )
+
+        # STORE +FLAGS \\Deleted on same UID — should trigger COPY+STORE→MOVE rewrite.
+        writer.write(b"e005 UID STORE " + uid_str + b" +FLAGS \\Deleted\r\n")
+        await writer.drain()
+        store_resp = await _read_until_ok_or_no(reader, "e005")
+        assert any("STAGED" in l.upper() for l in store_resp), (
+            f"Expected STAGED for COPY+STORE rewrite, got: {store_resp!r}"
+        )
+        assert any("MOVE" in l.upper() or "STAGED" in l.upper() for l in store_resp), (
+            f"Expected MOVE/STAGED in response, got: {store_resp!r}"
+        )
+
+        # EXPUNGE (agent may issue this as part of the sequence) — must not error.
+        writer.write(b"e006 EXPUNGE\r\n")
+        await writer.drain()
+        expunge_resp = await _read_until_ok_or_no(reader, "e006")
+        assert any("OK" in l.upper() for l in expunge_resp), (
+            f"Expected OK for EXPUNGE (blocked gracefully), got: {expunge_resp!r}"
+        )
+
+        # UID FETCH — the archived UID must be suppressed (not visible to agent).
+        writer.write(b"e007 UID FETCH " + uid_str + b" (FLAGS)\r\n")
+        await writer.drain()
+        fetch_resp = await _read_until_ok_or_no(reader, "e007")
+        # The UID should not appear in any FETCH response line.
+        fetch_lines = [l for l in fetch_resp if re.match(r"^\* \d+ FETCH\b", l, re.IGNORECASE)]
+        for fetch_line in fetch_lines:
+            assert f"UID {target_uid}" not in fetch_line, (
+                f"Pending-move UID {target_uid} should be suppressed in FETCH "
+                f"after COPY+STORE→MOVE rewrite, but appeared in: {fetch_line!r}"
+            )
+
+    finally:
+        try:
+            writer.write(b"e099 LOGOUT\r\n")
+            await writer.drain()
+        except OSError:
+            pass
+        await _close(writer)

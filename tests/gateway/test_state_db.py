@@ -739,3 +739,126 @@ async def test_get_message_metadata_null_sender_and_subject(db_path: Path) -> No
     assert len(result) == 1
     assert result[0]["sender"] is None
     assert result[0]["subject"] is None
+
+
+# ---------------------------------------------------------------------------
+# get_pending_flag_changes_for_uid
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_get_pending_flag_changes_single_uid(db_path: Path) -> None:
+    """Returns flags_to_add/remove for a UID with a pending STORE op."""
+    from gateway.state_db import get_pending_flag_changes_for_uid
+    from gateway.staging import create_operation
+
+    op_id = await create_operation(
+        op_type="trash",
+        protocol="imap",
+        agent_id="agent-1",
+        description="Mark deleted",
+        imap_command="UID STORE 42 +FLAGS \\Deleted",
+        message_ids=["42"],
+        folder_from="INBOX",
+        flags_add=["\\Deleted"],
+        db_path=db_path,
+    )
+    assert op_id
+
+    flags_add, flags_remove = await get_pending_flag_changes_for_uid("INBOX", 42, db_path=db_path)
+    assert "\\Deleted" in flags_add
+    assert flags_remove == []
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_get_pending_flag_changes_wrong_uid(db_path: Path) -> None:
+    """Returns empty lists when the UID doesn't match any pending STORE ops."""
+    from gateway.state_db import get_pending_flag_changes_for_uid
+    from gateway.staging import create_operation
+
+    await create_operation(
+        op_type="trash",
+        protocol="imap",
+        agent_id="agent-2",
+        description="Mark deleted",
+        imap_command="UID STORE 99 +FLAGS \\Deleted",
+        message_ids=["99"],
+        folder_from="INBOX",
+        flags_add=["\\Deleted"],
+        db_path=db_path,
+    )
+
+    flags_add, flags_remove = await get_pending_flag_changes_for_uid("INBOX", 1, db_path=db_path)
+    assert flags_add == []
+    assert flags_remove == []
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_get_pending_flag_changes_wrong_folder(db_path: Path) -> None:
+    """Returns empty lists when the folder doesn't match."""
+    from gateway.state_db import get_pending_flag_changes_for_uid
+    from gateway.staging import create_operation
+
+    await create_operation(
+        op_type="mark_read",
+        protocol="imap",
+        agent_id="agent-3",
+        description="Mark seen",
+        imap_command="UID STORE 7 +FLAGS \\Seen",
+        message_ids=["7"],
+        folder_from="Sent",
+        flags_add=["\\Seen"],
+        db_path=db_path,
+    )
+
+    flags_add, flags_remove = await get_pending_flag_changes_for_uid("INBOX", 7, db_path=db_path)
+    assert flags_add == []
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_get_pending_flag_changes_uid_range(db_path: Path) -> None:
+    """Expands UID ranges correctly — UID 5 in range 3:7 should match."""
+    from gateway.state_db import get_pending_flag_changes_for_uid
+    from gateway.staging import create_operation
+
+    await create_operation(
+        op_type="flag",
+        protocol="imap",
+        agent_id="agent-4",
+        description="Flag range",
+        imap_command="UID STORE 3:7 +FLAGS \\Flagged",
+        message_ids=["3:7"],
+        folder_from="INBOX",
+        flags_add=["\\Flagged"],
+        db_path=db_path,
+    )
+
+    flags_add, flags_remove = await get_pending_flag_changes_for_uid("INBOX", 5, db_path=db_path)
+    assert "\\Flagged" in flags_add
+
+    # UID outside range — no match
+    flags_add2, _ = await get_pending_flag_changes_for_uid("INBOX", 8, db_path=db_path)
+    assert "\\Flagged" not in flags_add2
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_get_pending_flag_changes_excludes_move_ops(db_path: Path) -> None:
+    """Move ops should not appear in flag change results (different op_type)."""
+    from gateway.state_db import get_pending_flag_changes_for_uid
+    from gateway.staging import create_operation
+
+    await create_operation(
+        op_type="move",
+        protocol="imap",
+        agent_id="agent-5",
+        description="Move message",
+        imap_command="UID MOVE 55 Archive",
+        message_ids=["55"],
+        folder_from="INBOX",
+        folder_to="Archive",
+        db_path=db_path,
+    )
+
+    flags_add, flags_remove = await get_pending_flag_changes_for_uid("INBOX", 55, db_path=db_path)
+    assert flags_add == []
+    assert flags_remove == []
