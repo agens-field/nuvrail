@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 _DATA_DIR = Path(os.environ.get("NUVRAIL_DATA_DIR", str(Path.home() / ".nuvrail")))
 _VAPID_PRIVATE_PEM = _DATA_DIR / "vapid_private.pem"
 _VAPID_PUBLIC_PEM = _DATA_DIR / "vapid_public.pem"
-_VAPID_EMAIL = os.environ.get("NUVRAIL_VAPID_EMAIL", "mailto:admin@nuvrail.com")
+_VAPID_EMAIL = os.environ.get("NUVRAIL_VAPID_EMAIL", "").strip() or "mailto:admin@nuvrail.com"
 
 # Cached after first load
 _vapid_public_key_b64: Optional[str] = None
