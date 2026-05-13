@@ -143,12 +143,14 @@ async def _execute_imap_upstream(row: dict, db_path: Path) -> None:
         imap_user = cred["upstream_user"]
         raw_pass = cred.get("upstream_password")
         imap_pass = decrypt_credential(raw_pass) if raw_pass else None
+        imap_oauth2_provider = cred.get("oauth2_provider")
     else:
         # Fallback for ops staged before agent_id was tracked
         imap_host = os.environ.get("NUVRAIL_TEST_IMAP_HOST", "")
         imap_port = int(os.environ.get("NUVRAIL_TEST_IMAP_PORT", "993"))
         imap_user = os.environ.get("NUVRAIL_TEST_IMAP_USER", "")
         imap_pass = os.environ.get("NUVRAIL_TEST_IMAP_PASS", "")
+        imap_oauth2_provider = None
         if not imap_host:
             raise RuntimeError(
                 f"Operation {row['id']} has no agent_id and no fallback env vars set"
@@ -177,9 +179,20 @@ async def _execute_imap_upstream(row: dict, db_path: Path) -> None:
     client = aioimaplib.IMAP4_SSL(host=imap_host, port=imap_port)
     try:
         await client.wait_hello_from_server()
-        status, data = await client.login(imap_user, imap_pass)
-        if status != "OK":
-            raise RuntimeError(f"IMAP LOGIN failed: {data}")
+        if imap_oauth2_provider:
+            # OAuth2 agent — use AUTHENTICATE XOAUTH2 instead of LOGIN.
+            from gateway.oauth2_tokens import OAuth2Error, get_access_token  # noqa: PLC0415
+            try:
+                _email, _access_token = await get_access_token(str(cred["id"]), db_path)
+            except OAuth2Error as exc:
+                raise RuntimeError(f"IMAP OAuth2 token fetch failed: {exc}") from exc
+            response = await client.xoauth2(_email, _access_token)
+            if response.result != "OK":
+                raise RuntimeError(f"IMAP XOAUTH2 authentication failed: {response.lines}")
+        else:
+            status, data = await client.login(imap_user, imap_pass)
+            if status != "OK":
+                raise RuntimeError(f"IMAP LOGIN failed: {data}")
 
         # Most write ops require a folder context (SELECT folder_from first)
         if op_type in ("store", "trash", "mark_read", "flag", "unflag", "mark_unread"):
