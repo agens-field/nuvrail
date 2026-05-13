@@ -15,7 +15,7 @@ import sys
 import os
 from pathlib import Path
 
-sys.path.insert(0, "/opt/nuvrail")
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 DB = Path(os.environ.get("NUVRAIL_DB_PATH", "/data/nuvrail.db"))
 
 async def main():
