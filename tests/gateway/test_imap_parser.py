@@ -384,3 +384,40 @@ def test_mxrouting_fixture(line, exp_tag, exp_cmd, exp_uid, exp_args) -> None:
     assert result.command == exp_cmd
     assert result.uid is exp_uid
     assert result.args == exp_args
+
+
+# ---------------------------------------------------------------------------
+# Unquoted folder names with spaces
+# ---------------------------------------------------------------------------
+
+def test_unquoted_folder_name_with_space_splits_args() -> None:
+    """Unquoted folder names containing spaces tokenize to multiple args.
+
+    IMAP RFC 3501 requires quoting folder names with spaces, but some agents
+    send them bare (e.g. UID COPY 23 [Gmail]/All Mail).  The tokenizer splits
+    on the space, so args[1:] joined is the correct way to reconstruct the
+    full folder name.  This test documents that behaviour so proxy code that
+    uses " ".join(args[1:]) can be verified correct.
+
+    Folder: [Gmail]/All Mail  → splits into ["23", "[Gmail]/All", "Mail"]
+    Joining args[1:] with " " → "[Gmail]/All Mail"  ✓
+    """
+    result = parse_line("TAG1 UID COPY 23 [Gmail]/All Mail")
+    assert result is not None
+    assert result.uid is True
+    assert result.command == "COPY"
+    # Raw split: three tokens after tag+UID+COPY
+    assert result.args == ["23", "[Gmail]/All", "Mail"]
+    # Reconstruction: join everything after the uid_set
+    reconstructed = " ".join(result.args[1:])
+    assert reconstructed == "[Gmail]/All Mail"
+
+
+def test_unquoted_folder_name_quoted_equivalent() -> None:
+    """Quoted folder names with spaces parse to a single arg — no reconstruction needed."""
+    result = parse_line('TAG1 UID COPY 23 "[Gmail]/All Mail"')
+    assert result is not None
+    assert result.args == ["23", "[Gmail]/All Mail"]
+    # args[1] and " ".join(args[1:]) are both correct
+    assert result.args[1] == "[Gmail]/All Mail"
+    assert " ".join(result.args[1:]) == "[Gmail]/All Mail"

@@ -117,12 +117,16 @@ def _build_parsed_op(parsed: ParsedCommand) -> Optional[ParsedOperation]:
 
     if cmd in ("MOVE",):
         uid_set = args[0] if args else "?"
-        destination = args[1] if len(args) > 1 else "?"
+        # Join remaining args: folder names may contain spaces (e.g. "[Gmail]/All Mail")
+        # and agents may send them unquoted, causing the tokenizer to split them.
+        destination = " ".join(args[1:]) if len(args) > 1 else "?"
         return parse_move(parsed.tag, uid_set, destination)
 
     if cmd in ("COPY",):
         uid_set = args[0] if args else "?"
-        destination = args[1] if len(args) > 1 else "?"
+        # Join remaining args: folder names may contain spaces (e.g. "[Gmail]/All Mail")
+        # and agents may send them unquoted, causing the tokenizer to split them.
+        destination = " ".join(args[1:]) if len(args) > 1 else "?"
         return parse_copy(parsed.tag, uid_set, destination)
 
     # APPEND is handled via the literal path; if it somehow reaches here, generic staging
@@ -461,10 +465,14 @@ async def _client_to_upstream(
                 and "deleted" in parsed.args[2].lower()
                 and parsed.args[1].upper().replace(".SILENT", "") in ("+FLAGS", "+FLAGS.SILENT")
             )
+            # Reconstruct folder name for COPY: agents may send unquoted folder
+            # names with spaces (e.g. UID COPY 23 [Gmail]/All Mail) which the
+            # tokenizer splits across multiple args. Join everything after args[0].
+            _copy_folder = " ".join(parsed.args[1:]) if len(parsed.args) > 1 else ""
             _is_archive_copy = (
                 parsed.command.upper() == "COPY"
                 and parsed.uid  # UID COPY only — non-UID COPY rejected below
-                and len(parsed.args) >= 2
+                and bool(_copy_folder)
                 and (
                     # With profile: only hold known archive/trash destinations.
                     # Without profile: hold ALL UID COPY — if STORE \Deleted
@@ -473,7 +481,7 @@ async def _client_to_upstream(
                     # This covers naive agents that use COPY+STORE+EXPUNGE
                     # without a configured provider profile.
                     _profile is None
-                    or copy_archive_intent(parsed.args[1], _profile) is not None
+                    or copy_archive_intent(_copy_folder, _profile) is not None
                 )
             )
 
@@ -506,7 +514,7 @@ async def _client_to_upstream(
             # Hold archive-intent COPY; respond with synthetic OK (not STAGED).
             if _is_archive_copy:
                 _copy_uid_set = parsed.args[0] if parsed.args else "?"
-                _copy_dest = parsed.args[1] if len(parsed.args) > 1 else "?"
+                _copy_dest = _copy_folder  # already reconstructed above (may contain spaces)
                 session["pending_copy_intent"] = PendingCopyIntent(
                     tag=parsed.tag,
                     uid_set=_copy_uid_set,
@@ -1362,14 +1370,25 @@ async def handle_client(
             return
 
         elif _use_xoauth2 and b" OK " not in login_resp.upper():
-            # Unexpected non-OK, non-challenge response.
+            # Unexpected non-OK, non-challenge response — close both sides.
             logger.error(
                 "[%s] Upstream XOAUTH2 authentication failed (unexpected response)",
                 peer_str,
             )
+            try:
+                client_writer.write(
+                    f"{login_tag} NO Upstream XOAUTH2 authentication failed\r\n".encode()
+                )
+                await client_writer.drain()
+            except OSError:
+                pass
+            client_writer.close()
+            upstream_writer.close()
+            return
 
-        client_writer.write(login_resp)
-        await client_writer.drain()
+        else:
+            client_writer.write(login_resp)
+            await client_writer.drain()
     except (OSError, asyncio.IncompleteReadError) as exc:
         logger.error("[%s] Failed to forward upstream auth response: %s", peer_str, exc)
         client_writer.close()

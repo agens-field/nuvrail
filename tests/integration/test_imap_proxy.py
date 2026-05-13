@@ -592,3 +592,86 @@ async def test_copy_store_deleted_rewrites_to_move_without_profile(
         except OSError:
             pass
         await _close(writer)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_copy_store_deleted_unquoted_folder_name_held_and_rewritten(
+    proxy_server: tuple,
+    upstream_imap_config: dict,
+) -> None:
+    """COPY with an *unquoted* folder name containing a space must still be held
+    and rewritten as a MOVE, not staged immediately.
+
+    Regression for: agents that send bare ``UID COPY 23 [Gmail]/All Mail``
+    (no surrounding quotes).  The tokenizer splits on the space, yielding
+    args = ["23", "[Gmail]/All", "Mail"].  Proxy code must join args[1:] to
+    reconstruct the full folder name before calling copy_archive_intent().
+
+    Without the fix:
+        _is_archive_copy = False  (copy_archive_intent("[Gmail]/All", ...) → None)
+        COPY staged immediately → STORE \\Deleted staged separately → no rewrite
+    With the fix:
+        _is_archive_copy = True   (copy_archive_intent("[Gmail]/All Mail", ...) → match)
+        COPY held → STORE \\Deleted triggers COPY+STORE→MOVE rewrite → single STAGED op
+    """
+    host, port = proxy_server
+    agent_user = upstream_imap_config["agent_user"]
+    agent_pass = upstream_imap_config["agent_pass"]
+
+    reader, writer = await asyncio.open_connection(host, port)
+    try:
+        # Consume greeting
+        await reader.readline()
+
+        # Authenticate
+        writer.write(f"a001 LOGIN {agent_user} {agent_pass}\r\n".encode())
+        await writer.drain()
+        await _read_until_ok_or_no(reader, "a001")
+
+        # SELECT INBOX
+        writer.write(b"a002 SELECT INBOX\r\n")
+        await writer.drain()
+        await _read_until_ok_or_no(reader, "a002")
+
+        # Find a UID to work with
+        writer.write(b"a003 UID SEARCH ALL\r\n")
+        await writer.drain()
+        search_lines = await _read_until_ok_or_no(reader, "a003")
+        uids = []
+        for line in search_lines:
+            m = re.match(r"^\* SEARCH (.*)", line, re.IGNORECASE)
+            if m:
+                uids = [int(u) for u in m.group(1).split() if u.strip().isdigit()]
+        if not uids:
+            pytest.skip("No messages in INBOX to test against")
+        target_uid = uids[0]
+        uid_bytes = str(target_uid).encode()
+
+        # COPY with UNQUOTED folder name containing a space — must be HELD, not STAGED.
+        writer.write(b"b001 UID COPY " + uid_bytes + b" [Gmail]/All Mail\r\n")
+        await writer.drain()
+        copy_resp = await _read_until_ok_or_no(reader, "b001")
+        assert any("OK" in l.upper() for l in copy_resp), (
+            f"Expected OK for held COPY (unquoted folder), got: {copy_resp!r}"
+        )
+        # Must NOT be STAGED yet — it should be held waiting for STORE \Deleted
+        assert not any("STAGED" in l.upper() for l in copy_resp), (
+            f"COPY with unquoted folder name was staged immediately instead of "
+            f"being held for COPY+STORE→MOVE rewrite: {copy_resp!r}"
+        )
+
+        # STORE \Deleted on same UID — must trigger the COPY+STORE→MOVE rewrite
+        writer.write(b"b002 UID STORE " + uid_bytes + b" +FLAGS \\Deleted\r\n")
+        await writer.drain()
+        store_resp = await _read_until_ok_or_no(reader, "b002")
+        assert any("STAGED" in l.upper() for l in store_resp), (
+            f"Expected STAGED for COPY+STORE rewrite (unquoted folder), got: {store_resp!r}"
+        )
+
+    finally:
+        try:
+            writer.write(b"b099 LOGOUT\r\n")
+            await writer.drain()
+        except OSError:
+            pass
+        await _close(writer)
