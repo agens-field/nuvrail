@@ -1319,11 +1319,32 @@ async def handle_client(
     #   C: \r\n                         ← empty abort; REQUIRED to complete the exchange
     #   S: TAG NO [AUTHENTICATIONFAILED] ...
     #
-    # On success Gmail skips the challenge and sends TAG OK directly.
-    # If we don't send the empty abort, Gmail hangs and the client gets
-    # a raw '+' continuation it can't interpret.
+    # On success Gmail sends untagged lines BEFORE the tagged OK:
+    #
+    #   S: * CAPABILITY IMAP4rev1 UNSELECT IDLE ...\r\n  ← untagged (forward to client)
+    #   S: TAG OK user@example.com authenticated (Success)\r\n  ← tagged completion
+    #
+    # We must loop, forwarding untagged '*' lines to the client, until we
+    # see the tagged completion or a SASL '+' challenge.  Reading only one
+    # line mistakes the CAPABILITY response for an auth failure.
+    _login_tag_prefix = (login_tag + " ").encode()
     try:
-        login_resp = await upstream_reader.readline()
+        login_resp = b""
+        while True:
+            line = await upstream_reader.readline()
+            if not line:
+                break
+            if line.startswith(b"+ ") or line.startswith(_login_tag_prefix):
+                # SASL challenge or tagged completion — stop here.
+                login_resp = line
+                break
+            # Untagged response (e.g. * CAPABILITY) — forward to client and keep reading.
+            try:
+                client_writer.write(line)
+                await client_writer.drain()
+            except (ConnectionResetError, BrokenPipeError, OSError):
+                upstream_writer.close()
+                return
 
         if _use_xoauth2 and login_resp.startswith(b"+ "):
             # SASL challenge — auth has already failed on Gmail's side.
