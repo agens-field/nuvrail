@@ -189,11 +189,24 @@ async def _execute_imap_upstream(row: dict, db_path: Path) -> None:
             response = await client.xoauth2(_email, _access_token)
             if response.result != "OK":
                 raise RuntimeError(f"IMAP XOAUTH2 authentication failed: {response.lines}")
-            # aioimaplib's xoauth2() doesn't issue a post-auth CAPABILITY command
-            # the way login() does, so its internal capability set is empty and
-            # uid("move", ...) raises "server has not MOVE capability".
-            # Explicitly fetch capabilities so the client knows what the server supports.
-            await client.capability()
+            # aioimaplib's xoauth2() doesn't seed the capability set the way
+            # login() does (login() scans response.lines for CAPABILITY at
+            # aioimaplib line 469, then calls capability() explicitly). Without
+            # it, uid("move", ...) raises "server has not MOVE capability" even
+            # though Gmail advertises MOVE in the AUTHENTICATE response.
+            #
+            # Mirror login()'s inline parse first — Gmail always sends
+            # '* CAPABILITY ... MOVE ...' as part of the AUTHENTICATE response,
+            # so we can seed the set from that line and avoid a round trip.
+            for _line in response.lines:
+                if isinstance(_line, bytes) and b"CAPABILITY" in _line:
+                    client.protocol.capabilities = client.protocol.capabilities.union(
+                        set(_line.decode().replace("CAPABILITY", "").strip().split())
+                    )
+                    break
+            if not client.protocol.capabilities:
+                # Fallback: no capability line in response — fetch explicitly.
+                await client.capability()
         else:
             status, data = await client.login(imap_user, imap_pass)
             if status != "OK":
