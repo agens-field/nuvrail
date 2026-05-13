@@ -110,12 +110,6 @@ async def notify_staged(
             logger.debug("[push] No subscriptions registered, skipping notify")
             return
 
-        from pywebpush import WebPusher, WebPushException
-        from py_vapid import Vapid
-
-        vapid = Vapid.from_file(_VAPID_PRIVATE_PEM)
-        vapid_claims = {"sub": _VAPID_EMAIL}
-
         payload = json.dumps({
             "title": "⚠️ Nuvrail — Action required" if is_urgent else "Nuvrail — Action required",
             "body": description,
@@ -124,37 +118,41 @@ async def notify_staged(
             "url": "/",
         }).encode()
 
-        sent = 0
-        for sub in subscriptions:
+        import asyncio as _asyncio  # noqa: PLC0415
+        from pywebpush import webpush_async, WebPushException  # noqa: PLC0415
+
+        payload_str = payload.decode()
+
+        async def _send_one(sub: dict) -> bool:
+            # Give each subscriber a fresh claims dict: pywebpush mutates it
+            # to add 'aud' (derived from the endpoint URL) and 'exp', so
+            # sharing one dict across concurrent sends would corrupt 'aud'
+            # for subscribers on different push services.
+            claims = {"sub": _VAPID_EMAIL}
             try:
-                pusher = WebPusher(
+                await webpush_async(
                     subscription_info={
                         "endpoint": sub["endpoint"],
-                        "keys": {
-                            "p256dh": sub["p256dh"],
-                            "auth": sub["auth"],
-                        },
+                        "keys": {"p256dh": sub["p256dh"], "auth": sub["auth"]},
                     },
-                    vapid_private_key=vapid.private_key,
-                    vapid_claims=vapid_claims,
-                )
-                response = pusher.send(
-                    data=payload,
-                    content_type="application/json",
+                    data=payload_str,
+                    vapid_private_key=str(_VAPID_PRIVATE_PEM),
+                    vapid_claims=claims,
                     ttl=3600,
                 )
-                if response and response.status_code not in (200, 201):
-                    logger.warning(
-                        "[push] Push to %s returned %s",
-                        sub["endpoint"][:40], response.status_code,
-                    )
-                else:
-                    sent += 1
+                return True
             except WebPushException as exc:
-                logger.warning("[push] WebPushException for endpoint %s: %s", sub["endpoint"][:40], exc)
+                logger.warning(
+                    "[push] WebPushException for endpoint %s: %s",
+                    sub["endpoint"][:40], exc,
+                )
+                return False
             except Exception as exc:
                 logger.warning("[push] Unexpected push error: %s", exc)
+                return False
 
+        results = await _asyncio.gather(*[_send_one(s) for s in subscriptions])
+        sent = sum(results)
         logger.info("[push] Notified %d/%d subscriber(s) for op=%s", sent, len(subscriptions), operation_id)
 
     except Exception as exc:
