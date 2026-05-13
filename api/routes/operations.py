@@ -189,6 +189,11 @@ async def _execute_imap_upstream(row: dict, db_path: Path) -> None:
             response = await client.xoauth2(_email, _access_token)
             if response.result != "OK":
                 raise RuntimeError(f"IMAP XOAUTH2 authentication failed: {response.lines}")
+            # aioimaplib's xoauth2() doesn't issue a post-auth CAPABILITY command
+            # the way login() does, so its internal capability set is empty and
+            # uid("move", ...) raises "server has not MOVE capability".
+            # Explicitly fetch capabilities so the client knows what the server supports.
+            await client.capability()
         else:
             status, data = await client.login(imap_user, imap_pass)
             if status != "OK":
