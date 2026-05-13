@@ -53,6 +53,7 @@ from pathlib import Path
 from typing import Optional
 
 import aioimaplib
+from aioimaplib import quoted as imap_quoted
 import aiosmtplib
 from fastapi import APIRouter, Depends, HTTPException, Query
 
@@ -214,7 +215,7 @@ async def _execute_imap_upstream(row: dict, db_path: Path) -> None:
 
         # Most write ops require a folder context (SELECT folder_from first)
         if op_type in ("store", "trash", "mark_read", "flag", "unflag", "mark_unread"):
-            status, data = await client.select(folder_from)
+            status, data = await client.select(imap_quoted(folder_from))
             if status != "OK":
                 raise RuntimeError(f"IMAP SELECT {folder_from!r} failed: {data}")
 
@@ -233,20 +234,20 @@ async def _execute_imap_upstream(row: dict, db_path: Path) -> None:
         elif op_type == "move":
             if not folder_to:
                 raise RuntimeError(f"MOVE op {row['id']} missing folder_to")
-            status, data = await client.select(folder_from)
+            status, data = await client.select(imap_quoted(folder_from))
             if status != "OK":
                 raise RuntimeError(f"IMAP SELECT {folder_from!r} failed: {data}")
-            status, data = await client.uid("move", uid_set, folder_to)
+            status, data = await client.uid("move", uid_set, imap_quoted(folder_to))
             if status != "OK":
                 raise RuntimeError(f"IMAP UID MOVE failed: {data}")
 
         elif op_type == "copy":
             if not folder_to:
                 raise RuntimeError(f"COPY op {row['id']} missing folder_to")
-            status, data = await client.select(folder_from)
+            status, data = await client.select(imap_quoted(folder_from))
             if status != "OK":
                 raise RuntimeError(f"IMAP SELECT {folder_from!r} failed: {data}")
-            status, data = await client.uid("copy", uid_set, folder_to)
+            status, data = await client.uid("copy", uid_set, imap_quoted(folder_to))
             if status != "OK":
                 raise RuntimeError(f"IMAP UID COPY failed: {data}")
 
@@ -255,7 +256,7 @@ async def _execute_imap_upstream(row: dict, db_path: Path) -> None:
             folder_name = folder_to or imap_command.split()[-1] if imap_command else ""
             if not folder_name:
                 raise RuntimeError(f"CREATE op {row['id']} missing folder name")
-            status, data = await client.create(folder_name)
+            status, data = await client.create(imap_quoted(folder_name))
             if status != "OK":
                 raise RuntimeError(f"IMAP CREATE failed: {data}")
 
@@ -263,7 +264,7 @@ async def _execute_imap_upstream(row: dict, db_path: Path) -> None:
             # folder_from = old name, folder_to = new name
             if not folder_to:
                 raise RuntimeError(f"RENAME op {row['id']} missing folder_to")
-            status, data = await client.rename(folder_from, folder_to)
+            status, data = await client.rename(imap_quoted(folder_from), imap_quoted(folder_to))
             if status != "OK":
                 raise RuntimeError(f"IMAP RENAME failed: {data}")
 
