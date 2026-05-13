@@ -1,64 +1,80 @@
-# nuvrail
-The approval layer between AI agents and your inbox.
+# Nuvrail
+
+**The approval layer between AI agents and your inbox.**
+
+AI agents that can send email are useful. AI agents that can send email *without any human check* are a liability. Nuvrail sits between your AI agent and your real mail server. The agent sees a normal IMAP/SMTP server. Every write — every move, delete, flag change, and outbound send — is staged for your approval before it touches the real mailbox. Reads pass through instantly; nothing blocks the agent from working. Only destructive or irreversible actions require a human to say yes.
 
 ---
 
-## Deploying a test server
+## How it works
 
-### What you're building
+```
+  AI agent                  Nuvrail                   Real mail server
+  ────────     IMAP/SMTP     ───────     IMAP/SMTP     ────────────────
+  (Claude,  ──────────────► gateway ──────────────►  (Gmail, iCloud,
+   Cursor,   reads: pass       │       on approval    Outlook, or any
+   custom)   through           │       only           IMAP/SMTP server)
+             instantly         │
+                         writes: staged
+                         → human reviews
+                           & approves
+```
+
+1. **Agent writes a command** — e.g. `UID MOVE 42 Trash` or sends an email via SMTP.
+2. **Gateway intercepts it** — returns `OK [STAGED]` immediately so the agent can keep working.
+3. **You get a notification** — a push notification on your phone or browser shows you exactly what the agent wants to do, with the subject, sender, and destination.
+4. **You approve or reject** — one tap. On approval the operation executes against the real server. On rejection the proxy reverts its local state and silently surfaces the rejection to the agent on its next command.
+
+Nothing is deleted. Ever. `EXPUNGE` is permanently blocked at the gateway layer — the worst the agent can do is move a message to Trash, and even that requires your sign-off.
+
+---
+
+## Architecture
 
 ```
 Internet
     │
-    ├──► :80   HTTP  ───► nginx ───────────────────► redirect to HTTPS
-    │
-    ├──► :443  HTTPS ───► nginx http  ──► 127.0.0.1:3000  web container
-    │             (TLS)                               React PWA + /api/ → gateway
-    │
-    ├──► :443  HTTPS ───► nginx http  ──► 127.0.0.1:3001  landing container
-    │             (TLS)                               Next.js landing page
-    │
-    ├──► :993  IMAPS ───► nginx stream ─► 127.0.0.1:10143  IMAP proxy (plain TCP)
-    │             (TLS)  terminate SSL                no TLS inside container —
-    │                                                 proxy speaks plain IMAP inbound,
-    │                                                 SSL/TLS to upstream
-    │
-    └──► :465  SMTPS ───► nginx stream ─► 127.0.0.1:10587  SMTP proxy (plain TCP)
-                  (TLS)  terminate SSL                no TLS inside container —
-                                                      proxy strips STARTTLS from EHLO
-                                                      (client already encrypted via nginx),
-                                                      STARTTLS to upstream
+    ├──► :993  IMAPS  ──► nginx (TLS) ──► IMAP proxy (10143)  ──► upstream IMAP
+    ├──► :465  SMTPS  ──► nginx (TLS) ──► SMTP proxy (10587)  ──► upstream SMTP
+    └──► :443  HTTPS  ──► nginx (TLS) ──► Web PWA + REST API (3000/8080)
 
-Docker Compose — all ports bound to 127.0.0.1 only (never 0.0.0.0)
-    gateway   127.0.0.1:10143  127.0.0.1:10587  127.0.0.1:8080
-    web       127.0.0.1:3000
-    landing   127.0.0.1:3001
+All external TLS terminates at nginx. Docker containers are bound to 127.0.0.1 only.
+No plain-text port is reachable from outside the host.
 ```
 
-All externally reachable ports terminate TLS at nginx. The Docker containers are
-bound to `127.0.0.1` only — no plain-text port is reachable from outside the
-host. There is no hop where email traffic crosses a network unencrypted.
+**Components:**
+- **IMAP proxy** (`gateway/proxy.py`) — asyncio IMAP4rev1 state machine. Intercepts writes, passes reads, maintains a local SQLite mirror for optimistic consistency.
+- **SMTP proxy** (`gateway/smtp_proxy.py`) — asyncio. Intercepts `DATA` (outbound sends), stages them. Relays on approval.
+- **Staging engine** (`gateway/staging.py`) — assigns op IDs, stores snapshots for revert, tracks 48-hour expiry.
+- **REST API** (`api/`) — FastAPI. Approve/reject operations, manage agents, audit log, push subscriptions.
+- **Web PWA** (`web/`) — React 18 + Vite + TypeScript + Tailwind. Login, pending operations, audit log, agent management. Installable as a PWA on iOS/Android.
+
+**Key design constraints:**
+- Standard IMAP/SMTP on both ends — no agent modifications required
+- EXPUNGE permanently blocked; `\Deleted` rewrites to a staged move-to-Trash
+- AES-256-GCM for all credentials at rest; TLS everywhere in transit
+- No plaintext email metadata in push payloads
+- Immutable audit log — every action is recorded forever
 
 ---
+
+## Deploying
 
 ### Prerequisites
 
 - Ubuntu 22.04 LTS (or equivalent Debian-based distro)
-- DNS `A` records pointing at the server:
+- DNS `A` records pointing at your server:
   - `test.nuvrail.com` → server IP (approval UI + proxy)
-  - `nuvrail.com` → same server IP (landing page)
-- Packages installed:
+  - `nuvrail.com` → same IP (landing page, optional)
+- Git, Docker Engine + Compose plugin, nginx with stream module, certbot
 
 ```bash
-# Docker Engine + Compose plugin
+# Docker Engine
 curl -fsSL https://get.docker.com | sh
-sudo usermod -aG docker $USER   # log out and back in after this
+sudo usermod -aG docker $USER   # log out and back in
 
-# nginx with stream module
-sudo apt install -y nginx libnginx-mod-stream
-
-# certbot
-sudo apt install -y certbot python3-certbot-nginx
+# nginx with stream module + certbot
+sudo apt install -y nginx libnginx-mod-stream certbot python3-certbot-nginx
 ```
 
 ---
@@ -66,252 +82,150 @@ sudo apt install -y certbot python3-certbot-nginx
 ### Step 1 — Clone and configure
 
 ```bash
-sudo mkdir -p /opt/nuvrail
-sudo chown $USER:$USER /opt/nuvrail
+sudo mkdir -p /opt/nuvrail && sudo chown $USER:$USER /opt/nuvrail
 git clone https://github.com/agens-field/nuvrail.git /opt/nuvrail
 cd /opt/nuvrail
-```
-
-Create `.env` from the example and fill in every required value:
-
-```bash
 cp .env.example .env
 nano .env
 ```
 
-Critical fields:
+Required environment variables:
 
-| Variable | What to set |
+| Variable | Description |
 |---|---|
 | `NUVRAIL_MASTER_KEY` | 64 hex chars — `python3 -c "import secrets; print(secrets.token_bytes(32).hex())"` |
 | `NUVRAIL_CORS_ORIGINS` | `https://test.nuvrail.com` |
-| `NUVRAIL_VAPID_EMAIL` | your admin contact email |
-| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | required for Gmail OAuth2 agent setup |
-| `LOOPS_API_KEY` | waitlist form on landing page |
+| `NUVRAIL_VAPID_EMAIL` | Admin contact email, e.g. `mailto:you@yourdomain.com` |
+| `GOOGLE_CLIENT_ID` | GCP OAuth2 client ID (required for Gmail agent setup) |
+| `GOOGLE_CLIENT_SECRET` | GCP OAuth2 client secret (required for Gmail agent setup) |
+| `GOOGLE_REDIRECT_URI` | `https://test.nuvrail.com/api/v1/oauth2/google/callback` |
 
-⚠️ `NUVRAIL_MASTER_KEY` is used to encrypt all upstream credentials stored in the
-database. Back it up. Losing it makes stored agent credentials unrecoverable.
+> ⚠️ **Back up `NUVRAIL_MASTER_KEY`.** It encrypts every upstream credential in the
+> database. Losing it makes all stored agent credentials unrecoverable.
 
 ---
 
 ### Step 2 — TLS certificates
 
-Get certificates for both domains before configuring nginx (certbot needs port 80 free):
-
 ```bash
-# Temporarily allow port 80 through any firewall
-sudo ufw allow 80
-
+sudo ufw allow 80  # temporarily for certbot
 sudo certbot certonly --standalone \
-  -d test.nuvrail.com \
-  -d nuvrail.com \
-  --non-interactive --agree-tos -m admin@nuvrail.com
+  -d test.nuvrail.com -d nuvrail.com \
+  --non-interactive --agree-tos -m you@yourdomain.com
 ```
-
-Certs land at `/etc/letsencrypt/live/<domain>/`.
 
 ---
 
-### Step 3 — nginx configuration
+### Step 3 — nginx
 
-nginx needs two pieces: an `http` block for HTTPS termination, and a `stream`
-block for TLS passthrough on the proxy ports.
+#### Enable the stream module
 
-#### 3a. Enable the stream module
-
-Verify `/etc/nginx/nginx.conf` loads the stream module (Ubuntu packages do this
-automatically via `/etc/nginx/modules-enabled/`). Check:
-
-```bash
-nginx -V 2>&1 | grep -- --with-stream
-# should print: --with-stream --with-stream_ssl_module ...
-```
-
-If it doesn't appear, install `libnginx-mod-stream` (see Prerequisites).
-
-Add this line at the **top level** of `/etc/nginx/nginx.conf` (outside the `http {}`
-block, or in a separate include):
+Add at the **top level** of `/etc/nginx/nginx.conf` (outside `http {}`):
 
 ```nginx
-# /etc/nginx/nginx.conf  — add at top level, outside http {}
 stream {
     include /etc/nginx/stream.d/*.conf;
 }
 ```
 
-Create the include directory:
-
 ```bash
 sudo mkdir -p /etc/nginx/stream.d
 ```
 
-#### 3b. Stream config — IMAP and SMTP proxy ports
-
-The proxies listen on **plain TCP** inside their containers. nginx terminates TLS
-here and forwards plain TCP to `127.0.0.1` on the host. A few things worth knowing:
-
-- *IMAP proxy:* speaks plain IMAP inbound; opens an SSL/TLS connection to the
-  real upstream (blizzard.mxrouting.net:993) independently.
-- *SMTP proxy:* speaks plain SMTP inbound and **strips `STARTTLS` from its EHLO
-  capabilities** — because the client already has a TLS session via nginx, and
-  advertising STARTTLS a second time would confuse clients into trying to
-  negotiate it again. The proxy opens STARTTLS to the real upstream itself.
-
-Create `/etc/nginx/stream.d/nuvrail-proxy.conf`:
+#### `/etc/nginx/stream.d/nuvrail-proxy.conf`
 
 ```nginx
-# /etc/nginx/stream.d/nuvrail-proxy.conf
-# TLS termination for the Nuvrail IMAP and SMTP proxies.
-# nginx unwraps SSL here and forwards plain TCP to the containers.
-# All Docker ports are bound to 127.0.0.1 — no plain-text port is
-# reachable from the network.
-
 # IMAP SSL (:993) → gateway container (:10143)
 server {
-    listen     993 ssl;
-
+    listen 993 ssl;
     ssl_certificate     /etc/letsencrypt/live/test.nuvrail.com/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/test.nuvrail.com/privkey.pem;
     ssl_protocols       TLSv1.2 TLSv1.3;
     ssl_ciphers         HIGH:!aNULL:!MD5;
-    ssl_session_cache   shared:SSL_IMAP:10m;
-    ssl_session_timeout 10m;
-
     proxy_pass          127.0.0.1:10143;
-    proxy_timeout       3600s;   # keep-alive IMAP connections can be long
+    proxy_timeout       3600s;
     proxy_connect_timeout 5s;
 }
 
 # SMTPS (:465) → gateway container (:10587)
 server {
-    listen     465 ssl;
-
+    listen 465 ssl;
     ssl_certificate     /etc/letsencrypt/live/test.nuvrail.com/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/test.nuvrail.com/privkey.pem;
     ssl_protocols       TLSv1.2 TLSv1.3;
     ssl_ciphers         HIGH:!aNULL:!MD5;
-    ssl_session_cache   shared:SSL_SMTP:10m;
-    ssl_session_timeout 10m;
-
     proxy_pass          127.0.0.1:10587;
     proxy_timeout       300s;
     proxy_connect_timeout 5s;
 }
 ```
 
-#### 3c. HTTP block — approval UI and landing page
-
-Create `/etc/nginx/sites-available/nuvrail`:
+#### `/etc/nginx/sites-available/nuvrail`
 
 ```nginx
-# /etc/nginx/sites-available/nuvrail
-
-# Redirect all HTTP to HTTPS
 server {
     listen 80;
     server_name test.nuvrail.com nuvrail.com www.nuvrail.com;
     return 301 https://$host$request_uri;
 }
 
-# test.nuvrail.com — approval PWA
-# The web container (port 3000) runs its own nginx that proxies /api/ → gateway.
 server {
     listen 443 ssl;
     server_name test.nuvrail.com;
-
     ssl_certificate     /etc/letsencrypt/live/test.nuvrail.com/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/test.nuvrail.com/privkey.pem;
     include             /etc/letsencrypt/options-ssl-nginx.conf;
     ssl_dhparam         /etc/letsencrypt/ssl-dhparams.pem;
-
     add_header Strict-Transport-Security "max-age=63072000; includeSubDomains" always;
-    add_header X-Content-Type-Options    nosniff;
-    add_header X-Frame-Options           DENY;
-    add_header Referrer-Policy           no-referrer;
-
+    add_header X-Content-Type-Options nosniff;
+    add_header X-Frame-Options DENY;
+    add_header Referrer-Policy no-referrer;
     location / {
-        proxy_pass         http://127.0.0.1:3000;
+        proxy_pass http://127.0.0.1:3000;
         proxy_http_version 1.1;
-        proxy_set_header   Host              $host;
-        proxy_set_header   X-Real-IP         $remote_addr;
-        proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
-        proxy_set_header   X-Forwarded-Proto $scheme;
-        proxy_read_timeout 30s;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
     }
 }
 
-# nuvrail.com — landing page
 server {
     listen 443 ssl;
     server_name nuvrail.com www.nuvrail.com;
-
     ssl_certificate     /etc/letsencrypt/live/nuvrail.com/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/nuvrail.com/privkey.pem;
     include             /etc/letsencrypt/options-ssl-nginx.conf;
     ssl_dhparam         /etc/letsencrypt/ssl-dhparams.pem;
-
-    add_header Strict-Transport-Security "max-age=63072000; includeSubDomains" always;
-    add_header X-Content-Type-Options    nosniff;
-    add_header X-Frame-Options           DENY;
-    add_header Referrer-Policy           no-referrer;
-
     location / {
-        proxy_pass         http://127.0.0.1:3001;
+        proxy_pass http://127.0.0.1:3001;
         proxy_http_version 1.1;
-        proxy_set_header   Host              $host;
-        proxy_set_header   X-Real-IP         $remote_addr;
-        proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
-        proxy_set_header   X-Forwarded-Proto $scheme;
-        proxy_read_timeout 30s;
+        proxy_set_header Host $host;
     }
 }
 ```
 
-Enable and test:
-
 ```bash
 sudo ln -s /etc/nginx/sites-available/nuvrail /etc/nginx/sites-enabled/
-sudo nginx -t   # must say "syntax is ok" and "test is successful"
-sudo systemctl reload nginx
+sudo nginx -t && sudo systemctl reload nginx
 ```
 
 ---
 
-### Step 4 — Docker Compose build and start
-
-> ⚠️ **Security note:** `docker-compose.yml` binds all host ports to `127.0.0.1`.
-> This is intentional. All external TLS is provided by nginx (Steps 2–3).
-> Never change these to `0.0.0.0` — that would expose plain-text proxy ports to
-> the public internet, bypassing TLS entirely.
+### Step 4 — Build and start
 
 ```bash
 cd /opt/nuvrail
-
-# Build all images
 docker compose build
-
-# Start everything detached
 docker compose up -d
-
-# Verify all three containers are running
 docker compose ps
 ```
 
-Expected output:
-
-```
-NAME                 STATUS    PORTS
-nuvrail-gateway-1    Up        0.0.0.0:8080->8080/tcp  0.0.0.0:10143->10143/tcp  0.0.0.0:10587->10587/tcp
-nuvrail-web-1        Up        0.0.0.0:3000->80/tcp
-nuvrail-landing-1    Up        0.0.0.0:3001->3001/tcp
-```
-
-Check the gateway logs to confirm both proxies and the API started cleanly:
+Check the gateway logs to confirm all three services started:
 
 ```bash
 docker compose logs gateway --tail=30
 # Look for:
-#   [entrypoint] All processes started (IMAP=... SMTP=... API=...)
 #   Nuvrail IMAP proxy listening on 0.0.0.0:10143
 #   Nuvrail SMTP proxy listening on 0.0.0.0:10587
 #   Application startup complete.
@@ -319,118 +233,260 @@ docker compose logs gateway --tail=30
 
 ---
 
-### Step 5 — First-run verification
+### Step 5 — Verify the installation
 
 ```bash
-# HTTPS — approval UI should return HTML
+# Approval UI
 curl -s -o /dev/null -w "%{http_code}" https://test.nuvrail.com/
 # → 200
 
-# API health (routed through the web container's internal nginx)
+# API health
 curl -s https://test.nuvrail.com/api/v1/health | python3 -m json.tool
 # → {"status": "ok", ...}
 
-# IMAP SSL on :993 — expect Nuvrail greeting
+# IMAP proxy (should see: * OK Nuvrail IMAP proxy ready)
 openssl s_client -connect test.nuvrail.com:993 -quiet 2>/dev/null
-# → * OK Nuvrail IMAP proxy ready
 
-# SMTPS on :465 — expect Nuvrail greeting
+# SMTP proxy (should see: 220 Nuvrail SMTP proxy ready)
 openssl s_client -connect test.nuvrail.com:465 -quiet 2>/dev/null
-# → 220 Nuvrail SMTP proxy ready
-
-# Landing page
-curl -s -o /dev/null -w "%{http_code}" https://nuvrail.com/
-# → 200
 ```
 
 ---
 
-### Step 6 — First-run setup (create admin account)
+### Step 6 — Create your account
 
-Use the API to create your first human user and generate your first AI agent token.
-See the API reference in `docs/` or `SPEC.md` for full auth flow. Quick version:
+Open `https://test.nuvrail.com` in your browser and complete the first-run setup, or use the API directly:
 
 ```bash
-# Register the first human admin account
+# Register your account
 curl -s -X POST https://test.nuvrail.com/api/v1/auth/register \
   -H 'Content-Type: application/json' \
-  -d '{"username": "martin", "password": "<strong-password>"}' | python3 -m json.tool
+  -d '{"email": "you@yourdomain.com", "password": "your-strong-password", "display_name": "Your Name"}' \
+  | python3 -m json.tool
 
 # Log in to get a bearer token
 TOKEN=$(curl -s -X POST https://test.nuvrail.com/api/v1/auth/login \
   -H 'Content-Type: application/json' \
-  -d '{"username": "martin", "password": "<strong-password>"}' | python3 -m json.tool | grep '"token"' | awk -F'"' '{print $4}')
-
-# Create an AI agent (returns a one-time agent token — copy it)
-curl -s -X POST https://test.nuvrail.com/api/v1/agents \
-  -H "Authorization: Bearer $TOKEN" \
-  -H 'Content-Type: application/json' \
-  -d '{"name": "test-agent"}' | python3 -m json.tool
+  -d '{"email": "you@yourdomain.com", "password": "your-strong-password"}' \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['token'])")
 ```
 
 ---
 
-### Redeployment (code update)
+## Connecting an email account
+
+Nuvrail supports Gmail (OAuth2), standard IMAP/SMTP, and more providers coming. Each connected account gets a unique agent credential — the username and token you give to your AI agent.
+
+### Gmail via OAuth2 (recommended)
+
+1. Go to `https://test.nuvrail.com` → **Agents** → **Connect Gmail**
+2. Complete the Google OAuth2 consent flow
+3. Copy the one-time agent token that appears on success — you won't see it again
+
+### Standard IMAP/SMTP
+
+```bash
+curl -s -X POST https://test.nuvrail.com/api/v1/agents \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "label": "my-work-email",
+    "upstream_host": "imap.yourdomain.com",
+    "upstream_smtp_host": "smtp.yourdomain.com",
+    "upstream_imap_port": 993,
+    "upstream_smtp_port": 587,
+    "upstream_user": "you@yourdomain.com",
+    "upstream_password": "your-email-password"
+  }' | python3 -m json.tool
+# Returns agent_username + agent_token (one-time — copy it now)
+```
+
+---
+
+## Configuring your AI agent
+
+Point any IMAP/SMTP client at the Nuvrail proxy using the agent credentials. The agent doesn't need to know Nuvrail is there.
+
+| Setting | Value |
+|---|---|
+| **IMAP host** | `test.nuvrail.com` |
+| **IMAP port** | `993` (SSL) |
+| **SMTP host** | `test.nuvrail.com` |
+| **SMTP port** | `465` (SSL) |
+| **Username** | agent username from setup (e.g. `nuvrail_abc123`) |
+| **Password** | agent token from setup (one-time, copy it at creation) |
+
+### Example: Claude / MCP email tool
+
+```json
+{
+  "imap": {
+    "host": "test.nuvrail.com",
+    "port": 993,
+    "ssl": true,
+    "username": "nuvrail_abc123",
+    "password": "your-agent-token"
+  },
+  "smtp": {
+    "host": "test.nuvrail.com",
+    "port": 465,
+    "ssl": true,
+    "username": "nuvrail_abc123",
+    "password": "your-agent-token"
+  }
+}
+```
+
+**What the agent can do without approval:**
+- Read any message (`FETCH`)
+- Search (`SEARCH`, `UID SEARCH`)
+- List folders (`LIST`, `LSUB`)
+- Check status (`STATUS`, `NOOP`)
+
+**What requires your approval:**
+- Move or copy messages (`UID MOVE`, `UID COPY`)
+- Flag changes (`UID STORE`)
+- Send outbound email (SMTP `DATA`)
+- Create or rename folders
+
+**Permanently blocked:**
+- `EXPUNGE` — the gateway never allows permanent deletion
+
+---
+
+## Approving operations
+
+When an agent stages an operation:
+
+1. **Push notification** arrives on your phone/browser (requires enabling notifications on the PWA)
+2. Open the approval UI at `https://test.nuvrail.com`
+3. Each pending operation shows: type, subject, sender, destination folder or recipient
+4. Tap **Approve** to execute against the real mail server, or **Reject** to revert
+
+Operations expire after 48 hours if not acted on — the agent receives a rejection and the state reverts.
+
+You can also approve/reject via the API:
+
+```bash
+# List pending operations
+curl -s https://test.nuvrail.com/api/v1/operations?status=pending \
+  -H "Authorization: Bearer $TOKEN" | python3 -m json.tool
+
+# Approve
+curl -s -X POST https://test.nuvrail.com/api/v1/operations/op_XXXXXX/approve \
+  -H "Authorization: Bearer $TOKEN"
+
+# Reject
+curl -s -X POST https://test.nuvrail.com/api/v1/operations/op_XXXXXX/reject \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+---
+
+## Development setup
+
+```bash
+git clone https://github.com/agens-field/nuvrail.git
+cd nuvrail
+
+# Python dependencies (requires Python 3.11+)
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e ".[dev]"
+
+# Run tests
+pytest
+
+# Run the gateway locally (needs a .env with NUVRAIL_MASTER_KEY set)
+cp .env.example .env
+python3 -m gateway.proxy    # IMAP proxy on :10143
+python3 -m gateway.smtp_proxy   # SMTP proxy on :10587
+uvicorn api.main:app --port 8080    # REST API
+
+# Web UI
+cd web
+npm install
+npm run dev     # Vite dev server on :5173
+```
+
+---
+
+## Operations
+
+### Updating the deployment
 
 ```bash
 cd /opt/nuvrail
 git pull
-
-# Rebuild only what changed (gateway is the usual target)
 docker compose build gateway
 docker compose up -d gateway
-
-# Or rebuild everything
-docker compose build && docker compose up -d
 ```
 
-The `nuvrail_data` Docker volume persists across rebuilds — your DB, master key
-(if stored there), and VAPID keys survive redeployment.
+The `nuvrail_data` Docker volume persists across rebuilds — your database, VAPID keys, and (if stored there) the master key all survive redeployment.
 
----
-
-### Operational runbook
+### Useful commands
 
 ```bash
-# Service health
+# Container status
 docker compose ps
-docker compose logs gateway --tail=50 -f
 
-# API quick checks
-curl -s https://test.nuvrail.com/api/v1/health
-curl -s https://test.nuvrail.com/api/v1/operations?status=pending | python3 -m json.tool
+# Follow gateway logs
+docker compose logs gateway -f --tail=50
 
-# Approve / reject an operation
-curl -s -X POST https://test.nuvrail.com/api/v1/operations/op_XXXXXX/approve \
-  -H "Authorization: Bearer $TOKEN"
+# Inspect pending operations in the DB directly
+docker compose exec gateway python3 -c "
+import asyncio
+from pathlib import Path
+from gateway.state_db import get_db
+async def main():
+    async with get_db(Path('/data/nuvrail.db')) as db:
+        async with db.execute(
+            'SELECT id, op_type, status, folder_from, created_at '
+            'FROM staged_operations ORDER BY created_at DESC LIMIT 10'
+        ) as c:
+            for row in await c.fetchall():
+                print(dict(row))
+asyncio.run(main())
+"
 
-# Inspect the database directly
-docker compose exec gateway sqlite3 /data/nuvrail.db \
-  "SELECT id, op_type, status, created_at FROM staged_operations ORDER BY created_at DESC LIMIT 20;"
+# Check OAuth2 token health for an agent
+docker compose exec gateway python3 scripts/check_oauth2_token.py nuvrail_XXXXXXXX
 
-# Renew TLS certs (runs automatically via certbot timer; manual if needed)
-sudo certbot renew --dry-run   # test
-sudo certbot renew             # real run, then:
-sudo systemctl reload nginx
+# Test IMAP connectivity directly (bypasses proxy)
+docker compose exec gateway python3 scripts/test_imap_direct.py nuvrail_XXXXXXXX
+
+# Renew TLS certificates
+sudo certbot renew && sudo systemctl reload nginx
 ```
 
----
-
-### Firewall rules
+### Firewall
 
 ```bash
 sudo ufw allow 22    # SSH
-sudo ufw allow 80    # HTTP (redirect only)
-sudo ufw allow 443   # HTTPS (approval UI + landing)
-sudo ufw allow 993   # IMAP SSL (AI agent)
-sudo ufw allow 465   # SMTPS  (AI agent)
+sudo ufw allow 80    # HTTP → HTTPS redirect
+sudo ufw allow 443   # HTTPS: approval UI + API + landing
+sudo ufw allow 993   # IMAP SSL: AI agent connects here
+sudo ufw allow 465   # SMTPS: AI agent connects here
 sudo ufw enable
 
-# Do NOT expose 10143, 10587, or 8080 publicly —
-# those are internal between nginx and Docker.
+# Do NOT expose ports 10143, 10587, or 8080 to the internet —
+# these are internal Docker ports, accessed only via nginx.
 ```
 
 ---
 
-> **Legacy doc:** `docs/deployment-test-server.md` describes the old bare-metal /
-> systemd deployment approach. Superseded by this Docker Compose guide.
+## Security model
+
+- **Credentials at rest:** all upstream passwords and OAuth2 tokens are encrypted with AES-256-GCM using `NUVRAIL_MASTER_KEY`. The key never leaves the host.
+- **TLS everywhere:** all external connections use TLS. The internal Docker network uses plain TCP between nginx and the proxy containers — nginx terminates TLS before handing off.
+- **No EXPUNGE:** permanent deletion is blocked at the protocol level, unconditionally. The gateway cannot be configured to allow it.
+- **Per-agent isolation:** each AI agent has its own credentials and can only access the upstream account it was created for. There is no path for one agent to affect another agent's mailbox.
+- **Audit log:** every staged operation, approval, rejection, and execution is recorded in the database with a timestamp. The log is append-only.
+- **Rate limiting:** repeated authentication failures from a single IP trigger a lockout.
+- **Push payload privacy:** push notifications contain only the operation ID and urgency flag — no email subject, sender, or body in the push payload itself. The full detail is fetched over authenticated HTTPS when you open the app.
+
+---
+
+## License
+
+MIT. See [LICENSE](LICENSE).
