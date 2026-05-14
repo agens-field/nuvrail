@@ -397,3 +397,59 @@ export async function setupPushNotifications(): Promise<boolean> {
     return false
   }
 }
+
+
+// ---------------------------------------------------------------------------
+// Account maintenance endpoints (issue #16)
+// ---------------------------------------------------------------------------
+
+export async function applyChangePassword(
+  currentPassword: string,
+  newPassword: string,
+): Promise<{ ok: boolean }> {
+  return apiFetch<{ ok: boolean }>('/api/v1/auth/password', {
+    method: 'PUT',
+    body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
+  })
+}
+
+export async function requestPasswordReset(email: string): Promise<{ ok: boolean }> {
+  // Unauthenticated — use raw fetch (no Bearer token needed or expected)
+  const res = await fetch(`${BASE}/api/v1/auth/reset-request`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email }),
+  })
+  if (!res.ok) {
+    const text = await res.text().catch(() => res.statusText)
+    throw new Error(`API ${res.status}: ${text}`)
+  }
+  return res.json() as Promise<{ ok: boolean }>
+}
+
+export async function resetPassword(
+  token: string,
+  newPassword: string,
+): Promise<{ ok: boolean }> {
+  // Unauthenticated — use raw fetch
+  const res = await fetch(`${BASE}/api/v1/auth/reset`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token, new_password: newPassword }),
+  })
+  if (!res.ok) {
+    const text = await res.text().catch(() => res.statusText)
+    let detail = ''
+    try {
+      detail = (JSON.parse(text) as { detail?: string }).detail ?? text
+    } catch {
+      detail = text
+    }
+    throw new Error(detail || `API ${res.status}`)
+  }
+  return res.json() as Promise<{ ok: boolean }>
+}
+
+export async function logoutUser(): Promise<{ ok: boolean }> {
+  return apiFetch<{ ok: boolean }>('/api/v1/auth/logout', { method: 'POST' })
+}
