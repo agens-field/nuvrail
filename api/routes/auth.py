@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import imaplib
+import os
 import secrets
 import socket
 import ssl
@@ -40,8 +41,15 @@ from api.models import (
     AgentCreateRequest,
     AgentCreateResponse,
     AgentResponse,
+    ChangePasswordRequest,
+    ChangePasswordResponse,
     LoginRequest,
     LoginResponse,
+    LogoutResponse,
+    ResetPasswordBody,
+    ResetPasswordResponse,
+    ResetRequestBody,
+    ResetRequestResponse,
     UserCreateRequest,
     UserResponse,
 )
@@ -445,3 +453,167 @@ async def revoke_agent(
             (now, agent_id),
         )
         await db.commit()
+
+
+
+# ---------------------------------------------------------------------------
+# Account maintenance endpoints (issue #16)
+# ---------------------------------------------------------------------------
+
+_RESET_TOKEN_TTL_SECONDS = 3600  # 1 hour
+
+
+@router.put("/auth/password", response_model=ChangePasswordResponse)
+async def change_password(
+    body: ChangePasswordRequest,
+    current_user: dict = Depends(get_current_user),
+    db_path: Path = Depends(get_db_path),
+) -> ChangePasswordResponse:
+    """Change the current user's password.
+
+    Verifies current_password with bcrypt before accepting new_password.
+    Returns 400 if current_password is wrong, 422 if new_password is too weak.
+    """
+    if len(body.new_password) < 12:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="New password must be at least 12 characters.",
+        )
+    if not verify_password(body.current_password, current_user["hashed_password"]):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Current password is incorrect.",
+        )
+
+    new_hash = hash_password(body.new_password)
+    async with get_db(db_path) as db:
+        await db.execute(
+            "UPDATE users SET hashed_password = ? WHERE id = ?",
+            (new_hash, current_user["id"]),
+        )
+        await db.commit()
+
+    return ChangePasswordResponse(ok=True)
+
+
+@router.post("/auth/reset-request", response_model=ResetRequestResponse)
+async def reset_request(
+    body: ResetRequestBody,
+    db_path: Path = Depends(get_db_path),
+) -> ResetRequestResponse:
+    """Initiate a password reset.
+
+    Generates a short-lived signed reset token, stores its SHA-256 hash in
+    the DB, and returns 200 regardless of whether the email is registered
+    (no account enumeration).
+
+    Phase 2a: logs the reset URL to the server log rather than emailing it.
+    Set NUVRAIL_RESET_EMAIL_FROM to enable MXrouting email delivery (Phase 2b).
+    """
+    import hashlib as _hashlib
+    import logging as _logging
+    _log = _logging.getLogger(__name__)
+
+    async with get_db(db_path) as db:
+        async with db.execute(
+            "SELECT id FROM users WHERE email = ?", (body.email,)
+        ) as cur:
+            row = await cur.fetchone()
+
+    if row is None:
+        # Return 200 — no account enumeration
+        return ResetRequestResponse(ok=True)
+
+    user_id = row["id"]
+    token_plain = generate_token()
+    token_hash = _hashlib.sha256(token_plain.encode()).hexdigest()
+    expires_at = int(time.time()) + _RESET_TOKEN_TTL_SECONDS
+
+    async with get_db(db_path) as db:
+        await db.execute(
+            "UPDATE users SET reset_token = ?, reset_token_expires_at = ? WHERE id = ?",
+            (token_hash, expires_at, user_id),
+        )
+        await db.commit()
+
+    host = os.environ.get("NUVRAIL_HOST_URL", "https://mail.nuvrail.com")
+    reset_url = f"{host}/#/reset?token={token_plain}"
+    _log.info("[reset-request] Reset URL for user %s: %s", body.email, reset_url)
+
+    return ResetRequestResponse(ok=True)
+
+
+@router.post("/auth/reset", response_model=ResetPasswordResponse)
+async def reset_password(
+    body: ResetPasswordBody,
+    db_path: Path = Depends(get_db_path),
+) -> ResetPasswordResponse:
+    """Complete a password reset using a token from reset-request.
+
+    Token must be present, unexpired, and not yet used. Invalidates the
+    token on success. Returns 400 for invalid/expired tokens and 422 for
+    weak passwords.
+    """
+    import hashlib as _hashlib
+
+    if len(body.new_password) < 12:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="New password must be at least 12 characters.",
+        )
+
+    token_hash = _hashlib.sha256(body.token.encode()).hexdigest()
+    now = int(time.time())
+
+    async with get_db(db_path) as db:
+        async with db.execute(
+            """
+            SELECT id FROM users
+            WHERE reset_token = ?
+              AND reset_token_expires_at IS NOT NULL
+              AND reset_token_expires_at > ?
+            """,
+            (token_hash, now),
+        ) as cur:
+            row = await cur.fetchone()
+
+        if row is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Reset token is invalid or has expired.",
+            )
+
+        new_hash = hash_password(body.new_password)
+        await db.execute(
+            """
+            UPDATE users
+            SET hashed_password = ?,
+                reset_token = NULL,
+                reset_token_expires_at = NULL
+            WHERE id = ?
+            """,
+            (new_hash, row["id"]),
+        )
+        await db.commit()
+
+    return ResetPasswordResponse(ok=True)
+
+
+@router.post("/auth/logout", response_model=LogoutResponse)
+async def logout(
+    current_user: dict = Depends(get_current_user),
+    db_path: Path = Depends(get_db_path),
+) -> LogoutResponse:
+    """Revoke the current bearer token server-side.
+
+    After this call, the token stored in the DB is nulled — future requests
+    with the same token will receive 401. The client should also clear its
+    local token storage.
+    """
+    async with get_db(db_path) as db:
+        await db.execute(
+            "UPDATE users SET api_token = NULL WHERE id = ?",
+            (current_user["id"],),
+        )
+        await db.commit()
+    return LogoutResponse(ok=True)
