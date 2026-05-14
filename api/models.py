@@ -265,3 +265,47 @@ class PushSubscribeRequest(BaseModel):
 class PushSubscribeResponse(BaseModel):
     subscribed: bool
     endpoint: str
+
+
+
+# ---------------------------------------------------------------------------
+# Account maintenance models (issue #16)
+# ---------------------------------------------------------------------------
+
+
+class ChangePasswordRequest(BaseModel):
+    """Body for PUT /api/v1/auth/password."""
+    current_password: str
+    new_password: str
+
+
+class ChangePasswordResponse(BaseModel):
+    ok: bool
+
+
+class ResetRequestBody(BaseModel):
+    """Body for POST /api/v1/auth/reset-request.
+
+    Returns 200 regardless of whether the email is registered (no account
+    enumeration). In Phase 2a, the reset URL is returned in the response so
+    the admin can send it manually; in production it would be emailed.
+    """
+    email: str
+
+
+class ResetRequestResponse(BaseModel):
+    ok: bool
+
+
+class ResetPasswordBody(BaseModel):
+    """Body for POST /api/v1/auth/reset."""
+    token: str
+    new_password: str
+
+
+class ResetPasswordResponse(BaseModel):
+    ok: bool
+
+
+class LogoutResponse(BaseModel):
+    ok: bool
