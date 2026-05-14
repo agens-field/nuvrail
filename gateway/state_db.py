@@ -219,6 +219,18 @@ async def init_db(path: Path = DB_PATH) -> None:
                     f"ALTER TABLE agent_credentials ADD COLUMN {col_name} {col_type}"  # noqa: S608
                 )
 
+        # Migration: add reset_token columns to users if absent (issue #16).
+        async with db.execute("PRAGMA table_info(users)") as cur:
+            user_cols = {row["name"] for row in await cur.fetchall()}
+        for col_name, col_type in [
+            ("reset_token", "TEXT"),
+            ("reset_token_expires_at", "INTEGER"),
+        ]:
+            if col_name not in user_cols:
+                await db.execute(
+                    f"ALTER TABLE users ADD COLUMN {col_name} {col_type}"  # noqa: S608
+                )
+
         # Migration: drop NOT NULL from upstream_password to support OAuth2 agents.
         # SQLite has no ALTER COLUMN — we must rename, recreate, copy, and drop.
         # This is idempotent: the PRAGMA notnull flag is checked first.
@@ -886,3 +898,4 @@ async def mark_reverts_delivered(
             [now, *revert_ids],
         )
         await db.commit()
+
