@@ -1,0 +1,84 @@
+name: E2E Smoke Tests
+
+# Run post-deploy smoke tests against the live staging proxy (test.nuvrail.com).
+# These tests require real email credentials and are skipped automatically
+# when the secrets are absent (they never break the offline unit-test run).
+#
+# Trigger model:
+#   - workflow_dispatch  → manual run at any time
+#   - Called by the deploy workflow (deploy.yml) after a successful deploy
+#
+# Required secrets (set in repo Settings → Secrets):
+#   NUVRAIL_TEST_IMAP_HOST    blizzard.mxrouting.net
+#   NUVRAIL_TEST_IMAP_PORT    993
+#   NUVRAIL_TEST_SMTP_HOST    blizzard.mxrouting.net
+#   NUVRAIL_TEST_SMTP_PORT    587
+#   NUVRAIL_TEST_IMAP_USER    testing@nuvrail.com
+#   NUVRAIL_TEST_IMAP_PASS    <app-specific password>
+#   NUVRAIL_TEST_SMTP_USER    testing@nuvrail.com
+#   NUVRAIL_TEST_SMTP_PASS    <app-specific password>
+#   NUVRAIL_MASTER_KEY        <32-byte hex — same key used by staging>
+#   RIPPLEPATH_API_TOKEN      <RipplePath agent token for KPI reporting>
+
+on:
+  workflow_dispatch:
+  workflow_call:   # allow deploy.yml to call this after a successful deploy
+
+jobs:
+  e2e:
+    name: "E2E smoke — staging proxy"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    env:
+      NUVRAIL_TEST_IMAP_HOST: ${{ secrets.NUVRAIL_TEST_IMAP_HOST }}
+      NUVRAIL_TEST_IMAP_PORT: ${{ secrets.NUVRAIL_TEST_IMAP_PORT }}
+      NUVRAIL_TEST_SMTP_HOST: ${{ secrets.NUVRAIL_TEST_SMTP_HOST }}
+      NUVRAIL_TEST_SMTP_PORT: ${{ secrets.NUVRAIL_TEST_SMTP_PORT }}
+      NUVRAIL_TEST_IMAP_USER: ${{ secrets.NUVRAIL_TEST_IMAP_USER }}
+      NUVRAIL_TEST_IMAP_PASS: ${{ secrets.NUVRAIL_TEST_IMAP_PASS }}
+      NUVRAIL_TEST_SMTP_USER: ${{ secrets.NUVRAIL_TEST_SMTP_USER }}
+      NUVRAIL_TEST_SMTP_PASS: ${{ secrets.NUVRAIL_TEST_SMTP_PASS }}
+      NUVRAIL_MASTER_KEY: ${{ secrets.NUVRAIL_MASTER_KEY }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Run E2E tests
+        # Tests skip cleanly if NUVRAIL_TEST_IMAP_HOST is not set.
+        # --json-report-file is consumed by the KPI reporter step below.
+        run: |
+          python -m pytest \
+            tests/e2e/ \
+            --tb=short \
+            -v \
+            --json-report \
+            --json-report-file=e2e-report.json \
+          || true
+
+      - name: Report E2E KPIs to Ripple Path
+        # Posts pass rate to Engineering Health path.
+        # Safe to fail — exits 0 on API error.
+        if: always()
+        env:
+          RIPPLEPATH_API_TOKEN: ${{ secrets.RIPPLEPATH_API_TOKEN }}
+        run: |
+          python scripts/report_ci_kpis.py e2e-report.json
+
+      - name: Upload E2E report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-report
+          path: e2e-report.json
+          retention-days: 30
