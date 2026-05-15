@@ -11,7 +11,6 @@ import OAuthCallbackView from './views/OAuthCallbackView'
 import AccountView from './views/AccountView'
 import ResetRequestView from './views/ResetRequestView'
 import ResetView from './views/ResetView'
-import SetupView from './views/SetupView'
 import { getToken, setupPushNotifications } from './api/client'
 
 const queryClient = new QueryClient({
@@ -37,7 +36,7 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
   const location = useLocation()
 
   useEffect(() => {
-    const publicRoutes = ['/login', '/setup', '/reset-request', '/reset']
+    const publicRoutes = ['/login', '/reset-request', '/reset']
     const isPublic = publicRoutes.some((r) => location.pathname === r)
     if (!isPublic && !getToken()) {
       navigate('/login', { replace: true })
@@ -106,14 +105,6 @@ export default function App() {
                   >
                     Account
                   </NavLink>
-                  <NavLink
-                    to="/setup"
-                    className={({ isActive }) =>
-                      `${NAV_LINK_BASE} ${isActive ? NAV_LINK_ACTIVE : NAV_LINK_INACTIVE}`
-                    }
-                  >
-                    Setup
-                  </NavLink>
                 </nav>
               </div>
             </header>
@@ -126,7 +117,6 @@ export default function App() {
                 <Route path="/audit" element={<AuditView />} />
                 <Route path="/agents" element={<AgentsView />} />
                 <Route path="/oauth2/callback" element={<OAuthCallbackView />} />
-                <Route path="/setup" element={<SetupView />} />
                 <Route path="/login" element={<LoginView />} />
                 <Route path="/account" element={<AccountView />} />
                 <Route path="/reset-request" element={<ResetRequestView />} />
@@ -140,4 +130,3 @@ export default function App() {
     </QueryClientProvider>
   )
 }
-
