@@ -21,10 +21,10 @@ Data flow:
 Inverse strategies:
   move      → UID MOVE folder_to → folder_from
   trash     → UID MOVE folder_to (Trash) → folder_from
-  mark_read → UID STORE -FLAGS (\Seen)   [was +FLAGS]
-  mark_unread→UID STORE +FLAGS (\Seen)   [was -FLAGS]
-  star      → UID STORE -FLAGS (\Flagged)[was +FLAGS]
-  unstar    → UID STORE +FLAGS (\Flagged)[was -FLAGS]
+  mark_read → UID STORE -FLAGS (\\Seen)   [was +FLAGS]
+  mark_unread→UID STORE +FLAGS (\\Seen)   [was -FLAGS]
+  star      → UID STORE -FLAGS (\\Flagged)[was +FLAGS]
+  unstar    → UID STORE +FLAGS (\\Flagged)[was -FLAGS]
   archive   → UID MOVE folder_to → INBOX
 
 Operations NOT undoable in Phase 2:
@@ -176,10 +176,10 @@ async def undo_operation(operation_id: str, db_path: Path) -> dict[str, Any]:
     async with get_db(db_path) as db:
         await db.execute(
             """
-            INSERT INTO audit_log (timestamp, operation_id, event, actor, agent_id, detail)
-            VALUES (?, ?, 'reverted', 'human', ?, ?)
+            INSERT INTO audit_log (timestamp, operation_id, event, actor, agent_id, op_type, detail)
+            VALUES (?, ?, 'reverted', 'human', ?, ?, ?)
             """,
-            (now, operation_id, str(agent_id) if agent_id else None,
+            (now, operation_id, str(agent_id) if agent_id else None, op_type,
              json.dumps({"description": description})),
         )
         await db.commit()

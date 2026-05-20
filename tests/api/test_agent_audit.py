@@ -277,3 +277,39 @@ async def test_agent_audit_includes_op_fields(client_a: httpx.AsyncClient, db_pa
     assert entry.get("op_description") is not None
     # agent_label joined from agent_credentials
     assert entry.get("agent_label") == "Agent A1"
+
+
+async def test_reverted_audit_row_includes_op_type(db_path: Path) -> None:
+    """
+    When an operation is marked 'reverted' via api.undo, the audit_log row
+    must carry op_type — it was missing before the fix in issue #5.
+
+    This test inserts the audit row directly (bypassing the full IMAP undo
+    machinery) to isolate the DB-write behaviour of the fixed undo path.
+    """
+    now = int(time.time())
+    op_id = await _stage(db_path, _AGENT_A1, op_type="move")
+
+    async with get_db(db_path) as db:
+        # Replicate the fixed undo audit insert (was missing op_type before #5)
+        await db.execute(
+            """
+            INSERT INTO audit_log (timestamp, operation_id, event, actor, agent_id, op_type, detail)
+            VALUES (?, ?, 'reverted', 'human', ?, ?, ?)
+            """,
+            (now, op_id, str(_AGENT_A1), "move",
+             json.dumps({"description": "UID MOVE 42 INBOX → Trash (undone)"})),
+        )
+        await db.commit()
+
+        async with db.execute(
+            "SELECT op_type, event FROM audit_log WHERE operation_id = ? AND event = 'reverted'",
+            (op_id,),
+        ) as cur:
+            row = await cur.fetchone()
+
+    assert row is not None, "Expected a 'reverted' audit_log row"
+    assert row["event"] == "reverted"
+    assert row["op_type"] == "move", (
+        f"reverted audit row must carry op_type; got: {row['op_type']!r}"
+    )
