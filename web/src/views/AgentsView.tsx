@@ -318,14 +318,67 @@ function AddImapAgentWidget({ onCreated }: { onCreated: () => void }) {
 
   function buildConfigSnippet(): string {
     if (!result) return ''
+
+    const host = result.upstream_host?.toLowerCase() ?? ''
+    const isGmail = host.includes('gmail')
+    const isOutlook = host.includes('outlook') || host.includes('office365') || host.includes('hotmail')
+    const isICloud = host.includes('icloud') || host.includes('me.com') || host.includes('mac.com')
+
+    const providerHints: string[] = []
+    if (isGmail) {
+      providerHints.push(
+        ``,
+        `# GMAIL-SPECIFIC OPERATIONS`,
+        `# Archive a message : UID MOVE <uid> [Gmail]/All Mail`,
+        `# Trash a message   : UID MOVE <uid> [Gmail]/Trash`,
+        `# Sent folder       : [Gmail]/Sent Mail`,
+        `# Drafts folder     : [Gmail]/Drafts`,
+        `# Do NOT use COPY + STORE \\Deleted to move messages.`,
+        `# Use UID MOVE directly — it stages a single clean operation.`,
+      )
+    } else if (isOutlook) {
+      providerHints.push(
+        ``,
+        `# OUTLOOK / OFFICE 365 OPERATIONS`,
+        `# Archive a message : UID MOVE <uid> Archive`,
+        `# Trash a message   : UID MOVE <uid> Deleted Items`,
+        `# Sent folder       : Sent Items`,
+        `# Junk folder       : Junk Email`,
+        `# Use UID MOVE directly; do not use COPY + STORE \\Deleted.`,
+      )
+    } else if (isICloud) {
+      providerHints.push(
+        ``,
+        `# ICLOUD MAIL OPERATIONS`,
+        `# Archive a message : UID MOVE <uid> Archive`,
+        `# Trash a message   : UID MOVE <uid> Deleted Messages`,
+        `# Sent folder       : Sent Messages`,
+        `# Use UID MOVE directly; do not use COPY + STORE \\Deleted.`,
+      )
+    }
+
     return [
-      `# Nuvrail proxy credentials`,
-      `IMAP server:  ${proxyHost}`,
-      `IMAP port:    993  (SSL/TLS)`,
-      `SMTP server:  ${proxyHost}`,
-      `SMTP port:    465  (SSL/TLS)`,
-      `Username:     ${result.agent_username}`,
-      `Password:     ${result.agent_token}`,
+      `# Nuvrail proxy — connection and operating instructions`,
+      `#`,
+      `# CONNECTION`,
+      `IMAP  ${proxyHost}:993  (SSL/TLS)`,
+      `SMTP  ${proxyHost}:465  (SSL/TLS)`,
+      `User  ${result.agent_username}`,
+      `Pass  ${result.agent_token}`,
+      ``,
+      `# HOW THIS PROXY WORKS`,
+      `# Every write operation (flag changes, moves, copies, email sends) is`,
+      `# staged for human approval before it executes on the real mail server.`,
+      `# When you receive OK [STAGED], the operation is queued — not yet done.`,
+      `# Wait for explicit confirmation before treating it as complete.`,
+      `#`,
+      `# REQUIRED — always use UID-prefixed commands for all write operations:`,
+      `#   UID STORE, UID MOVE, UID COPY`,
+      `# Non-UID write commands are rejected with NO [CLIENTBUG].`,
+      `#`,
+      `# EXPUNGE is permanently blocked by the proxy.`,
+      `# To delete a message, use UID MOVE <uid> <Trash folder> instead.`,
+      ...providerHints,
     ].join('\n')
   }
 
