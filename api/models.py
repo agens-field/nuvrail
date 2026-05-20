@@ -246,6 +246,7 @@ class AgentResponse(BaseModel):
     upstream_user: str
     created_at: int
     revoked_at: Optional[int] = None
+    last_activity_at: Optional[int] = None  # most recent staged op; None = never connected
 
 
 # ---------------------------------------------------------------------------

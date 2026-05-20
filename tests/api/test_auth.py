@@ -578,3 +578,60 @@ async def test_create_agent_oauth2_rejects_unsupported_provider(
     )
     assert resp.status_code == 422
     assert resp.json()["error"] == "unsupported_oauth2_provider"
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_list_agents_includes_last_activity_at(
+    client: httpx.AsyncClient, db_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """GET /agents returns last_activity_at=None for a new agent, and a timestamp
+    once a staged_operations row exists for that agent."""
+    import time as _time
+
+    token = await _register_and_login(client)
+
+    async def _ok_verify(*args: object, **kwargs: object) -> None:
+        pass
+
+    monkeypatch.setattr(auth_routes, "_verify_imap_connection", _ok_verify)
+
+    resp = await client.post(
+        "/api/v1/agents",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "upstream_host": "imap.example.com",
+            "upstream_user": "activity@example.com",
+            "upstream_password": "pw",
+        },
+    )
+    assert resp.status_code == 201
+    agent_id = resp.json()["id"]
+
+    # Before any staged op: last_activity_at should be null
+    resp = await client.get("/api/v1/agents", headers={"Authorization": f"Bearer {token}"})
+    assert resp.status_code == 200
+    agents = resp.json()
+    agent = next(a for a in agents if a["id"] == agent_id)
+    assert agent["last_activity_at"] is None, (
+        f"Expected None before any activity; got {agent['last_activity_at']}"
+    )
+
+    # Insert a staged_operations row for this agent
+    now = int(_time.time())
+    async with get_db(db_path) as db:
+        await db.execute(
+            """INSERT INTO staged_operations
+               (id, op_type, protocol, description, status, agent_id, created_at, expires_at)
+               VALUES ('op_test_la', 'move', 'imap', 'test op', 'pending', ?, ?, ?)""",
+            (agent_id, now, now + 172800),
+        )
+        await db.commit()
+
+    # Now last_activity_at should reflect that timestamp
+    resp = await client.get("/api/v1/agents", headers={"Authorization": f"Bearer {token}"})
+    assert resp.status_code == 200
+    agents = resp.json()
+    agent = next(a for a in agents if a["id"] == agent_id)
+    assert agent["last_activity_at"] == now, (
+        f"Expected {now}; got {agent['last_activity_at']}"
+    )

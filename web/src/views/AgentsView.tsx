@@ -156,6 +156,16 @@ function AgentCard({
             {formatDate(agent.revoked_at)}
           </div>
         )}
+        <div className="flex items-center gap-1.5">
+          <span className={`inline-block w-1.5 h-1.5 rounded-full ${
+            agent.last_activity_at ? 'bg-emerald-400' : 'bg-slate-600'
+          }`} />
+          <span className={agent.last_activity_at ? 'text-emerald-400' : 'text-slate-500'}>
+            {agent.last_activity_at
+              ? `Last active ${formatDate(agent.last_activity_at)}`
+              : 'Never connected'}
+          </span>
+        </div>
       </div>
 
       {/* Audit tab */}
@@ -304,9 +314,30 @@ function AddImapAgentWidget({ onCreated }: { onCreated: () => void }) {
     }
   }
 
+  const proxyHost = import.meta.env.VITE_PROXY_HOST ?? 'test.nuvrail.com'
+
+  function buildConfigSnippet(): string {
+    if (!result) return ''
+    return [
+      `# Nuvrail proxy credentials`,
+      `IMAP server:  ${proxyHost}`,
+      `IMAP port:    993  (SSL/TLS)`,
+      `SMTP server:  ${proxyHost}`,
+      `SMTP port:    465  (SSL/TLS)`,
+      `Username:     ${result.agent_username}`,
+      `Password:     ${result.agent_token}`,
+    ].join('\n')
+  }
+
   async function copyToken() {
     if (!result) return
     await navigator.clipboard.writeText(result.agent_token)
+    setCopied(true)
+    setTimeout(() => setCopied(false), 2000)
+  }
+
+  async function copySnippet() {
+    await navigator.clipboard.writeText(buildConfigSnippet())
     setCopied(true)
     setTimeout(() => setCopied(false), 2000)
   }
@@ -329,9 +360,10 @@ function AddImapAgentWidget({ onCreated }: { onCreated: () => void }) {
         <h2 className="text-base font-semibold text-slate-200">Agent credentials generated</h2>
         <div className="bg-slate-700 border border-amber-500 rounded-lg p-4 font-mono text-sm space-y-2">
           <p className="text-amber-400 font-semibold mb-3">⚠ Shown once — save these now</p>
-          <div className="text-slate-300"><span className="text-slate-500">IMAP server: </span>{import.meta.env.VITE_PROXY_HOST ?? 'test.nuvrail.com'}</div>
-          <div className="text-slate-300"><span className="text-slate-500">IMAP port:   </span>10143</div>
-          <div className="text-slate-300"><span className="text-slate-500">SMTP port:   </span>10587</div>
+          <div className="text-slate-300"><span className="text-slate-500">IMAP server: </span>{proxyHost}</div>
+          <div className="text-slate-300"><span className="text-slate-500">IMAP port:   </span>993 <span className="text-slate-500 text-xs">(SSL/TLS)</span></div>
+          <div className="text-slate-300"><span className="text-slate-500">SMTP server: </span>{proxyHost}</div>
+          <div className="text-slate-300"><span className="text-slate-500">SMTP port:   </span>465 <span className="text-slate-500 text-xs">(SSL/TLS)</span></div>
           <div className="text-slate-300"><span className="text-slate-500">Username:    </span><span className="text-indigo-300">{result.agent_username}</span></div>
           <div className="flex items-center gap-2">
             <span className="text-slate-500">Password:    </span>
@@ -343,6 +375,18 @@ function AddImapAgentWidget({ onCreated }: { onCreated: () => void }) {
               {copied ? 'Copied!' : 'Copy'}
             </button>
           </div>
+        </div>
+        <div className="rounded-md bg-slate-900/60 border border-slate-600 p-3">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-xs font-medium text-slate-400">Config snippet — paste into your IMAP/SMTP client</span>
+            <button
+              onClick={() => void copySnippet()}
+              className="text-xs bg-slate-700 hover:bg-slate-600 text-slate-200 px-2 py-1 rounded"
+            >
+              {copied ? 'Copied!' : 'Copy all'}
+            </button>
+          </div>
+          <pre className="text-xs text-slate-300 whitespace-pre overflow-x-auto">{buildConfigSnippet()}</pre>
         </div>
         <div className="flex gap-3">
           <button

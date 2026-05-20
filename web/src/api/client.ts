@@ -186,6 +186,7 @@ export interface AgentResponse {
   upstream_user: string
   created_at: number
   revoked_at?: number | null
+  last_activity_at?: number | null  // null = never connected
 }
 
 export async function createAgent(body: AgentCreateRequest): Promise<AgentCreateResponse> {

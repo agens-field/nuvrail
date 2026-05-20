@@ -410,11 +410,17 @@ async def list_agents(
     async with get_db(db_path) as db:
         async with db.execute(
             """
-            SELECT id, agent_username, label, upstream_host, upstream_user,
-                   created_at, revoked_at
-            FROM agent_credentials
-            WHERE user_id = ?
-            ORDER BY created_at ASC
+            SELECT ac.id, ac.agent_username, ac.label,
+                   ac.upstream_host, ac.upstream_user,
+                   ac.created_at, ac.revoked_at,
+                   (
+                       SELECT MAX(so.created_at)
+                       FROM staged_operations so
+                       WHERE so.agent_id = ac.id
+                   ) AS last_activity_at
+            FROM agent_credentials ac
+            WHERE ac.user_id = ?
+            ORDER BY ac.created_at ASC
             """,
             (current_user["id"],),
         ) as cur:
