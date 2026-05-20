@@ -225,7 +225,7 @@ async def test_create_operation_auto_approved_by_rule(db_path: Path) -> None:
 
     async with get_db(db_path) as db:
         async with db.execute(
-            "SELECT event, actor, detail FROM audit_log WHERE operation_id = ? ORDER BY id ASC",
+            "SELECT event, actor, op_type, detail FROM audit_log WHERE operation_id = ? ORDER BY id ASC",
             (op_id,),
         ) as cur:
             logs = await cur.fetchall()
@@ -234,6 +234,10 @@ async def test_create_operation_auto_approved_by_rule(db_path: Path) -> None:
     assert logs[1]["event"] == "approved"
     assert logs[1]["actor"] == "auto_rule"
     assert "Substack mark-read" in (logs[1]["detail"] or "")
+    # op_type must be populated in the auto-rule audit row (was NULL before fix)
+    assert logs[1]["op_type"] == "mark_read", (
+        f"auto_rule audit row must carry op_type; got: {logs[1]['op_type']!r}"
+    )
 
 
 async def test_create_operation_auto_rejected_by_rule_restores_snapshot(db_path: Path) -> None:
@@ -285,6 +289,16 @@ async def test_create_operation_auto_rejected_by_rule_restores_snapshot(db_path:
     assert len(logs) == 2
     assert logs[1]["event"] == "rejected"
     assert logs[1]["actor"] == "auto_rule"
+    # op_type must be populated in the auto-rule audit row (was NULL before fix)
+    async with get_db(db_path) as db:
+        async with db.execute(
+            "SELECT op_type FROM audit_log WHERE operation_id = ? AND actor = 'auto_rule'",
+            (op_id,),
+        ) as cur:
+            audit_row = await cur.fetchone()
+    assert audit_row["op_type"] == "mark_read", (
+        f"auto_rule audit row must carry op_type; got: {audit_row['op_type']!r}"
+    )
 
 
 async def test_create_operation_skips_push_for_auto_approved(db_path: Path) -> None:

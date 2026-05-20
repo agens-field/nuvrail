@@ -54,6 +54,7 @@ async def _apply_auto_rule_decision(
     rule: dict,
     db_path: Path,
     agent_id: Optional[int] = None,
+    op_type: Optional[str] = None,
 ) -> None:
     """Apply a matched auto-rule decision and write audit trail."""
     status = _decision_to_status(action)
@@ -75,7 +76,7 @@ async def _apply_auto_rule_decision(
             INSERT INTO audit_log (timestamp, operation_id, event, actor, agent_id, op_type, detail)
             VALUES (?, ?, ?, 'auto_rule', ?, ?, ?)
             """,
-            (now, op_id, status, agent_id, None, detail),
+            (now, op_id, status, agent_id, op_type, detail),
         )
         await db.commit()
 
@@ -187,7 +188,8 @@ async def create_operation(
         )
         if matched_rule is not None:
             await _apply_auto_rule_decision(
-                op_id, auto_action, matched_rule, db_path, agent_id=agent_id
+                op_id, auto_action, matched_rule, db_path,
+                agent_id=agent_id, op_type=op_type,
             )
 
     if auto_action is None:
