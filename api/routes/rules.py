@@ -1,8 +1,9 @@
 """
 /api/v1/rules endpoints — auto-approval rule management.
 
-GET    /rules         — list all rules
+GET    /rules         — list all rules (includes per-rule hit count)
 POST   /rules         — create rule
+POST   /rules/test    — dry-run: which rule fires for a sample operation?
 PATCH  /rules/{id}    — update rule
 DELETE /rules/{id}    — delete rule
 """
@@ -10,8 +11,10 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel
 
 from api.auth import get_current_user
 from api.models import (
@@ -36,6 +39,7 @@ def _row_to_rule(row: dict) -> AutoApprovalRule:
         action=row["action"],
         description=row["description"],
         created_at=row["created_at"],
+        hits=row.get("hits", 0) or 0,
     )
 
 
@@ -44,18 +48,73 @@ async def list_rules(
     db_path: Path = Depends(get_db_path),
     current_user: dict = Depends(get_current_user),
 ) -> list[AutoApprovalRule]:
-    """List rules ordered by evaluation order (priority DESC, id ASC)."""
+    """List rules ordered by evaluation order (priority DESC, id ASC).
+
+    Each rule includes a `hits` count — the number of operations that were
+    auto-approved or auto-rejected by that rule, derived from the audit log.
+    """
     del current_user
     async with get_db(db_path) as db:
         async with db.execute(
             """
-            SELECT *
-            FROM auto_approval_rules
-            ORDER BY priority DESC, id ASC
+            SELECT r.*,
+                   COALESCE((
+                       SELECT COUNT(*)
+                       FROM audit_log a
+                       WHERE a.actor = 'auto_rule'
+                         AND json_valid(a.detail)
+                         AND CAST(json_extract(a.detail, '$.rule_id') AS INTEGER) = r.id
+                   ), 0) AS hits
+            FROM auto_approval_rules r
+            ORDER BY r.priority DESC, r.id ASC
             """
         ) as cur:
             rows = [dict(r) for r in await cur.fetchall()]
     return [_row_to_rule(r) for r in rows]
+
+
+class RuleTestRequest(BaseModel):
+    """Sample operation fields to dry-run against the current ruleset."""
+    op_type: str
+    sender: Optional[str] = None
+    folder_from: Optional[str] = None
+
+
+class RuleTestResponse(BaseModel):
+    matched: bool
+    action: Optional[str] = None       # 'approve' | 'reject' | None
+    rule_id: Optional[int] = None
+    rule_description: Optional[str] = None
+
+
+@router.post("/rules/test", response_model=RuleTestResponse)
+async def test_rule(
+    body: RuleTestRequest,
+    db_path: Path = Depends(get_db_path),
+    current_user: dict = Depends(get_current_user),
+) -> RuleTestResponse:
+    """Dry-run the ruleset against a sample operation.
+
+    Returns the first matching rule and what action it would take.
+    No operation is staged or executed.
+    """
+    del current_user
+    from gateway.rules import get_matching_rule  # noqa: PLC0415
+
+    op = {
+        "op_type": body.op_type,
+        "sender": body.sender,
+        "folder_from": body.folder_from,
+    }
+    matched_rule = await get_matching_rule(op, db_path=db_path)
+    if matched_rule is None:
+        return RuleTestResponse(matched=False)
+    return RuleTestResponse(
+        matched=True,
+        action=matched_rule.get("action"),
+        rule_id=matched_rule.get("id"),
+        rule_description=matched_rule.get("description"),
+    )
 
 
 @router.post("/rules", response_model=AutoApprovalRule, status_code=201)

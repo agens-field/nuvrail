@@ -137,6 +137,7 @@ class AutoApprovalRule(BaseModel):
     action: Literal["approve", "reject"]
     description: str
     created_at: int
+    hits: int = 0  # auto-approved/rejected ops matched by this rule (from audit_log)
 
 
 class AutoApprovalRuleCreateRequest(BaseModel):

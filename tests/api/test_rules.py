@@ -135,3 +135,84 @@ async def test_rules_ordered_by_priority_desc_then_id(client: httpx.AsyncClient)
 
     rows = (await client.get("/api/v1/rules")).json()
     assert [r["id"] for r in rows] == [id2, id1, id3]
+
+
+async def test_rules_list_includes_hits_count(client: httpx.AsyncClient, db_path: Path) -> None:
+    """GET /rules returns a hits=0 count for a new rule with no audit activity."""
+    resp = await client.post('/api/v1/rules', json={
+        'op_type': 'move', 'action': 'approve', 'description': 'hits test rule',
+    })
+    assert resp.status_code == 201
+    rule_id = resp.json()['id']
+
+    resp = await client.get('/api/v1/rules')
+    assert resp.status_code == 200
+    rules = resp.json()
+    rule = next(r for r in rules if r['id'] == rule_id)
+    assert 'hits' in rule
+    assert rule['hits'] == 0
+
+
+async def test_rules_list_hits_count_increments_from_audit_log(
+    client: httpx.AsyncClient, db_path: Path
+) -> None:
+    """Hits count reflects matching auto_rule entries in audit_log."""
+    import json as _json
+    import time as _time
+    from gateway.state_db import get_db as _get_db
+
+    resp = await client.post('/api/v1/rules', json={
+        'op_type': 'trash', 'action': 'approve', 'description': 'trash rule',
+    })
+    assert resp.status_code == 201
+    rule_id = resp.json()['id']
+
+    # Simulate two auto_rule audit entries referencing this rule
+    now = int(_time.time())
+    async with _get_db(db_path) as db:
+        for _ in range(2):
+            await db.execute(
+                """INSERT INTO audit_log (timestamp, event, actor, detail)
+                   VALUES (?, 'approved', 'auto_rule', ?)""",
+                (now, _json.dumps({'rule_id': rule_id, 'rule_description': 'trash rule'})),
+            )
+        await db.commit()
+
+    resp = await client.get('/api/v1/rules')
+    assert resp.status_code == 200
+    rules = resp.json()
+    rule = next(r for r in rules if r['id'] == rule_id)
+    assert rule['hits'] == 2
+
+
+async def test_rules_test_no_match(client: httpx.AsyncClient) -> None:
+    """POST /rules/test returns matched=False when no rule matches."""
+    resp = await client.post('/api/v1/rules/test', json={
+        'op_type': 'smtp_send', 'sender': 'nobody@example.com',
+    })
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body['matched'] is False
+    assert body.get('rule_id') is None
+
+
+async def test_rules_test_match(client: httpx.AsyncClient, db_path: Path) -> None:
+    """POST /rules/test returns matched=True with rule info when a rule fires."""
+    resp = await client.post('/api/v1/rules', json={
+        'op_type': 'mark_read',
+        'sender_pattern': '*@newsletters.com',
+        'action': 'approve',
+        'description': 'Newsletter auto-approve',
+    })
+    assert resp.status_code == 201
+
+    resp = await client.post('/api/v1/rules/test', json={
+        'op_type': 'mark_read',
+        'sender': 'digest@newsletters.com',
+    })
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body['matched'] is True
+    assert body['action'] == 'approve'
+    assert body['rule_description'] == 'Newsletter auto-approve'
+    assert body['rule_id'] is not None

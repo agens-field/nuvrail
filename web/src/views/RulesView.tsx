@@ -1,9 +1,9 @@
 import { useMemo, useState, type FormEvent } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
-import { ArrowDown, ArrowUp, Inbox, Plus, RefreshCw, Trash2 } from 'lucide-react'
-import { createRule, deleteRule, fetchRules, updateRule } from '../api/client'
-import type { AutoApprovalAction, AutoApprovalRule } from '../types'
+import { ArrowDown, ArrowUp, FlaskConical, Inbox, Plus, RefreshCw, Trash2 } from 'lucide-react'
+import { createRule, deleteRule, fetchRules, testRule, updateRule } from '../api/client'
+import type { AutoApprovalAction, AutoApprovalRule, RuleTestResponse } from '../types'
 
 const OP_TYPE_OPTIONS = [
   { value: '', label: 'Any operation type' },
@@ -60,6 +60,11 @@ export default function RulesView() {
   const [form, setForm] = useState<RuleFormState>(initialFormState)
   const [deletingRuleId, setDeletingRuleId] = useState<number | null>(null)
   const [updatingRuleId, setUpdatingRuleId] = useState<number | null>(null)
+
+  // Rule test panel
+  const [testForm, setTestForm] = useState({ op_type: '', sender: '', folder_from: '' })
+  const [testResult, setTestResult] = useState<RuleTestResponse | null>(null)
+  const [testPending, setTestPending] = useState(false)
 
   const { data, isLoading, isError, error, refetch, isFetching } = useQuery({
     queryKey: ['rules'],
@@ -132,6 +137,28 @@ export default function RulesView() {
       toast.error(`Delete rule failed: ${err instanceof Error ? err.message : 'Unknown error'}`)
     } finally {
       setDeletingRuleId(null)
+    }
+  }
+
+  async function handleTestRule(e: FormEvent<HTMLFormElement>) {
+    e.preventDefault()
+    if (!testForm.op_type.trim()) {
+      toast.error('Op type is required for test')
+      return
+    }
+    setTestPending(true)
+    setTestResult(null)
+    try {
+      const result = await testRule({
+        op_type: testForm.op_type.trim(),
+        sender: testForm.sender.trim() || null,
+        folder_from: testForm.folder_from.trim() || null,
+      })
+      setTestResult(result)
+    } catch (err) {
+      toast.error(`Test failed: ${err instanceof Error ? err.message : 'Unknown error'}`)
+    } finally {
+      setTestPending(false)
     }
   }
 
@@ -280,6 +307,73 @@ export default function RulesView() {
         </form>
       </section>
 
+      {/* Rule test panel */}
+      <section className="rounded-lg border border-slate-700 bg-slate-800/40 p-4">
+        <div className="flex items-center gap-2 mb-4">
+          <FlaskConical className="w-4 h-4 text-amber-400" />
+          <h2 className="text-sm font-semibold text-slate-100">Test rules</h2>
+          <span className="text-xs text-slate-400 ml-1">— dry-run a sample operation against your ruleset</span>
+        </div>
+        <form onSubmit={(e) => void handleTestRule(e)} className="space-y-3">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            <div>
+              <label className="block text-xs font-medium text-slate-400 mb-1">Op type <span className="text-red-400">*</span></label>
+              <select
+                value={testForm.op_type}
+                onChange={(e) => { setTestForm((p) => ({ ...p, op_type: e.target.value })); setTestResult(null) }}
+                className="w-full rounded-md bg-slate-700 border border-slate-600 px-3 py-2 text-sm text-slate-200"
+              >
+                <option value="">— select —</option>
+                {OP_TYPE_OPTIONS.filter((o) => o.value).map((o) => (
+                  <option key={o.value} value={o.value}>{o.label}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-slate-400 mb-1">Sender (optional)</label>
+              <input
+                value={testForm.sender}
+                onChange={(e) => { setTestForm((p) => ({ ...p, sender: e.target.value })); setTestResult(null) }}
+                placeholder="digest@example.com"
+                className="w-full rounded-md bg-slate-700 border border-slate-600 px-3 py-2 text-sm text-slate-200 placeholder:text-slate-500"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-slate-400 mb-1">Source folder (optional)</label>
+              <input
+                value={testForm.folder_from}
+                onChange={(e) => { setTestForm((p) => ({ ...p, folder_from: e.target.value })); setTestResult(null) }}
+                placeholder="INBOX"
+                className="w-full rounded-md bg-slate-700 border border-slate-600 px-3 py-2 text-sm text-slate-200 placeholder:text-slate-500"
+              />
+            </div>
+          </div>
+          <div className="flex items-center gap-3">
+            <button
+              type="submit"
+              disabled={testPending || !testForm.op_type}
+              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-md text-sm font-medium bg-amber-700 hover:bg-amber-600 text-white transition-colors disabled:opacity-50"
+            >
+              <FlaskConical className="w-3.5 h-3.5" />
+              {testPending ? 'Testing…' : 'Test'}
+            </button>
+            {testResult !== null && (
+              <div className={`flex items-center gap-2 px-3 py-2 rounded-md text-sm font-medium border ${
+                !testResult.matched
+                  ? 'border-slate-600 bg-slate-700/60 text-slate-300'
+                  : testResult.action === 'approve'
+                  ? 'border-emerald-700 bg-emerald-900/30 text-emerald-200'
+                  : 'border-red-700 bg-red-900/30 text-red-200'
+              }`}>
+                {!testResult.matched && '⚪ No rule matched — op would be queued for review'}
+                {testResult.matched && testResult.action === 'approve' && `✅ Would be auto-approved by: "${testResult.rule_description}"`}
+                {testResult.matched && testResult.action === 'reject' && `🚫 Would be auto-rejected by: "${testResult.rule_description}"`}
+              </div>
+            )}
+          </div>
+        </form>
+      </section>
+
       <section className="rounded-lg border border-slate-700 bg-slate-800/30 overflow-hidden">
         <div className="px-4 py-3 border-b border-slate-700 flex items-center justify-between">
           <h2 className="text-sm font-semibold text-slate-100">Rules</h2>
@@ -322,6 +416,7 @@ export default function RulesView() {
                   <th className="px-3 py-2">Sender pattern</th>
                   <th className="px-3 py-2">Folder</th>
                   <th className="px-3 py-2">Action</th>
+                  <th className="px-3 py-2">Hits</th>
                   <th className="px-3 py-2">Enabled</th>
                   <th className="px-3 py-2 text-right">Controls</th>
                 </tr>
@@ -349,6 +444,14 @@ export default function RulesView() {
                           }`}
                         >
                           {rule.action}
+                        </span>
+                      </td>
+                      <td className="px-3 py-2">
+                        <span
+                          className="inline-flex px-2 py-1 rounded text-xs font-medium bg-slate-700 text-slate-300"
+                          title="Operations auto-decided by this rule"
+                        >
+                          {rule.hits}
                         </span>
                       </td>
                       <td className="px-3 py-2">

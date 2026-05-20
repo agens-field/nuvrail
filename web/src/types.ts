@@ -105,6 +105,20 @@ export interface AutoApprovalRule {
   action: AutoApprovalAction
   description: string
   created_at: number
+  hits: number  // ops auto-decided by this rule (from audit log)
+}
+
+export interface RuleTestRequest {
+  op_type: string
+  sender?: string | null
+  folder_from?: string | null
+}
+
+export interface RuleTestResponse {
+  matched: boolean
+  action?: string | null
+  rule_id?: number | null
+  rule_description?: string | null
 }
 
 export interface AutoApprovalRuleCreateRequest {

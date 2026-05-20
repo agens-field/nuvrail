@@ -2,6 +2,8 @@ import type {
   AutoApprovalRule,
   AutoApprovalRuleCreateRequest,
   AutoApprovalRuleUpdateRequest,
+  RuleTestRequest,
+  RuleTestResponse,
   AuditListResponse,
   BatchApproveResponse,
   BatchRejectResponse,
@@ -346,6 +348,14 @@ export async function updateRule(
 
 export async function deleteRule(id: number): Promise<void> {
   await apiFetch<void>(`/api/v1/rules/${id}`, { method: 'DELETE' })
+}
+
+export async function testRule(body: RuleTestRequest): Promise<RuleTestResponse> {
+  return apiFetch<RuleTestResponse>('/api/v1/rules/test', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
 }
 
 // ---------------------------------------------------------------------------
