@@ -513,8 +513,15 @@ async def handle_smtp_client(
                         )
 
                 else:
-                    client_writer.write(b"504 Authentication mechanism not supported\r\n")
+                    client_writer.write(
+                        f"504 5.5.4 Authentication mechanism not supported"
+                        f" — try AUTH PLAIN\r\n".encode()
+                    )
                     await client_writer.drain()
+                    logger.warning(
+                        "[%s] SMTP unsupported auth mechanism: %s",
+                        peer_str, mech,
+                    )
                     continue
 
                 if cred is None:
@@ -537,7 +544,11 @@ async def handle_smtp_client(
                         "[%s] Failed to connect to upstream %s:%d — %s",
                         peer_str, upstream_host, upstream_port, exc,
                     )
-                    client_writer.write(b"421 Service temporarily unavailable\r\n")
+                    client_writer.write(
+                        f"421 4.4.1 Upstream SMTP server temporarily"
+                        f" unreachable ({upstream_host}:{upstream_port})"
+                        f" — try again later\r\n".encode()
+                    )
                     await client_writer.drain()
                     break
 

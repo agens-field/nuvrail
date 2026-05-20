@@ -1120,16 +1120,22 @@ async def handle_client(
             return
 
         if cmd not in ("LOGIN", "AUTHENTICATE"):
-            # Reject any other command before authentication
+            # Reject any other command before authentication.
+            # [CLIENTBUG] per RFC 5530: the client issued a command that is
+            # not permitted in the non-authenticated state.
             tag = parts[0]
             try:
                 client_writer.write(
-                    f"{tag} NO Please authenticate first\r\n".encode()
+                    f"{tag} NO [CLIENTBUG] {cmd} is not permitted before"
+                    f" authentication — send: LOGIN <agent_user> <agent_token>\r\n".encode()
                 )
                 await client_writer.drain()
             except OSError:
                 client_writer.close()
                 return
+            logger.warning(
+                "[%s] Pre-auth command rejected: cmd=%s", peer_str, cmd
+            )
             continue
 
         # LOGIN command: tag LOGIN userid password
@@ -1184,7 +1190,8 @@ async def handle_client(
             try:
                 client_writer.write(
                     f"* BYE Too many authentication attempts. Retry in {decision.retry_after_seconds}s\r\n"
-                    f"{login_tag} NO [AUTHLIMIT] Too many attempts\r\n".encode()
+                    f"{login_tag} NO [LIMIT] Too many authentication attempts"
+                    f" — retry in {decision.retry_after_seconds}s\r\n".encode()
                 )
                 await client_writer.drain()
             except OSError:
@@ -1207,7 +1214,7 @@ async def handle_client(
             try:
                 client_writer.write(
                     f"* BYE Authentication failed\r\n"
-                    f"{login_tag} NO Authentication credentials invalid\r\n".encode()
+                    f"{login_tag} NO [AUTHENTICATIONFAILED] Authentication credentials invalid\r\n".encode()
                 )
                 await client_writer.drain()
             except OSError:
@@ -1261,7 +1268,8 @@ async def handle_client(
         )
         try:
             client_writer.write(
-                f"{login_tag} NO Upstream connection failed\r\n".encode()
+                f"{login_tag} NO [UNAVAILABLE] Upstream IMAP server temporarily"
+                f" unreachable ({upstream_host}:{upstream_port}) — try again later\r\n".encode()
             )
             await client_writer.drain()
         except OSError:
@@ -1287,7 +1295,8 @@ async def handle_client(
             logger.error("[%s] XOAUTH2 token fetch failed: %s", peer_str, exc)
             try:
                 client_writer.write(
-                    f"{login_tag} NO Upstream OAuth2 authentication failed\r\n".encode()
+                    f"{login_tag} NO [AUTHENTICATIONFAILED] Upstream OAuth2 token"
+                    f" is invalid or expired — re-authorize the agent\r\n".encode()
                 )
                 await client_writer.drain()
             except OSError:
@@ -1381,7 +1390,8 @@ async def handle_client(
             # Send a clean NO to the client and close.
             try:
                 client_writer.write(
-                    f"{login_tag} NO Upstream XOAUTH2 authentication failed\r\n".encode()
+                    f"{login_tag} NO [AUTHENTICATIONFAILED] Upstream XOAUTH2"
+                    f" authentication failed — token may be expired, re-authorize the agent\r\n".encode()
                 )
                 await client_writer.drain()
             except OSError:
@@ -1398,7 +1408,8 @@ async def handle_client(
             )
             try:
                 client_writer.write(
-                    f"{login_tag} NO Upstream XOAUTH2 authentication failed\r\n".encode()
+                    f"{login_tag} NO [AUTHENTICATIONFAILED] Upstream XOAUTH2"
+                    f" authentication failed — token may be expired, re-authorize the agent\r\n".encode()
                 )
                 await client_writer.drain()
             except OSError:
