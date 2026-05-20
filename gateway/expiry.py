@@ -93,12 +93,20 @@ async def _expire_one(op_id: str, db_path: Path) -> None:
             """,
             (now, op_id),
         )
+        # Fetch agent_id and op_type for the audit row (denormalized for fast queries).
+        async with db.execute(
+            "SELECT agent_id, op_type FROM staged_operations WHERE id = ?",
+            (op_id,),
+        ) as cur:
+            op_row = await cur.fetchone()
+        _agent_id = op_row["agent_id"] if op_row else None
+        _op_type = op_row["op_type"] if op_row else None
         await db.execute(
             """
-            INSERT INTO audit_log (timestamp, operation_id, event, actor, detail)
-            VALUES (?, ?, 'expired', 'system', NULL)
+            INSERT INTO audit_log (timestamp, operation_id, event, actor, agent_id, op_type, detail)
+            VALUES (?, ?, 'expired', 'system', ?, ?, NULL)
             """,
-            (now, op_id),
+            (now, op_id, _agent_id, _op_type),
         )
         await db.commit()
 

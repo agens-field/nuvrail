@@ -53,6 +53,7 @@ async def _apply_auto_rule_decision(
     action: str,
     rule: dict,
     db_path: Path,
+    agent_id: Optional[int] = None,
 ) -> None:
     """Apply a matched auto-rule decision and write audit trail."""
     status = _decision_to_status(action)
@@ -71,10 +72,10 @@ async def _apply_auto_rule_decision(
     async with get_db(db_path) as db:
         await db.execute(
             """
-            INSERT INTO audit_log (timestamp, operation_id, event, actor, agent_id, detail)
-            VALUES (?, ?, ?, 'auto_rule', NULL, ?)
+            INSERT INTO audit_log (timestamp, operation_id, event, actor, agent_id, op_type, detail)
+            VALUES (?, ?, ?, 'auto_rule', ?, ?, ?)
             """,
-            (now, op_id, status, detail),
+            (now, op_id, status, agent_id, None, detail),
         )
         await db.commit()
 
@@ -152,10 +153,10 @@ async def create_operation(
         )
         await db.execute(
             """
-            INSERT INTO audit_log (timestamp, operation_id, event, actor, agent_id, detail)
-            VALUES (?, ?, 'staged', 'ai_agent', NULL, NULL)
+            INSERT INTO audit_log (timestamp, operation_id, event, actor, agent_id, op_type, detail)
+            VALUES (?, ?, 'staged', 'ai_agent', ?, ?, NULL)
             """,
-            (now, op_id),
+            (now, op_id, agent_id, op_type),
         )
         await db.commit()
 
@@ -185,7 +186,9 @@ async def create_operation(
             db_path=db_path,
         )
         if matched_rule is not None:
-            await _apply_auto_rule_decision(op_id, auto_action, matched_rule, db_path)
+            await _apply_auto_rule_decision(
+                op_id, auto_action, matched_rule, db_path, agent_id=agent_id
+            )
 
     if auto_action is None:
         # Fire-and-forget Web Push notification. Non-fatal — staging always succeeds.

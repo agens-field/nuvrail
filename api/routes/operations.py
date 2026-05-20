@@ -524,10 +524,11 @@ async def _do_approve(op_id: str, row: dict, db_path: Path) -> ApproveResponse:
             async with get_db(db_path) as db:
                 await db.execute(
                     """
-                    INSERT INTO audit_log (timestamp, operation_id, event, actor, detail)
-                    VALUES (?, ?, 'execution_failed', 'system', ?)
+                    INSERT INTO audit_log (timestamp, operation_id, event, actor, agent_id, op_type, detail)
+                    VALUES (?, ?, 'execution_failed', 'system', ?, ?, ?)
                     """,
-                    (int(time.time()), op_id, json.dumps({"error": str(exc)})),
+                    (int(time.time()), op_id, row.get("agent_id"), row.get("op_type"),
+                     json.dumps({"error": str(exc)})),
                 )
                 await db.commit()
             raise HTTPException(status_code=500, detail=f"SMTP relay failed: {exc}") from exc
@@ -542,10 +543,11 @@ async def _do_approve(op_id: str, row: dict, db_path: Path) -> ApproveResponse:
             async with get_db(db_path) as db:
                 await db.execute(
                     """
-                    INSERT INTO audit_log (timestamp, operation_id, event, actor, detail)
-                    VALUES (?, ?, 'execution_failed', 'system', ?)
+                    INSERT INTO audit_log (timestamp, operation_id, event, actor, agent_id, op_type, detail)
+                    VALUES (?, ?, 'execution_failed', 'system', ?, ?, ?)
                     """,
-                    (int(time.time()), op_id, json.dumps({"error": str(exc)})),
+                    (int(time.time()), op_id, row.get("agent_id"), row.get("op_type"),
+                     json.dumps({"error": str(exc)})),
                 )
                 await db.commit()
             raise HTTPException(
@@ -557,10 +559,10 @@ async def _do_approve(op_id: str, row: dict, db_path: Path) -> ApproveResponse:
     async with get_db(db_path) as db:
         await db.execute(
             """
-            INSERT INTO audit_log (timestamp, operation_id, event, actor, detail)
-            VALUES (?, ?, 'executed', 'human', NULL)
+            INSERT INTO audit_log (timestamp, operation_id, event, actor, agent_id, op_type, detail)
+            VALUES (?, ?, 'executed', 'human', ?, ?, NULL)
             """,
-            (int(time.time()), op_id),
+            (int(time.time()), op_id, row.get("agent_id"), row.get("op_type")),
         )
         await db.commit()
 
@@ -590,10 +592,10 @@ async def _do_reject(op_id: str, row: dict, db_path: Path) -> RejectResponse:  #
     async with get_db(db_path) as db:
         await db.execute(
             """
-            INSERT INTO audit_log (timestamp, operation_id, event, actor, detail)
-            VALUES (?, ?, 'rejected', 'human', NULL)
+            INSERT INTO audit_log (timestamp, operation_id, event, actor, agent_id, op_type, detail)
+            VALUES (?, ?, 'rejected', 'human', ?, ?, NULL)
             """,
-            (int(time.time()), op_id),
+            (int(time.time()), op_id, row.get("agent_id"), row.get("op_type")),
         )
         await db.commit()
 

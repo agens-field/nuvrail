@@ -291,6 +291,17 @@ export async function fetchAuditLog(
   return apiFetch<AuditListResponse>(`/api/v1/audit${q ? `?${q}` : ''}`)
 }
 
+export async function fetchAgentAuditLog(
+  agentId: number,
+  params: { limit?: number; offset?: number } = {},
+): Promise<AuditListResponse> {
+  const qs = new URLSearchParams()
+  if (params.limit !== undefined) qs.set('limit', String(params.limit))
+  if (params.offset !== undefined) qs.set('offset', String(params.offset))
+  const q = qs.toString()
+  return apiFetch<AuditListResponse>(`/api/v1/agents/${agentId}/audit${q ? `?${q}` : ''}`)
+}
+
 export async function exportAuditLog(agentId?: number): Promise<void> {
   const token = getToken()
   const headers: Record<string, string> = {}

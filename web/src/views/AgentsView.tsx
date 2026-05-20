@@ -1,8 +1,9 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Bot, Mail, RefreshCw, Server, Trash2 } from 'lucide-react'
-import { fetchAgents, revokeAgent, startGmailOAuth, createAgent } from '../api/client'
+import { Bot, ClipboardList, Mail, RefreshCw, Server, Trash2 } from 'lucide-react'
+import { fetchAgents, revokeAgent, startGmailOAuth, createAgent, fetchAgentAuditLog } from '../api/client'
 import type { AgentResponse, AgentCreateResponse } from '../api/client'
+import type { AuditEntry } from '../types'
 
 function formatDate(ts: number): string {
   return new Date(ts * 1000).toLocaleDateString(undefined, {
@@ -10,6 +11,67 @@ function formatDate(ts: number): string {
     month: 'short',
     day: 'numeric',
   })
+}
+
+// ---------------------------------------------------------------------------
+// Per-agent audit panel
+// ---------------------------------------------------------------------------
+
+const AUDIT_EVENT_COLORS: Record<string, string> = {
+  staged:           'text-blue-400',
+  approved:         'text-emerald-400',
+  executed:         'text-emerald-300',
+  rejected:         'text-red-400',
+  execution_failed: 'text-orange-400',
+  expired:          'text-slate-400',
+  auto_rule:        'text-violet-400',
+}
+
+function AgentAuditPanel({ agentId }: { agentId: number }) {
+  const { data, isLoading, isError } = useQuery({
+    queryKey: ['agent-audit', agentId],
+    queryFn: () => fetchAgentAuditLog(agentId, { limit: 10 }),
+  })
+
+  if (isLoading) {
+    return <p className="text-slate-400 text-xs py-2">Loading audit…</p>
+  }
+  if (isError) {
+    return <p className="text-red-400 text-xs py-2">Failed to load audit log.</p>
+  }
+  const entries: AuditEntry[] = data?.entries ?? []
+  if (entries.length === 0) {
+    return <p className="text-slate-500 text-xs py-2 italic">No audit entries yet.</p>
+  }
+
+  return (
+    <div className="mt-2 space-y-1">
+      {entries.map((entry) => (
+        <div key={entry.id} className="flex items-center gap-2 text-xs">
+          <span className="text-slate-500 shrink-0">
+            {new Date(entry.timestamp * 1000).toLocaleString(undefined, {
+              month: 'short', day: 'numeric',
+              hour: '2-digit', minute: '2-digit',
+            })}
+          </span>
+          <span className={`font-medium shrink-0 ${AUDIT_EVENT_COLORS[entry.event] ?? 'text-slate-300'}`}>
+            {entry.event.replace('_', ' ')}
+          </span>
+          {entry.op_type && (
+            <span className="text-slate-500 shrink-0">{entry.op_type}</span>
+          )}
+          {entry.op_description && (
+            <span className="text-slate-400 truncate">{entry.op_description}</span>
+          )}
+        </div>
+      ))}
+      {(data?.total ?? 0) > 10 && (
+        <p className="text-slate-500 text-xs pt-1">
+          Showing 10 of {data!.total} entries — use the Audit view for the full log.
+        </p>
+      )}
+    </div>
+  )
 }
 
 function AgentCard({
@@ -22,6 +84,7 @@ function AgentCard({
   deleting: boolean
 }) {
   const [confirming, setConfirming] = useState(false)
+  const [showAudit, setShowAudit] = useState(false)
   const isRevoked = agent.revoked_at != null
 
   return (
@@ -93,6 +156,18 @@ function AgentCard({
             {formatDate(agent.revoked_at)}
           </div>
         )}
+      </div>
+
+      {/* Audit tab */}
+      <div className="border-t border-slate-700 pt-2">
+        <button
+          onClick={() => setShowAudit((v) => !v)}
+          className="flex items-center gap-1.5 text-xs text-slate-400 hover:text-slate-200 transition-colors"
+        >
+          <ClipboardList className="w-3.5 h-3.5" />
+          {showAudit ? 'Hide audit' : 'Recent audit'}
+        </button>
+        {showAudit && <AgentAuditPanel agentId={agent.id} />}
       </div>
     </div>
   )

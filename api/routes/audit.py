@@ -144,6 +144,83 @@ async def list_audit(
     return AuditListResponse(entries=entries, total=total, limit=limit, offset=offset)
 
 
+@router.get("/agents/{agent_id}/audit", response_model=AuditListResponse)
+async def get_agent_audit(
+    agent_id: int,
+    limit: int = Query(default=50, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    db_path: Path = Depends(get_db_path),
+    current_user: dict = Depends(get_current_user),
+) -> AuditListResponse:
+    """
+    Paginated audit log for a specific agent.
+
+    User-scoped: returns 404 if the agent does not belong to the authenticated user.
+    Entries are ordered newest first.
+    """
+    user_id = current_user["id"]
+
+    # Verify the agent belongs to the current user.
+    async with get_db(db_path) as db:
+        async with db.execute(
+            "SELECT id FROM agent_credentials WHERE id = ? AND user_id = ? AND revoked_at IS NULL",
+            (agent_id, user_id),
+        ) as cur:
+            agent_row = await cur.fetchone()
+
+    if agent_row is None:
+        raise HTTPException(status_code=404, detail=f"Agent {agent_id} not found")
+
+    # Reuse the same join structure as list_audit, but scoped to this agent.
+    join_clause = """
+        FROM audit_log a
+        LEFT JOIN staged_operations op ON a.operation_id = op.id
+        LEFT JOIN agent_credentials ac ON a.agent_id = ac.id
+        LEFT JOIN agent_credentials op_ac ON op.agent_id = op_ac.id
+    """
+    where = """
+        WHERE (a.agent_id = ? OR (a.agent_id IS NULL AND op.agent_id = ?))
+          AND (
+                ac.user_id = ?
+                OR op_ac.user_id = ?
+                OR (a.agent_id IS NULL AND op.agent_id IS NULL)
+          )
+    """
+    params: list[object] = [agent_id, agent_id, user_id, user_id]
+
+    count_sql = f"SELECT COUNT(*) {join_clause} {where}"  # noqa: S608
+    select_sql = f"""
+        SELECT
+            a.id,
+            a.timestamp,
+            a.operation_id,
+            a.event,
+            a.actor,
+            COALESCE(a.agent_id, op.agent_id) AS agent_id,
+            COALESCE(ac.label, op_ac.label) AS agent_label,
+            a.detail,
+            op.description   AS op_description,
+            op.op_type       AS op_type,
+            op.protocol      AS op_protocol,
+            op.status        AS op_status
+        {join_clause}
+        {where}
+        ORDER BY a.id DESC
+        LIMIT ? OFFSET ?
+    """  # noqa: S608
+
+    async with get_db(db_path) as db:
+        async with db.execute(count_sql, params) as cur:
+            total_row = await cur.fetchone()
+            total = total_row[0] if total_row else 0
+
+        async with db.execute(select_sql, [*params, limit, offset]) as cur:
+            rows = [dict(r) for r in await cur.fetchall()]
+
+    entries = [_row_to_entry(r) for r in rows]
+    return AuditListResponse(entries=entries, total=total, limit=limit, offset=offset)
+
+
 @router.get("/audit/export")
 async def export_audit(
     agent_id: Optional[int] = Query(default=None, ge=1),

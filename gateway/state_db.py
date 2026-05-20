@@ -231,6 +231,22 @@ async def init_db(path: Path = DB_PATH) -> None:
                     f"ALTER TABLE users ADD COLUMN {col_name} {col_type}"  # noqa: S608
                 )
 
+        # Migration: add per-agent columns to audit_log (issue #5 — Phase 2a).
+        async with db.execute("PRAGMA table_info(audit_log)") as cur:
+            audit_cols = {row["name"] for row in await cur.fetchall()}
+        for col_name, col_type in [
+            ("user_id",  "INTEGER"),   # direct user scope — avoids join on hot path
+            ("op_type",  "TEXT"),       # denormalized from staged_operations
+        ]:
+            if col_name not in audit_cols:
+                await db.execute(
+                    f"ALTER TABLE audit_log ADD COLUMN {col_name} {col_type}"  # noqa: S608
+                )
+        # Idempotent index for per-agent queries.
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_audit_log_agent_id ON audit_log(agent_id)"
+        )
+
         # Migration: drop NOT NULL from upstream_password to support OAuth2 agents.
         # SQLite has no ALTER COLUMN — we must rename, recreate, copy, and drop.
         # This is idempotent: the PRAGMA notnull flag is checked first.
