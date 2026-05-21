@@ -58,6 +58,7 @@ def _row_to_entry(row: dict) -> AuditEntry:
         op_type=row.get("op_type"),
         op_protocol=row.get("op_protocol"),
         op_status=row.get("op_status"),
+        undo_expires_at=row.get("undo_expires_at"),
     )
 
 
@@ -125,7 +126,8 @@ async def list_audit(
             op.description   AS op_description,
             op.op_type       AS op_type,
             op.protocol      AS op_protocol,
-            op.status        AS op_status
+            op.status        AS op_status,
+            op.undo_expires_at AS undo_expires_at
         {join_clause}
         {where}
         ORDER BY a.id DESC
@@ -202,7 +204,8 @@ async def get_agent_audit(
             op.description   AS op_description,
             op.op_type       AS op_type,
             op.protocol      AS op_protocol,
-            op.status        AS op_status
+            op.status        AS op_status,
+            op.undo_expires_at AS undo_expires_at
         {join_clause}
         {where}
         ORDER BY a.id DESC
@@ -260,7 +263,8 @@ async def export_audit(
             op.description   AS op_description,
             op.op_type       AS op_type,
             op.protocol      AS op_protocol,
-            op.status        AS op_status
+            op.status        AS op_status,
+            op.undo_expires_at AS undo_expires_at
         FROM audit_log a
         LEFT JOIN staged_operations op ON a.operation_id = op.id
         LEFT JOIN agent_credentials ac ON a.agent_id = ac.id
@@ -300,7 +304,8 @@ async def get_audit_entry(
             op.description   AS op_description,
             op.op_type       AS op_type,
             op.protocol      AS op_protocol,
-            op.status        AS op_status
+            op.status        AS op_status,
+            op.undo_expires_at AS undo_expires_at
         FROM audit_log a
         LEFT JOIN staged_operations op ON a.operation_id = op.id
         LEFT JOIN agent_credentials ac ON a.agent_id = ac.id

@@ -85,6 +85,14 @@ export interface AuditEntry {
   op_type?: string
   op_protocol?: string
   op_status?: string
+  undo_expires_at?: number | null
+}
+
+export interface UndoResponse {
+  id: string
+  status: string
+  op_type: string
+  reverted: string
 }
 
 export interface AuditListResponse {

@@ -175,6 +175,7 @@ class AuditEntry(BaseModel):
     op_type: Optional[str] = None
     op_protocol: Optional[str] = None
     op_status: Optional[str] = None
+    undo_expires_at: Optional[int] = None  # null if not executed or undo window unknown
 
 
 class AuditListResponse(BaseModel):

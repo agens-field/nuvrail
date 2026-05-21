@@ -311,3 +311,39 @@ async def test_audit_export_respects_agent_filter(
     matching = [e for e in entries if e.get("operation_id") == op_three]
     assert matching
     assert all(e.get("agent_id") == str(agent_three) for e in matching)
+
+
+async def test_audit_entry_includes_undo_expires_at(client: httpx.AsyncClient, db_path: Path) -> None:
+    """GET /audit entries include undo_expires_at from staged_operations when present."""
+    import time as _time
+    from gateway.state_db import get_db as _get_db
+
+    now = int(_time.time())
+    undo_exp = now + 86400  # 24h window
+
+    async with _get_db(db_path) as db:
+        await db.execute(
+            """INSERT INTO staged_operations
+               (id, op_type, protocol, description, status, agent_id, created_at, expires_at,
+                executed_at, undo_expires_at)
+               VALUES ('op_undo_test', 'move', 'imap', 'UID MOVE 5 Archive',
+                       'executed', ?, ?, ?, ?, ?)""",
+            (_FAKE_AGENT_ID, now, now + 172800, now, undo_exp),
+        )
+        await db.execute(
+            """INSERT INTO audit_log (timestamp, operation_id, event, actor, agent_id, op_type)
+               VALUES (?, 'op_undo_test', 'executed', 'human', ?, 'move')""",
+            (now, _FAKE_AGENT_ID),
+        )
+        await db.commit()
+
+    resp = await client.get("/api/v1/audit")
+    assert resp.status_code == 200
+    entries = resp.json()["entries"]
+    matching = [e for e in entries if e.get("operation_id") == "op_undo_test"]
+    assert matching, "Expected audit entry for op_undo_test"
+    entry = matching[0]
+    assert entry.get("undo_expires_at") == undo_exp, (
+        f"Expected undo_expires_at={undo_exp}; got {entry.get('undo_expires_at')}"
+    )
+    assert entry.get("op_status") == "executed"

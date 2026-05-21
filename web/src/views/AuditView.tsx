@@ -1,9 +1,15 @@
 import { useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { formatDistanceToNow, format, fromUnixTime } from 'date-fns'
-import { Download, ChevronDown, ChevronRight, RefreshCw } from 'lucide-react'
-import { fetchAuditLog, exportAuditLog, fetchAgents } from '../api/client'
+import { Download, ChevronDown, ChevronRight, RefreshCw, Undo2 } from 'lucide-react'
+import { fetchAuditLog, exportAuditLog, fetchAgents, undoOperation } from '../api/client'
 import type { AuditEntry } from '../types'
+import { toast } from 'sonner'
+
+// Op types the backend undo engine supports.
+const UNDOABLE_OP_TYPES = new Set([
+  'move', 'trash', 'archive', 'mark_read', 'mark_unread', 'star', 'unstar',
+])
 
 const PAGE_SIZE = 20
 
@@ -65,6 +71,30 @@ function RelativeTime({ ts }: { ts: number }) {
 
 function AuditRow({ entry }: { entry: AuditEntry }) {
   const [expanded, setExpanded] = useState(false)
+  const [confirmUndo, setConfirmUndo] = useState(false)
+  const qc = useQueryClient()
+
+  const nowSec = Date.now() / 1000
+  const canUndo =
+    entry.event === 'executed' &&
+    entry.op_status === 'executed' &&
+    entry.op_type != null &&
+    UNDOABLE_OP_TYPES.has(entry.op_type) &&
+    entry.undo_expires_at != null &&
+    entry.undo_expires_at > nowSec
+
+  const undoMutation = useMutation({
+    mutationFn: () => undoOperation(entry.operation_id!),
+    onSuccess: (result) => {
+      toast.success(`Undone: ${result.reverted}`)
+      setConfirmUndo(false)
+      void qc.invalidateQueries({ queryKey: ['audit'] })
+    },
+    onError: (err) => {
+      toast.error(`Undo failed: ${err instanceof Error ? err.message : 'Unknown error'}`)
+      setConfirmUndo(false)
+    },
+  })
 
   const hasDetail = !!(entry.detail || entry.op_description || entry.op_type)
 
@@ -142,6 +172,57 @@ function AuditRow({ entry }: { entry: AuditEntry }) {
                   <pre className="mt-1 p-2 bg-slate-900 rounded text-xs text-slate-300 overflow-auto max-h-32">
                     {JSON.stringify(entry.detail, null, 2)}
                   </pre>
+                </div>
+              )}
+
+              {/* Undo action */}
+              {canUndo && (
+                <div className="pt-2 border-t border-slate-700/50">
+                  {!confirmUndo ? (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); setConfirmUndo(true) }}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium
+                        bg-slate-700 hover:bg-amber-800/60 border border-slate-600 hover:border-amber-600
+                        text-slate-300 hover:text-amber-200 transition-colors"
+                    >
+                      <Undo2 className="w-3.5 h-3.5" />
+                      Undo this operation
+                      {entry.undo_expires_at && (
+                        <span className="text-slate-500 ml-1">
+                          · expires {formatDistanceToNow(fromUnixTime(entry.undo_expires_at), { addSuffix: true })}
+                        </span>
+                      )}
+                    </button>
+                  ) : (
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-amber-300">Reverse this operation on the real mail server?</span>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); undoMutation.mutate() }}
+                        disabled={undoMutation.isPending}
+                        className="px-2 py-1 rounded text-xs font-medium bg-amber-700 hover:bg-amber-600
+                          text-white disabled:opacity-50 transition-colors"
+                      >
+                        {undoMutation.isPending ? 'Undoing…' : 'Confirm undo'}
+                      </button>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); setConfirmUndo(false) }}
+                        className="px-2 py-1 rounded text-xs font-medium bg-slate-700 hover:bg-slate-600
+                          text-slate-300 transition-colors"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Already undone */}
+              {entry.event === 'executed' && entry.op_status === 'reverted' && (
+                <div className="pt-2 border-t border-slate-700/50">
+                  <span className="inline-flex items-center gap-1.5 text-xs text-slate-500">
+                    <Undo2 className="w-3.5 h-3.5" />
+                    This operation was undone
+                  </span>
                 </div>
               )}
             </div>

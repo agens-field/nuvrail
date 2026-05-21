@@ -475,3 +475,9 @@ export async function resetPassword(
 export async function logoutUser(): Promise<{ ok: boolean }> {
   return apiFetch<{ ok: boolean }>('/api/v1/auth/logout', { method: 'POST' })
 }
+
+export async function undoOperation(opId: string): Promise<import('../types').UndoResponse> {
+  return apiFetch<import('../types').UndoResponse>(`/api/v1/operations/${opId}/undo`, {
+    method: 'POST',
+  })
+}
