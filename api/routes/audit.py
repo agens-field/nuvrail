@@ -69,13 +69,18 @@ async def list_audit(
     event: Optional[str] = Query(default=None),
     actor: Optional[str] = Query(default=None),
     agent_id: Optional[int] = Query(default=None, ge=1),
+    op_type: Optional[str] = Query(default=None, description="Filter by operation type (move, trash, smtp_send, …)"),
+    since: Optional[int] = Query(default=None, description="Unix timestamp — only entries at or after this time"),
+    until: Optional[int] = Query(default=None, description="Unix timestamp — only entries at or before this time"),
+    search: Optional[str] = Query(default=None, description="Case-insensitive substring match on operation description"),
     db_path: Path = Depends(get_db_path),
     current_user: dict = Depends(get_current_user),
 ) -> AuditListResponse:
     """
     List audit log entries, newest first, with joined operation context.
 
-    Paginates with limit/offset. Optional filters: event, actor.
+    Paginates with limit/offset.
+    Optional filters: event, actor, agent_id, op_type, since, until, search.
     """
     user_id = current_user["id"]
     conditions: list[str] = [
@@ -100,6 +105,18 @@ async def list_audit(
     if agent_id is not None:
         conditions.append("(a.agent_id = ? OR (a.agent_id IS NULL AND op.agent_id = ?))")
         params.extend([agent_id, agent_id])
+    if op_type is not None:
+        conditions.append("COALESCE(a.op_type, op.op_type) = ?")
+        params.append(op_type)
+    if since is not None:
+        conditions.append("a.timestamp >= ?")
+        params.append(since)
+    if until is not None:
+        conditions.append("a.timestamp <= ?")
+        params.append(until)
+    if search is not None and search.strip():
+        conditions.append("op.description LIKE ?")
+        params.append(f"%{search.strip()}%")
 
     where = "WHERE " + " AND ".join(conditions)
 

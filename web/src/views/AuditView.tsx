@@ -237,20 +237,49 @@ export default function AuditView() {
   const [page, setPage] = useState(0)
   const [eventFilter, setEventFilter] = useState<string | undefined>(undefined)
   const [agentFilter, setAgentFilter] = useState<number | undefined>(undefined)
+  const [opTypeFilter, setOpTypeFilter] = useState<string | undefined>(undefined)
+  const [searchText, setSearchText] = useState('')
+  const [sinceDate, setSinceDate] = useState('')   // ISO date string 'YYYY-MM-DD'
+  const [untilDate, setUntilDate] = useState('')
   const [exporting, setExporting] = useState(false)
+
+  function resetFilters() {
+    setEventFilter(undefined)
+    setAgentFilter(undefined)
+    setOpTypeFilter(undefined)
+    setSearchText('')
+    setSinceDate('')
+    setUntilDate('')
+    setPage(0)
+  }
+
+  const activeFilterCount = [
+    eventFilter, agentFilter, opTypeFilter,
+    searchText || undefined,
+    sinceDate || undefined,
+    untilDate || undefined,
+  ].filter(Boolean).length
 
   const { data: agents } = useQuery({
     queryKey: ['agents'],
     queryFn: fetchAgents,
   })
 
+  // Convert local date strings to unix timestamps for the API
+  const sinceTs = sinceDate ? Math.floor(new Date(sinceDate).getTime() / 1000) : undefined
+  const untilTs = untilDate ? Math.floor(new Date(untilDate + 'T23:59:59').getTime() / 1000) : undefined
+
   const { data, isLoading, isError, refetch, isFetching } = useQuery({
-    queryKey: ['audit', page, eventFilter, agentFilter],
+    queryKey: ['audit', page, eventFilter, agentFilter, opTypeFilter, searchText, sinceDate, untilDate],
     queryFn: () => fetchAuditLog({
       limit: PAGE_SIZE,
       offset: page * PAGE_SIZE,
       event: eventFilter,
       agent_id: agentFilter,
+      op_type: opTypeFilter,
+      since: sinceTs,
+      until: untilTs,
+      search: searchText || undefined,
     }),
     placeholderData: prev => prev,
   })
@@ -314,6 +343,57 @@ export default function AuditView() {
             {exporting ? 'Exporting…' : 'Export JSON'}
           </button>
         </div>
+      </div>
+
+      {/* Filter row: op type + date range + search */}
+      <div className="flex items-center gap-2 mb-3 flex-wrap">
+        <select
+          value={opTypeFilter ?? ''}
+          onChange={(e) => { setOpTypeFilter(e.target.value || undefined); setPage(0) }}
+          className="px-3 py-1.5 rounded-md bg-slate-700 text-sm text-slate-200 border border-slate-600 hover:bg-slate-600"
+        >
+          <option value="">All op types</option>
+          {['move', 'trash', 'archive', 'copy', 'mark_read', 'mark_unread',
+            'star', 'unstar', 'append', 'smtp_send'].map(t => (
+            <option key={t} value={t}>{t}</option>
+          ))}
+        </select>
+
+        <input
+          type="date"
+          value={sinceDate}
+          onChange={(e) => { setSinceDate(e.target.value); setPage(0) }}
+          className="px-3 py-1.5 rounded-md bg-slate-700 text-sm text-slate-200 border border-slate-600"
+          title="From date"
+          placeholder="From"
+        />
+        <span className="text-slate-500 text-sm">–</span>
+        <input
+          type="date"
+          value={untilDate}
+          onChange={(e) => { setUntilDate(e.target.value); setPage(0) }}
+          className="px-3 py-1.5 rounded-md bg-slate-700 text-sm text-slate-200 border border-slate-600"
+          title="To date"
+        />
+
+        <input
+          type="text"
+          value={searchText}
+          onChange={(e) => { setSearchText(e.target.value); setPage(0) }}
+          placeholder="Search description…"
+          className="px-3 py-1.5 rounded-md bg-slate-700 text-sm text-slate-200 border border-slate-600
+            placeholder:text-slate-500 min-w-[180px]"
+        />
+
+        {activeFilterCount > 0 && (
+          <button
+            onClick={resetFilters}
+            className="px-3 py-1.5 rounded-md text-sm text-slate-400 hover:text-slate-200
+              bg-slate-700/50 hover:bg-slate-700 border border-slate-600 transition-colors"
+          >
+            Clear all ({activeFilterCount})
+          </button>
+        )}
       </div>
 
       {/* Event filter pills */}

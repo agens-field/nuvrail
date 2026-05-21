@@ -347,3 +347,98 @@ async def test_audit_entry_includes_undo_expires_at(client: httpx.AsyncClient, d
         f"Expected undo_expires_at={undo_exp}; got {entry.get('undo_expires_at')}"
     )
     assert entry.get("op_status") == "executed"
+
+
+async def test_audit_filter_by_op_type(client: httpx.AsyncClient, db_path: Path) -> None:
+    """?op_type filters entries to only those with a matching operation type."""
+    import time as _time
+    from gateway.state_db import get_db as _get_db
+
+    now = int(_time.time())
+    async with _get_db(db_path) as db:
+        for ot in ('move', 'trash'):
+            op_id = f'op_type_filter_{ot}'
+            await db.execute(
+                """INSERT OR IGNORE INTO staged_operations
+                   (id, op_type, protocol, description, status, agent_id, created_at, expires_at)
+                   VALUES (?, ?, 'imap', ?, 'pending', ?, ?, ?)""",
+                (op_id, ot, f'test {ot}', _FAKE_AGENT_ID, now, now + 172800),
+            )
+            await db.execute(
+                """INSERT INTO audit_log (timestamp, operation_id, event, actor, agent_id, op_type)
+                   VALUES (?, ?, 'staged', 'ai_agent', ?, ?)""",
+                (now, op_id, _FAKE_AGENT_ID, ot),
+            )
+        await db.commit()
+
+    resp = await client.get("/api/v1/audit?op_type=move")
+    assert resp.status_code == 200
+    entries = resp.json()["entries"]
+    assert all(
+        e.get("op_type") == "move" or e.get("op_type") is None
+        for e in entries
+        if e.get("operation_id", "").startswith("op_type_filter_")
+    )
+    op_types = {e["op_type"] for e in entries if e.get("operation_id", "").startswith("op_type_filter_")}
+    assert "trash" not in op_types
+
+
+async def test_audit_filter_by_since_until(client: httpx.AsyncClient, db_path: Path) -> None:
+    """?since and ?until filter entries by timestamp."""
+    import time as _time
+    from gateway.state_db import get_db as _get_db
+
+    base = int(_time.time())
+    old_ts = base - 10000
+    async with _get_db(db_path) as db:
+        await db.execute(
+            """INSERT INTO audit_log (timestamp, event, actor, agent_id)
+               VALUES (?, 'staged', 'ai_agent', ?)""",
+            (old_ts, _FAKE_AGENT_ID),
+        )
+        await db.commit()
+
+    # since=now should exclude the old entry
+    resp = await client.get(f"/api/v1/audit?since={base - 100}")
+    assert resp.status_code == 200
+    timestamps = [e["timestamp"] for e in resp.json()["entries"]]
+    assert all(ts >= base - 100 for ts in timestamps), "since filter not working"
+
+    # until=old_ts+1 should only return old entries
+    resp = await client.get(f"/api/v1/audit?until={old_ts}")
+    assert resp.status_code == 200
+    timestamps2 = [e["timestamp"] for e in resp.json()["entries"]]
+    assert all(ts <= old_ts for ts in timestamps2), "until filter not working"
+
+
+async def test_audit_search_by_description(client: httpx.AsyncClient, db_path: Path) -> None:
+    """?search filters entries by operation description substring."""
+    import time as _time
+    from gateway.state_db import get_db as _get_db
+
+    now = int(_time.time())
+    async with _get_db(db_path) as db:
+        await db.execute(
+            """INSERT OR IGNORE INTO staged_operations
+               (id, op_type, protocol, description, status, agent_id, created_at, expires_at)
+               VALUES ('op_search_needle', 'move', 'imap', 'Move unique_needle_xyz to Archive',
+                       'pending', ?, ?, ?)""",
+            (_FAKE_AGENT_ID, now, now + 172800),
+        )
+        await db.execute(
+            """INSERT INTO audit_log (timestamp, operation_id, event, actor, agent_id, op_type)
+               VALUES (?, 'op_search_needle', 'staged', 'ai_agent', ?, 'move')""",
+            (now, _FAKE_AGENT_ID),
+        )
+        await db.commit()
+
+    resp = await client.get("/api/v1/audit?search=unique_needle_xyz")
+    assert resp.status_code == 200
+    entries = resp.json()["entries"]
+    assert any(e.get("operation_id") == "op_search_needle" for e in entries), (
+        "Expected search to return the needle entry"
+    )
+
+    resp2 = await client.get("/api/v1/audit?search=zzz_no_match_zzz")
+    assert resp2.status_code == 200
+    assert all(e.get("operation_id") != "op_search_needle" for e in resp2.json()["entries"])

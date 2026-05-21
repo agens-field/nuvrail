@@ -282,7 +282,17 @@ export async function batchRejectOperations(ids: string[]): Promise<BatchRejectR
 // ---------------------------------------------------------------------------
 
 export async function fetchAuditLog(
-  params: { limit?: number; offset?: number; event?: string; actor?: string; agent_id?: number } = {}
+  params: {
+    limit?: number
+    offset?: number
+    event?: string
+    actor?: string
+    agent_id?: number
+    op_type?: string
+    since?: number
+    until?: number
+    search?: string
+  } = {}
 ): Promise<AuditListResponse> {
   const qs = new URLSearchParams()
   if (params.limit !== undefined) qs.set('limit', String(params.limit))
@@ -290,6 +300,10 @@ export async function fetchAuditLog(
   if (params.event) qs.set('event', params.event)
   if (params.actor) qs.set('actor', params.actor)
   if (params.agent_id !== undefined) qs.set('agent_id', String(params.agent_id))
+  if (params.op_type) qs.set('op_type', params.op_type)
+  if (params.since !== undefined) qs.set('since', String(params.since))
+  if (params.until !== undefined) qs.set('until', String(params.until))
+  if (params.search) qs.set('search', params.search)
   const q = qs.toString()
   return apiFetch<AuditListResponse>(`/api/v1/audit${q ? `?${q}` : ''}`)
 }
