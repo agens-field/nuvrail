@@ -108,6 +108,7 @@ async def create_operation(
     flags_remove: Optional[list] = None,
     snapshot: Optional[dict] = None,
     is_urgent: Optional[int] = None,
+    batch_id: Optional[str] = None,
     db_path: Path = DB_PATH,
 ) -> str:
     """Insert a staged_operations row + audit_log entry. Returns operation ID.
@@ -130,8 +131,8 @@ async def create_operation(
                 id, created_at, expires_at, status, op_type, protocol,
                 imap_command, smtp_envelope, description, agent_id,
                 message_ids, folder_from, folder_to, flags_add, flags_remove,
-                snapshot, is_urgent
-            ) VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                snapshot, is_urgent, batch_id
+            ) VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 op_id,
@@ -150,6 +151,7 @@ async def create_operation(
                 json.dumps(flags_remove) if flags_remove is not None else None,
                 json.dumps(snapshot) if snapshot is not None else None,
                 is_urgent,
+                batch_id,
             ),
         )
         await db.execute(

@@ -1,8 +1,9 @@
 import { useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
-import { Inbox, RefreshCw } from 'lucide-react'
+import { Inbox, Layers, RefreshCw } from 'lucide-react'
 import { fetchOperations, batchApproveOperations, batchRejectOperations } from '../api/client'
+import type { Operation } from '../types'
 import OperationCard from '../components/OperationCard'
 import LoadingSkeleton from '../components/LoadingSkeleton'
 
@@ -25,6 +26,21 @@ export default function PendingView() {
     if (urgentB !== urgentA) return urgentB - urgentA  // urgent first
     return a.created_at - b.created_at                 // then oldest first
   })
+  // Group ops that share a batch_id; ungrouped ops get their own singleton entry.
+  type DisplayGroup = { batchId: string | null; ops: Operation[] }
+  const displayGroups: DisplayGroup[] = []
+  const seenBatch = new Set<string>()
+  for (const op of pendingOps) {
+    const bid = op.batch_id ?? null
+    if (bid && seenBatch.has(bid)) continue
+    if (bid) {
+      seenBatch.add(bid)
+      displayGroups.push({ batchId: bid, ops: pendingOps.filter((o) => o.batch_id === bid) })
+    } else {
+      displayGroups.push({ batchId: null, ops: [op] })
+    }
+  }
+
   const allPendingIds = pendingOps.map((op) => op.id)
   const allSelected =
     allPendingIds.length > 0 && allPendingIds.every((id) => selectedIds.has(id))
@@ -188,14 +204,54 @@ export default function PendingView() {
 
       {!isLoading && data && data.operations.length > 0 && (
         <div className="flex flex-col gap-4">
-          {data.operations.map((op) => (
-            <OperationCard
-              key={op.id}
-              operation={op}
-              selected={selectedIds.has(op.id)}
-              onToggleSelect={handleToggleSelect}
-            />
-          ))}
+          {displayGroups.map((group) =>
+            group.batchId && group.ops.length > 1 ? (
+              // Batched group: show a container card with all ops inside
+              <div
+                key={group.batchId}
+                className="rounded-lg border border-indigo-700/50 bg-indigo-950/20 overflow-hidden"
+              >
+                <div className="flex items-center gap-2 px-4 py-2 border-b border-indigo-700/30 bg-indigo-900/20">
+                  <Layers className="w-3.5 h-3.5 text-indigo-400" />
+                  <span className="text-xs font-medium text-indigo-300">
+                    Batch — {group.ops.length} operations
+                  </span>
+                  <span className="ml-auto flex items-center gap-2">
+                    <button
+                      onClick={() =>
+                        setSelectedIds((prev) => {
+                          const next = new Set(prev)
+                          group.ops.forEach((o) => next.add(o.id))
+                          return next
+                        })
+                      }
+                      className="text-xs text-indigo-400 hover:text-indigo-200 transition-colors"
+                    >
+                      Select all
+                    </button>
+                  </span>
+                </div>
+                <div className="flex flex-col gap-0 divide-y divide-indigo-900/40">
+                  {group.ops.map((op) => (
+                    <OperationCard
+                      key={op.id}
+                      operation={op}
+                      selected={selectedIds.has(op.id)}
+                      onToggleSelect={handleToggleSelect}
+                    />
+                  ))}
+                </div>
+              </div>
+            ) : (
+              // Ungrouped (or single-op batch): plain card
+              <OperationCard
+                key={group.ops[0].id}
+                operation={group.ops[0]}
+                selected={selectedIds.has(group.ops[0].id)}
+                onToggleSelect={handleToggleSelect}
+              />
+            )
+          )}
         </div>
       )}
     </div>

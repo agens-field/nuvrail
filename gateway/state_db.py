@@ -203,6 +203,14 @@ async def init_db(path: Path = DB_PATH) -> None:
                 "ALTER TABLE staged_operations "
                 "ADD COLUMN rejection_notified INTEGER NOT NULL DEFAULT 0"
             )
+        if "batch_id" not in staged_cols:
+            await db.execute(
+                "ALTER TABLE staged_operations ADD COLUMN batch_id TEXT"
+            )
+            await db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_staged_ops_batch_id"
+                " ON staged_operations(batch_id)"
+            )
 
         new_columns = [
             ("oauth2_provider",              "TEXT"),

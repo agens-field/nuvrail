@@ -31,6 +31,7 @@ export interface Operation {
   flags_remove?: string[]
   is_urgent?: number   // 1 = urgent (smtp_send, trash); show at top with red styling
   error?: string
+  batch_id?: string | null
 }
 
 export interface OperationsResponse {

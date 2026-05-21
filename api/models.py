@@ -38,6 +38,7 @@ class OperationResponse(BaseModel):
     is_urgent: int = 0
     error: Optional[str] = None
     message_previews: List[MessagePreview] = []
+    batch_id: Optional[str] = None
 
     @field_validator("smtp_envelope", mode="before")
     @classmethod

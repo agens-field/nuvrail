@@ -64,6 +64,7 @@ from gateway.provider_profiles import (
 )
 from gateway.credentials import decrypt_credential
 from gateway.security_controls import build_auth_abuse_protector
+from gateway.batching import get_or_create_batch
 from gateway.staging import create_operation
 from gateway.state_db import (
     DB_PATH,
@@ -391,6 +392,10 @@ async def _client_to_upstream(
                     )
                 else:
                     parsed_op = parse_append(tag, append_folder, append_flags, literal_size)
+                    _append_batch_id = await get_or_create_batch(
+                        folder=append_folder, protocol="imap",
+                        agent_id=session.get("agent_id"),
+                    )
                     op_id = await create_operation(
                         op_type=parsed_op.op_type,
                         protocol="imap",
@@ -399,6 +404,7 @@ async def _client_to_upstream(
                         imap_command=parsed_op.imap_command,
                         folder_to=parsed_op.folder_to,
                         flags_add=parsed_op.flags_add,
+                        batch_id=_append_batch_id,
                         db_path=db_path,
                     )
                     resp = f"{tag} OK [STAGED] Operation queued — ID: {op_id}\r\n"
@@ -491,6 +497,10 @@ async def _client_to_upstream(
             if _pending is not None and not _is_store_deleted:
                 try:
                     _flush_op = parse_copy(_pending.tag, _pending.uid_set, _pending.destination)
+                    _flush_batch_id = await get_or_create_batch(
+                        folder=session.get("folder") or "INBOX", protocol="imap",
+                        agent_id=session.get("agent_id"),
+                    )
                     _flush_op_id = await create_operation(
                         op_type=_flush_op.op_type,
                         protocol="imap",
@@ -500,6 +510,7 @@ async def _client_to_upstream(
                         message_ids=[_pending.uid_set],
                         folder_from=session.get("folder"),
                         folder_to=_flush_op.folder_to,
+                        batch_id=_flush_batch_id,
                         db_path=db_path,
                     )
                     logger.info(
@@ -691,6 +702,11 @@ async def _client_to_upstream(
                                 peer, move_exc,
                             )
 
+                    _write_folder = parsed_op.folder_from or session.get("folder") or "INBOX"
+                    _write_batch_id = await get_or_create_batch(
+                        folder=_write_folder, protocol="imap",
+                        agent_id=session.get("agent_id"),
+                    )
                     op_id = await create_operation(
                         op_type=parsed_op.op_type,
                         protocol="imap",
@@ -706,6 +722,7 @@ async def _client_to_upstream(
                         flags_add=parsed_op.flags_add if parsed_op.flags_add else None,
                         flags_remove=parsed_op.flags_remove if parsed_op.flags_remove else None,
                         snapshot=op_snapshot,
+                        batch_id=_write_batch_id,
                         db_path=db_path,
                     )
                     resp = f"{parsed.tag} OK [STAGED] Operation queued — ID: {op_id}\r\n"

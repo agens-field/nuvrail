@@ -41,6 +41,7 @@ import asyncio
 import secrets
 import time
 from dataclasses import dataclass, field
+from typing import Optional
 
 # ---------------------------------------------------------------------------
 # In-memory batch registry
@@ -73,8 +74,9 @@ async def get_or_create_batch(
     folder: str,
     protocol: str = "imap",
     window_seconds: int = 30,
+    agent_id: Optional[int] = None,
 ) -> str:
-    """Return an existing open batch_id for the folder, or create a new one.
+    """Return an existing open batch_id for the folder+agent, or create a new one.
 
     Thread-safe (asyncio lock). Idempotent within the window.
 
@@ -84,11 +86,13 @@ async def get_or_create_batch(
                   send is its own approval card), so pass protocol="smtp"
                   only if you explicitly want SMTP batching.
         window_seconds: How long (seconds) to keep a batch open for new ops.
+        agent_id: Scopes the batch to a specific agent so different agents
+                  don't share a batch even if they write to the same folder.
 
     Returns:
         A batch_id string (e.g. "batch_AbCdEf12").
     """
-    key = (folder, protocol)
+    key = (folder, protocol, agent_id)
     async with _lock:
         existing = _batches.get(key)
         if existing is not None and existing.is_open():
