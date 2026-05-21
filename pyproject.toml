@@ -16,7 +16,9 @@ dependencies = [
     "python-dotenv>=1.0.0",
     "aiosmtplib>=3.0.0",
     "bcrypt>=4.0.0",
-    "python-jose[cryptography]>=3.3.0",
+    # python-jose removed 2026-05-20: listed as a dependency but never imported
+    # anywhere in the codebase. Removing eliminates PYSEC-2025-185 (no upstream fix
+    # available — python-jose is largely unmaintained).
     "passlib[bcrypt]>=1.7.4",
 ]
 
