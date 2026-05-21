@@ -28,7 +28,7 @@ _Completed: 2026-05-20 · Reviewer: KC (CTO) · Due: 2026-06-12_
 - The May 2026 incident (`master.key` + `vapid_private.pem` accidentally pushed to public repo) was fully remediated: `git-filter-repo` purged the files from history, keys were rotated on the server, and `.gitignore` was updated to block future accidents ✅
 
 **Recommendation:**  
-Run `gitleaks` or `trufflehog` as a pre-push git hook before public GitHub exposure of the agens-field repos. Neither tool is installed in the dev environment yet — install via `brew install gitleaks` or `pip install trufflehog`.
+Run `gitleaks` or `trufflehog` as a pre-push git hook before public GitHub exposure of the agens-field repos. Neither tool is installed in the dev environment yet. GitHub #23 tracks this work.
 
 ---
 
@@ -212,11 +212,10 @@ The IMAP and SMTP proxies are **not** directly reachable from the public interne
 
 ## Outstanding Actions (Pre-Launch Gate)
 
-| Priority | Item | Owner | Due |
-|---|---|---|---|
-| 🔴 BLOCKER | Set `NUVRAIL_CORS_ORIGINS` in production secrets (GitHub #19) | Martin | Before launch |
-| 🟠 HIGH | Add `slowapi` rate limiting to API auth endpoints | KC | June 12 |
-| 🟠 HIGH | Generate independent `NUVRAIL_MASTER_KEY` for production | Martin | Before launch |
-| 🟡 MEDIUM | Generate fresh VAPID keypair for production | Martin | Before launch |
-| 🟡 MEDIUM | Install `gitleaks` pre-push hook | KC | Before public repo exposure |
-| 🟢 LOW | Run `npm update` on build deps to clear audit findings | KC | Before Phase 2 beta |
+| Priority | Item | Owner | GitHub | Due |
+|---|---|---|---|---|
+| 🔴 BLOCKER | Set `NUVRAIL_CORS_ORIGINS` in production secrets | Martin | #19 | Before launch |
+| 🟠 HIGH | Add `slowapi` rate limiting to API auth endpoints | KC | #20 | June 12 |
+| 🟠 HIGH | Rotate `NUVRAIL_MASTER_KEY` and VAPID keys for production | Martin | #21 | Before launch |
+| 🟡 MEDIUM | Add `gitleaks` pre-push hook to both repos | KC | #23 | Before public repo exposure |
+| 🟢 LOW | Run `npm update` on build deps to clear audit findings | KC | #22 | Before Phase 2 beta |
