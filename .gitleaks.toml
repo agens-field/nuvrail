@@ -1,0 +1,87 @@
+# .gitleaks.toml — Nuvrail-specific secret scanning rules
+#
+# Extends gitleaks default ruleset with Nuvrail-specific patterns.
+# Run via: gitleaks detect --source . --no-git
+# Pre-push hook runs this automatically if gitleaks is installed.
+#
+# Added 2026-05-26: prevents credential leaks like the May 7 incident.
+
+title = "Nuvrail Secret Scanning Rules"
+
+# ---------------------------------------------------------------------------
+# Path-level blocks — files that should never be committed
+# ---------------------------------------------------------------------------
+
+[[rules]]
+id = "nuvrail-env-secrets"
+description = "Block .env files that contain secret-looking values"
+regex = '''(?i)(password|secret|token|key|private)\s*=\s*.{8,}'''
+path = '''\.env(\..+)?$'''
+tags = ["env", "secret", "nuvrail"]
+
+[[rules]]
+id = "nuvrail-master-key"
+description = "Block master.key (AES-256-GCM key material)"
+regex = '''.+'''
+path = '''master\.key$'''
+tags = ["key", "encryption", "nuvrail"]
+
+[[rules]]
+id = "nuvrail-vapid-private"
+description = "Block VAPID private key (Web Push credentials)"
+regex = '''.+'''
+path = '''vapid_private\.pem$'''
+tags = ["pem", "vapid", "push", "nuvrail"]
+
+[[rules]]
+id = "nuvrail-data-dir"
+description = "Block files under the Nuvrail runtime data directory (~/.nuvrail/)"
+regex = '''.+'''
+path = '''(^|/)\.nuvrail/'''
+tags = ["runtime-data", "nuvrail"]
+
+[[rules]]
+id = "nuvrail-client-secret-json"
+description = "Block Google OAuth2 client_secret.json files"
+regex = '''"client_secret"\s*:'''
+path = '''client_secret.*\.json$'''
+tags = ["oauth2", "google", "nuvrail"]
+
+# ---------------------------------------------------------------------------
+# Content-level rules — inline secret patterns
+# ---------------------------------------------------------------------------
+
+[[rules]]
+id = "nuvrail-hardcoded-aes-key"
+description = "Hardcoded AES/Fernet key material (32-byte base64)"
+regex = '''[A-Za-z0-9+/]{43}={0,2}'''
+secretGroup = 0
+entropy = 4.5
+tags = ["encryption", "nuvrail"]
+
+[[rules]]
+id = "nuvrail-agent-token"
+description = "Nuvrail agent bearer token pattern"
+regex = '''nuvrail_[0-9a-f]{16}'''
+tags = ["token", "nuvrail"]
+
+# ---------------------------------------------------------------------------
+# Allowlist — test fixtures and known-safe patterns
+# ---------------------------------------------------------------------------
+
+[allowlist]
+description = "Nuvrail allowlist — test fixtures and docs"
+regexes = [
+    # Pytest placeholder credentials used in tests
+    '''hunter2''',
+    '''apppassword''',
+    '''fake_(client_id|client_secret|refresh_token)''',
+    # README / SPEC code examples
+    '''example\.com''',
+]
+paths = [
+    # Test files may contain fixture credentials
+    '''tests/''',
+    # This config file itself
+    '''\.gitleaks\.toml''',
+]

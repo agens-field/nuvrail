@@ -23,9 +23,14 @@ import os
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
 
+from api.limiter import limiter
 from api.routes import audit, auth, oauth2, operations, push, rules
 from gateway.expiry import run_expiry_loop
 from gateway.state_db import DB_PATH, init_db
@@ -64,6 +69,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
 
 app = FastAPI(title="Nuvrail Approval API", version="0.1.0", lifespan=lifespan)
+
+# Rate limiting (slowapi) — attached before CORS so 429s get proper headers.
+# The limiter is stored on app.state so route decorators can reference it.
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_middleware(SlowAPIMiddleware)
 
 _CORS_ORIGINS_RAW = os.environ.get("NUVRAIL_CORS_ORIGINS", "")
 if _CORS_ORIGINS_RAW.strip():

@@ -27,6 +27,7 @@ from typing import List, Union
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 
+from api.limiter import limiter
 from api.auth import (
     generate_token,
     get_current_user,
@@ -192,6 +193,7 @@ async def register(
 
 
 @router.post("/auth/login", response_model=LoginResponse)
+@limiter.limit("10/minute")
 async def login(
     body: LoginRequest,
     request: Request,
@@ -279,8 +281,10 @@ async def me(
 
 
 @router.post("/agents", response_model=AgentCreateResponse, status_code=201)
+@limiter.limit("5/minute")
 async def create_agent(
     body: AgentCreateRequest,
+    request: Request,
     current_user: dict = Depends(get_current_user),
     db_path: Path = Depends(get_db_path),
 ) -> Union[AgentCreateResponse, JSONResponse]:

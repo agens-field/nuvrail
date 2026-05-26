@@ -20,6 +20,7 @@ dependencies = [
     # anywhere in the codebase. Removing eliminates PYSEC-2025-185 (no upstream fix
     # available — python-jose is largely unmaintained).
     "passlib[bcrypt]>=1.7.4",
+    "slowapi>=0.1.9",
 ]
 
 [project.optional-dependencies]
