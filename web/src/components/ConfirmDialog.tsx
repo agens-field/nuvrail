@@ -21,18 +21,18 @@ export default function ConfirmDialog({
       onClick={onCancel}
     >
       <div
-        className="bg-slate-800 rounded-lg border border-slate-600 p-6 max-w-sm w-full shadow-xl"
+        className="bg-surface rounded-lg border border-edge p-6 max-w-sm w-full shadow-xl"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center gap-3 mb-3">
           <AlertTriangle className="w-5 h-5 text-orange-400 flex-shrink-0" />
-          <h2 className="font-semibold text-slate-100">{title}</h2>
+          <h2 className="font-semibold text-fg">{title}</h2>
         </div>
-        <p className="text-sm text-slate-400 mb-6">{message}</p>
+        <p className="text-sm text-fg-3 mb-6">{message}</p>
         <div className="flex justify-end gap-3">
           <button
             onClick={onCancel}
-            className="px-4 py-2 rounded-md font-medium text-sm bg-slate-700 hover:bg-slate-600 text-slate-200 border border-slate-600 transition-colors"
+            className="px-4 py-2 rounded-md font-medium text-sm bg-surface hover:bg-surface-hi text-fg border border-edge transition-colors"
           >
             Cancel
           </button>

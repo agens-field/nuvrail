@@ -130,10 +130,10 @@ export default function OAuthCallbackView() {
   // -------------------------------------------------------------------------
   if (status === 'polling') {
     return (
-      <div className="max-w-lg mx-auto mt-16 flex flex-col items-center gap-4 text-slate-400">
-        <Mail className="w-10 h-10 text-indigo-400 animate-pulse" />
-        <p className="text-slate-300 font-medium">Connecting your Gmail account…</p>
-        <p className="text-sm text-slate-500">This usually takes just a moment.</p>
+      <div className="max-w-lg mx-auto mt-16 flex flex-col items-center gap-4 text-fg-3">
+        <Mail className="w-10 h-10 text-accent animate-pulse" />
+        <p className="text-fg-2 font-medium">Connecting your Gmail account…</p>
+        <p className="text-sm text-fg-3">This usually takes just a moment.</p>
       </div>
     )
   }
@@ -144,12 +144,12 @@ export default function OAuthCallbackView() {
   if (status === 'error') {
     return (
       <div className="max-w-lg mx-auto mt-16">
-        <div className="bg-slate-800 border border-red-700 rounded-lg p-6 space-y-4">
+        <div className="bg-surface border border-red-700 rounded-lg p-6 space-y-4">
           <h2 className="text-lg font-semibold text-red-400">Gmail connection failed</h2>
-          <p className="text-slate-300 text-sm">{errorMsg ?? 'An unknown error occurred.'}</p>
+          <p className="text-fg-2 text-sm">{errorMsg ?? 'An unknown error occurred.'}</p>
           <button
             onClick={() => navigate('/agents')}
-            className="text-indigo-400 hover:text-indigo-300 text-sm underline"
+            className="text-accent hover:text-accent text-sm underline"
           >
             ← Try again
           </button>
@@ -169,33 +169,33 @@ export default function OAuthCallbackView() {
       </div>
 
       {result && (
-        <div className="bg-slate-800 border border-amber-500 rounded-lg p-4 font-mono text-sm space-y-2">
+        <div className="bg-surface border border-amber-500 rounded-lg p-4 font-mono text-sm space-y-2">
           <p className="text-amber-400 font-semibold mb-3">⚠ Shown once — save these now</p>
           {result.upstream_user && (
-            <div className="text-slate-300">
-              <span className="text-slate-500">Gmail address: </span>
+            <div className="text-fg-2">
+              <span className="text-fg-3">Gmail address: </span>
               {result.upstream_user}
             </div>
           )}
-          <div className="text-slate-300">
-            <span className="text-slate-500">IMAP server:   </span>{PROXY_HOST}
+          <div className="text-fg-2">
+            <span className="text-fg-3">IMAP server:   </span>{PROXY_HOST}
           </div>
-          <div className="text-slate-300">
-            <span className="text-slate-500">IMAP port:     </span>993
+          <div className="text-fg-2">
+            <span className="text-fg-3">IMAP port:     </span>993
           </div>
-          <div className="text-slate-300">
-            <span className="text-slate-500">SMTP port:     </span>587
+          <div className="text-fg-2">
+            <span className="text-fg-3">SMTP port:     </span>587
           </div>
-          <div className="text-slate-300">
-            <span className="text-slate-500">Username:      </span>
-            <span className="text-indigo-300">{result.agent_username}</span>
+          <div className="text-fg-2">
+            <span className="text-fg-3">Username:      </span>
+            <span className="text-accent">{result.agent_username}</span>
           </div>
           <div className="flex items-center gap-2">
-            <span className="text-slate-500">Password:      </span>
-            <span className="text-indigo-300 break-all">{result.agent_token}</span>
+            <span className="text-fg-3">Password:      </span>
+            <span className="text-accent break-all">{result.agent_token}</span>
             <button
               onClick={copyToken}
-              className="ml-2 shrink-0 bg-slate-600 hover:bg-slate-500 text-slate-200 text-xs px-2 py-1 rounded"
+              className="ml-2 shrink-0 bg-slate-600 hover:bg-slate-500 text-fg-2 text-xs px-2 py-1 rounded"
             >
               {copied ? 'Copied!' : 'Copy'}
             </button>
@@ -209,7 +209,7 @@ export default function OAuthCallbackView() {
           sessionStorage.removeItem(OAUTH_RESULT_KEY)
           navigate('/agents')
         }}
-        className="bg-indigo-600 hover:bg-indigo-700 text-white font-medium py-2 px-4 rounded transition-colors"
+        className="bg-accent hover:bg-accent-hi text-white font-medium py-2 px-4 rounded transition-colors"
       >
         Done
       </button>

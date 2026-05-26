@@ -200,15 +200,15 @@ export default function RulesView() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-xl font-semibold text-slate-100">Auto-approval Rules</h1>
-          <p className="text-sm text-slate-400 mt-1">
+          <h1 className="text-xl font-semibold text-fg">Auto-approval Rules</h1>
+          <p className="text-sm text-fg-3 mt-1">
             Create filters to auto-approve or auto-reject predictable operations.
           </p>
         </div>
         <button
           onClick={() => void refetch()}
           disabled={isFetching}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium bg-slate-700 hover:bg-slate-600 text-slate-200 border border-slate-600 transition-colors disabled:opacity-50"
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium bg-surface-hi hover:bg-edge text-fg-2 border border-edge transition-colors disabled:opacity-50"
           title="Refresh rules"
         >
           <RefreshCw className={`w-3.5 h-3.5 ${isFetching ? 'animate-spin' : ''}`} />
@@ -216,19 +216,19 @@ export default function RulesView() {
         </button>
       </div>
 
-      <section className="rounded-lg border border-slate-700 bg-slate-800/40 p-4">
+      <section className="rounded-lg border border-edge bg-surface/40 p-4">
         <div className="flex items-center gap-2 mb-4">
-          <Plus className="w-4 h-4 text-indigo-400" />
-          <h2 className="text-sm font-semibold text-slate-100">Add rule</h2>
+          <Plus className="w-4 h-4 text-accent" />
+          <h2 className="text-sm font-semibold text-fg">Add rule</h2>
         </div>
         <form onSubmit={(e) => void handleCreateRule(e)} className="space-y-4">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             <div>
-              <label className="block text-xs font-medium text-slate-400 mb-1">Op type</label>
+              <label className="block text-xs font-medium text-fg-3 mb-1">Op type</label>
               <select
                 value={form.op_type}
                 onChange={(e) => setForm((prev) => ({ ...prev, op_type: e.target.value }))}
-                className="w-full rounded-md bg-slate-700 border border-slate-600 px-3 py-2 text-sm text-slate-200"
+                className="w-full rounded-md bg-surface-hi border border-edge px-3 py-2 text-sm text-fg-2"
               >
                 {OP_TYPE_OPTIONS.map((option) => (
                   <option key={option.value || 'any'} value={option.value}>
@@ -238,8 +238,8 @@ export default function RulesView() {
               </select>
             </div>
             <div>
-              <label className="block text-xs font-medium text-slate-400 mb-1">Action</label>
-              <div className="flex items-center gap-4 rounded-md bg-slate-700 border border-slate-600 px-3 py-2 text-sm text-slate-200">
+              <label className="block text-xs font-medium text-fg-3 mb-1">Action</label>
+              <div className="flex items-center gap-4 rounded-md bg-surface-hi border border-edge px-3 py-2 text-sm text-fg-2">
                 <label className="inline-flex items-center gap-2">
                   <input
                     type="radio"
@@ -261,36 +261,36 @@ export default function RulesView() {
               </div>
             </div>
             <div>
-              <label className="block text-xs font-medium text-slate-400 mb-1">
+              <label className="block text-xs font-medium text-fg-3 mb-1">
                 Sender pattern
               </label>
               <input
                 value={form.sender_pattern}
                 onChange={(e) => setForm((prev) => ({ ...prev, sender_pattern: e.target.value }))}
                 placeholder="*@newsletter.com"
-                className="w-full rounded-md bg-slate-700 border border-slate-600 px-3 py-2 text-sm text-slate-200 placeholder:text-slate-500"
+                className="w-full rounded-md bg-surface-hi border border-edge px-3 py-2 text-sm text-fg-2 placeholder:text-fg-3"
               />
             </div>
             <div>
-              <label className="block text-xs font-medium text-slate-400 mb-1">
+              <label className="block text-xs font-medium text-fg-3 mb-1">
                 Source folder (optional)
               </label>
               <input
                 value={form.folder_from}
                 onChange={(e) => setForm((prev) => ({ ...prev, folder_from: e.target.value }))}
                 placeholder="INBOX"
-                className="w-full rounded-md bg-slate-700 border border-slate-600 px-3 py-2 text-sm text-slate-200 placeholder:text-slate-500"
+                className="w-full rounded-md bg-surface-hi border border-edge px-3 py-2 text-sm text-fg-2 placeholder:text-fg-3"
               />
             </div>
           </div>
           <div>
-            <label className="block text-xs font-medium text-slate-400 mb-1">Description</label>
+            <label className="block text-xs font-medium text-fg-3 mb-1">Description</label>
             <input
               value={form.description}
               onChange={(e) => setForm((prev) => ({ ...prev, description: e.target.value }))}
               placeholder="Auto-approve mark_read from newsletters"
               required
-              className="w-full rounded-md bg-slate-700 border border-slate-600 px-3 py-2 text-sm text-slate-200 placeholder:text-slate-500"
+              className="w-full rounded-md bg-surface-hi border border-edge px-3 py-2 text-sm text-fg-2 placeholder:text-fg-3"
             />
           </div>
           <div className="rounded-md border border-indigo-800/60 bg-indigo-900/20 px-3 py-2 text-sm text-indigo-100">
@@ -299,7 +299,7 @@ export default function RulesView() {
           <button
             type="submit"
             disabled={createMutation.isPending}
-            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-md text-sm font-medium bg-indigo-600 hover:bg-indigo-500 text-white transition-colors disabled:opacity-50"
+            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-md text-sm font-medium bg-accent hover:bg-accent-hi text-white transition-colors disabled:opacity-50"
           >
             <Plus className="w-3.5 h-3.5" />
             {createMutation.isPending ? 'Adding…' : 'Add rule'}
@@ -308,20 +308,20 @@ export default function RulesView() {
       </section>
 
       {/* Rule test panel */}
-      <section className="rounded-lg border border-slate-700 bg-slate-800/40 p-4">
+      <section className="rounded-lg border border-edge bg-surface/40 p-4">
         <div className="flex items-center gap-2 mb-4">
           <FlaskConical className="w-4 h-4 text-amber-400" />
-          <h2 className="text-sm font-semibold text-slate-100">Test rules</h2>
-          <span className="text-xs text-slate-400 ml-1">— dry-run a sample operation against your ruleset</span>
+          <h2 className="text-sm font-semibold text-fg">Test rules</h2>
+          <span className="text-xs text-fg-3 ml-1">— dry-run a sample operation against your ruleset</span>
         </div>
         <form onSubmit={(e) => void handleTestRule(e)} className="space-y-3">
           <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
             <div>
-              <label className="block text-xs font-medium text-slate-400 mb-1">Op type <span className="text-red-400">*</span></label>
+              <label className="block text-xs font-medium text-fg-3 mb-1">Op type <span className="text-red-400">*</span></label>
               <select
                 value={testForm.op_type}
                 onChange={(e) => { setTestForm((p) => ({ ...p, op_type: e.target.value })); setTestResult(null) }}
-                className="w-full rounded-md bg-slate-700 border border-slate-600 px-3 py-2 text-sm text-slate-200"
+                className="w-full rounded-md bg-surface-hi border border-edge px-3 py-2 text-sm text-fg-2"
               >
                 <option value="">— select —</option>
                 {OP_TYPE_OPTIONS.filter((o) => o.value).map((o) => (
@@ -330,21 +330,21 @@ export default function RulesView() {
               </select>
             </div>
             <div>
-              <label className="block text-xs font-medium text-slate-400 mb-1">Sender (optional)</label>
+              <label className="block text-xs font-medium text-fg-3 mb-1">Sender (optional)</label>
               <input
                 value={testForm.sender}
                 onChange={(e) => { setTestForm((p) => ({ ...p, sender: e.target.value })); setTestResult(null) }}
                 placeholder="digest@example.com"
-                className="w-full rounded-md bg-slate-700 border border-slate-600 px-3 py-2 text-sm text-slate-200 placeholder:text-slate-500"
+                className="w-full rounded-md bg-surface-hi border border-edge px-3 py-2 text-sm text-fg-2 placeholder:text-fg-3"
               />
             </div>
             <div>
-              <label className="block text-xs font-medium text-slate-400 mb-1">Source folder (optional)</label>
+              <label className="block text-xs font-medium text-fg-3 mb-1">Source folder (optional)</label>
               <input
                 value={testForm.folder_from}
                 onChange={(e) => { setTestForm((p) => ({ ...p, folder_from: e.target.value })); setTestResult(null) }}
                 placeholder="INBOX"
-                className="w-full rounded-md bg-slate-700 border border-slate-600 px-3 py-2 text-sm text-slate-200 placeholder:text-slate-500"
+                className="w-full rounded-md bg-surface-hi border border-edge px-3 py-2 text-sm text-fg-2 placeholder:text-fg-3"
               />
             </div>
           </div>
@@ -360,7 +360,7 @@ export default function RulesView() {
             {testResult !== null && (
               <div className={`flex items-center gap-2 px-3 py-2 rounded-md text-sm font-medium border ${
                 !testResult.matched
-                  ? 'border-slate-600 bg-slate-700/60 text-slate-300'
+                  ? 'border-edge bg-surface-hi/60 text-fg-2'
                   : testResult.action === 'approve'
                   ? 'border-emerald-700 bg-emerald-900/30 text-emerald-200'
                   : 'border-red-700 bg-red-900/30 text-red-200'
@@ -374,10 +374,10 @@ export default function RulesView() {
         </form>
       </section>
 
-      <section className="rounded-lg border border-slate-700 bg-slate-800/30 overflow-hidden">
-        <div className="px-4 py-3 border-b border-slate-700 flex items-center justify-between">
-          <h2 className="text-sm font-semibold text-slate-100">Rules</h2>
-          <span className="text-xs text-slate-400">
+      <section className="rounded-lg border border-edge bg-surface/30 overflow-hidden">
+        <div className="px-4 py-3 border-b border-edge flex items-center justify-between">
+          <h2 className="text-sm font-semibold text-fg">Rules</h2>
+          <span className="text-xs text-fg-3">
             {rules.length} total
           </span>
         </div>
@@ -385,7 +385,7 @@ export default function RulesView() {
         {isLoading && (
           <div className="p-4 space-y-2">
             {Array.from({ length: 4 }).map((_, index) => (
-              <div key={index} className="h-10 rounded bg-slate-800 animate-pulse" />
+              <div key={index} className="h-10 rounded bg-surface animate-pulse" />
             ))}
           </div>
         )}
@@ -397,7 +397,7 @@ export default function RulesView() {
         )}
 
         {!isLoading && !isError && rules.length === 0 && (
-          <div className="flex flex-col items-center justify-center py-16 text-slate-500 gap-4">
+          <div className="flex flex-col items-center justify-center py-16 text-fg-3 gap-4">
             <Inbox className="w-10 h-10 opacity-40" />
             <p className="text-sm">
               No auto-approval rules yet. Add one to reduce approval noise.
@@ -409,7 +409,7 @@ export default function RulesView() {
           <div className="overflow-x-auto">
             <table className="w-full text-left text-sm">
               <thead>
-                <tr className="border-b border-slate-700 text-xs text-slate-400 uppercase tracking-wide">
+                <tr className="border-b border-edge text-xs text-fg-3 uppercase tracking-wide">
                   <th className="px-3 py-2">Priority</th>
                   <th className="px-3 py-2">Description</th>
                   <th className="px-3 py-2">Op type</th>
@@ -428,13 +428,13 @@ export default function RulesView() {
                   return (
                     <tr
                       key={rule.id}
-                      className="border-b border-slate-700/60 last:border-b-0 hover:bg-slate-800/50"
+                      className="border-b border-edge/60 last:border-b-0 hover:bg-surface/50"
                     >
-                      <td className="px-3 py-2 text-slate-300">{rule.priority}</td>
-                      <td className="px-3 py-2 text-slate-100">{rule.description}</td>
-                      <td className="px-3 py-2 text-slate-300">{rule.op_type ?? 'any'}</td>
-                      <td className="px-3 py-2 text-slate-300">{rule.sender_pattern ?? 'any'}</td>
-                      <td className="px-3 py-2 text-slate-300">{rule.folder_from ?? 'any'}</td>
+                      <td className="px-3 py-2 text-fg-2">{rule.priority}</td>
+                      <td className="px-3 py-2 text-fg">{rule.description}</td>
+                      <td className="px-3 py-2 text-fg-2">{rule.op_type ?? 'any'}</td>
+                      <td className="px-3 py-2 text-fg-2">{rule.sender_pattern ?? 'any'}</td>
+                      <td className="px-3 py-2 text-fg-2">{rule.folder_from ?? 'any'}</td>
                       <td className="px-3 py-2">
                         <span
                           className={`inline-flex px-2 py-1 rounded text-xs font-medium ${
@@ -448,7 +448,7 @@ export default function RulesView() {
                       </td>
                       <td className="px-3 py-2">
                         <span
-                          className="inline-flex px-2 py-1 rounded text-xs font-medium bg-slate-700 text-slate-300"
+                          className="inline-flex px-2 py-1 rounded text-xs font-medium bg-surface-hi text-fg-2"
                           title="Operations auto-decided by this rule"
                         >
                           {rule.hits}
@@ -461,7 +461,7 @@ export default function RulesView() {
                           className={`inline-flex items-center px-2 py-1 rounded text-xs font-medium transition-colors ${
                             rule.enabled
                               ? 'bg-emerald-900/70 text-emerald-200 hover:bg-emerald-800/80'
-                              : 'bg-slate-700 text-slate-300 hover:bg-slate-600'
+                              : 'bg-surface-hi text-fg-2 hover:bg-edge'
                           } disabled:opacity-50`}
                         >
                           {rule.enabled ? 'On' : 'Off'}
@@ -472,7 +472,7 @@ export default function RulesView() {
                           <button
                             onClick={() => void handleMoveRule(index, 'up')}
                             disabled={index === 0 || isUpdating}
-                            className="p-1 rounded border border-slate-600 text-slate-300 hover:bg-slate-700 disabled:opacity-30"
+                            className="p-1 rounded border border-edge text-fg-2 hover:bg-surface-hi disabled:opacity-30"
                             title="Move rule up"
                           >
                             <ArrowUp className="w-3.5 h-3.5" />
@@ -480,7 +480,7 @@ export default function RulesView() {
                           <button
                             onClick={() => void handleMoveRule(index, 'down')}
                             disabled={index === rules.length - 1 || isUpdating}
-                            className="p-1 rounded border border-slate-600 text-slate-300 hover:bg-slate-700 disabled:opacity-30"
+                            className="p-1 rounded border border-edge text-fg-2 hover:bg-surface-hi disabled:opacity-30"
                             title="Move rule down"
                           >
                             <ArrowDown className="w-3.5 h-3.5" />
@@ -488,7 +488,7 @@ export default function RulesView() {
                           <button
                             onClick={() => void handleDeleteRule(rule.id)}
                             disabled={isDeleting}
-                            className="p-1 rounded border border-slate-600 text-slate-300 hover:bg-red-900/50 hover:text-red-200 disabled:opacity-50"
+                            className="p-1 rounded border border-edge text-fg-2 hover:bg-red-900/50 hover:text-red-200 disabled:opacity-50"
                             title="Delete rule"
                           >
                             <Trash2 className="w-3.5 h-3.5" />

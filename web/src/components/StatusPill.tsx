@@ -4,7 +4,7 @@ const STATUS_STYLES: Record<string, string> = {
   rejected: 'bg-red-500/20 text-red-400',
   executed: 'bg-emerald-600/20 text-emerald-300',
   failed: 'bg-red-600/20 text-red-300',
-  expired: 'bg-slate-600/40 text-slate-400',
+  expired: 'bg-slate-600/40 text-fg-3',
 }
 
 interface StatusPillProps {
@@ -12,7 +12,7 @@ interface StatusPillProps {
 }
 
 export default function StatusPill({ status }: StatusPillProps) {
-  const style = STATUS_STYLES[status] ?? 'bg-slate-600/40 text-slate-400'
+  const style = STATUS_STYLES[status] ?? 'bg-slate-600/40 text-fg-3'
   return (
     <span
       className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium capitalize ${style}`}

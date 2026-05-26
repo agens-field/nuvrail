@@ -21,9 +21,9 @@ export default function ResetView() {
   if (!token) {
     return (
       <div className="max-w-md mx-auto mt-16">
-        <div className="bg-slate-800 rounded-lg p-8 border border-slate-700 text-center">
+        <div className="bg-surface rounded-lg p-8 border border-edge text-center">
           <p className="text-red-400">Missing or invalid reset token.</p>
-          <a href="#/reset-request" className="mt-4 block text-indigo-400 underline text-sm">
+          <a href="#/reset-request" className="mt-4 block text-accent underline text-sm">
             Request a new reset link
           </a>
         </div>
@@ -61,10 +61,10 @@ export default function ResetView() {
   if (done) {
     return (
       <div className="max-w-md mx-auto mt-16">
-        <div className="bg-slate-800 rounded-lg p-8 border border-slate-700 text-center space-y-3">
+        <div className="bg-surface rounded-lg p-8 border border-edge text-center space-y-3">
           <p className="text-2xl">✅</p>
-          <h1 className="text-xl font-bold text-slate-100">Password updated</h1>
-          <p className="text-slate-400 text-sm">Redirecting to sign in…</p>
+          <h1 className="text-xl font-bold text-fg">Password updated</h1>
+          <p className="text-fg-3 text-sm">Redirecting to sign in…</p>
         </div>
       </div>
     )
@@ -72,12 +72,12 @@ export default function ResetView() {
 
   return (
     <div className="max-w-md mx-auto mt-16">
-      <div className="bg-slate-800 rounded-lg p-8 border border-slate-700">
-        <h1 className="text-2xl font-bold text-indigo-400 mb-6">Set new password</h1>
+      <div className="bg-surface rounded-lg p-8 border border-edge">
+        <h1 className="text-2xl font-display font-black text-fg mb-6">Set new password</h1>
 
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
-            <label className="block text-sm font-medium text-slate-300 mb-1">
+            <label className="block text-sm font-medium text-fg-2 mb-1">
               New password
             </label>
             <input
@@ -87,13 +87,13 @@ export default function ResetView() {
               required
               minLength={12}
               autoComplete="new-password"
-              className="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              className="w-full bg-surface-hi border border-edge rounded px-3 py-2 text-fg focus:outline-none focus:ring-2 focus:ring-accent"
             />
-            <p className="mt-1 text-xs text-slate-500">Minimum 12 characters</p>
+            <p className="mt-1 text-xs text-fg-3">Minimum 12 characters</p>
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-slate-300 mb-1">
+            <label className="block text-sm font-medium text-fg-2 mb-1">
               Confirm new password
             </label>
             <input
@@ -102,7 +102,7 @@ export default function ResetView() {
               onChange={(e) => setConfirmPw(e.target.value)}
               required
               autoComplete="new-password"
-              className="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              className="w-full bg-surface-hi border border-edge rounded px-3 py-2 text-fg focus:outline-none focus:ring-2 focus:ring-accent"
             />
           </div>
 
@@ -111,7 +111,7 @@ export default function ResetView() {
           <button
             type="submit"
             disabled={loading}
-            className="w-full bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white font-medium py-2 px-4 rounded transition-colors"
+            className="w-full bg-accent hover:bg-accent-hi disabled:opacity-50 text-white font-medium py-2 px-4 rounded transition-colors"
           >
             {loading ? 'Updating…' : 'Set new password'}
           </button>

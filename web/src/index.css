@@ -1,3 +1,43 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/* ─── Light mode (default) ───────────────────────────────────────────────── */
+:root {
+  --bg:         #f8fafc;
+  --surface:    #ffffff;
+  --surface-hi: #f1f5f9;
+  --edge:       #e2e8f0;
+  --fg:         #0f172a;
+  --fg-2:       #475569;
+  --fg-3:       #94a3b8;
+  --accent:     #0d9488;   /* darker teal — readable on white */
+  --accent-hi:  #0f766e;
+}
+
+/* ─── Dark mode ──────────────────────────────────────────────────────────── */
+.dark {
+  --bg:         #111c27;
+  --surface:    #1a2e42;
+  --surface-hi: #1f3a55;
+  --edge:       #2a4560;
+  --fg:         #ffffff;
+  --fg-2:       #a8c4d8;
+  --fg-3:       #3d5a72;
+  --accent:     #2dd4bf;   /* teal — readable on navy */
+  --accent-hi:  #0f9d8a;
+}
+
+/* ─── Base ───────────────────────────────────────────────────────────────── */
+body {
+  background-color: var(--bg);
+  color: var(--fg);
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+::selection {
+  background-color: color-mix(in srgb, var(--accent) 30%, transparent);
+  color: var(--fg);
+}

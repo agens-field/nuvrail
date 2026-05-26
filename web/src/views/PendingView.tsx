@@ -135,16 +135,16 @@ export default function PendingView() {
                 if (el) el.indeterminate = someSelected
               }}
               onChange={handleSelectAll}
-              className="w-4 h-4 rounded border-slate-600 bg-slate-700 accent-emerald-500 cursor-pointer"
+              className="w-4 h-4 rounded border-edge bg-surface-hi accent-emerald-500 cursor-pointer"
               aria-label="Select all pending operations"
               title="Select all"
             />
           )}
-          <h1 className="text-lg font-semibold text-slate-100">
+          <h1 className="text-lg font-semibold text-fg">
             Pending Operations
           </h1>
           {data && (
-            <span className="text-sm text-slate-400">
+            <span className="text-sm text-fg-3">
               ({data.total} op{data.total !== 1 ? 's' : ''})
             </span>
           )}
@@ -152,7 +152,7 @@ export default function PendingView() {
         <button
           onClick={() => void refetch()}
           disabled={isFetching}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium bg-slate-700 hover:bg-slate-600 text-slate-200 border border-slate-600 transition-colors disabled:opacity-50"
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium bg-surface-hi hover:bg-edge text-fg-2 border border-edge transition-colors disabled:opacity-50"
           title="Refresh"
         >
           <RefreshCw
@@ -164,8 +164,8 @@ export default function PendingView() {
 
       {/* Batch action bar */}
       {selectedIds.size > 0 && (
-        <div className="flex items-center gap-3 px-4 py-2.5 rounded-lg border border-slate-600 bg-slate-800/80">
-          <span className="text-sm text-slate-300 flex-1">
+        <div className="flex items-center gap-3 px-4 py-2.5 rounded-lg border border-edge bg-surface/80">
+          <span className="text-sm text-fg-2 flex-1">
             {selectedIds.size} selected
           </span>
           <button
@@ -178,7 +178,7 @@ export default function PendingView() {
           <button
             onClick={() => void handleBatchReject()}
             disabled={isBatchInFlight}
-            className="px-3 py-1.5 rounded-md text-sm font-medium bg-slate-700 hover:bg-slate-600 text-slate-200 border border-slate-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            className="px-3 py-1.5 rounded-md text-sm font-medium bg-surface-hi hover:bg-edge text-fg-2 border border-edge transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {isBatchRejecting ? 'Rejecting…' : 'Reject selected'}
           </button>
@@ -196,7 +196,7 @@ export default function PendingView() {
       )}
 
       {!isLoading && !isError && data && data.operations.length === 0 && (
-        <div className="flex flex-col items-center justify-center py-24 text-slate-500 gap-4">
+        <div className="flex flex-col items-center justify-center py-24 text-fg-3 gap-4">
           <Inbox className="w-12 h-12 opacity-40" />
           <p className="text-sm">No pending operations</p>
         </div>
@@ -212,8 +212,8 @@ export default function PendingView() {
                 className="rounded-lg border border-indigo-700/50 bg-indigo-950/20 overflow-hidden"
               >
                 <div className="flex items-center gap-2 px-4 py-2 border-b border-indigo-700/30 bg-indigo-900/20">
-                  <Layers className="w-3.5 h-3.5 text-indigo-400" />
-                  <span className="text-xs font-medium text-indigo-300">
+                  <Layers className="w-3.5 h-3.5 text-accent" />
+                  <span className="text-xs font-medium text-accent">
                     Batch — {group.ops.length} operations
                   </span>
                   <span className="ml-auto flex items-center gap-2">
@@ -225,7 +225,7 @@ export default function PendingView() {
                           return next
                         })
                       }
-                      className="text-xs text-indigo-400 hover:text-indigo-200 transition-colors"
+                      className="text-xs text-accent hover:text-indigo-200 transition-colors"
                     >
                       Select all
                     </button>

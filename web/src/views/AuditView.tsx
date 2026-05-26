@@ -19,7 +19,7 @@ const EVENT_COLORS: Record<string, string> = {
   executed:          'bg-emerald-700 text-emerald-100',
   rejected:          'bg-red-900 text-red-200',
   execution_failed:  'bg-orange-900 text-orange-200',
-  expired:           'bg-slate-700 text-slate-300',
+  expired:           'bg-surface-hi text-fg-2',
 }
 
 const ACTOR_LABELS: Record<string, string> = {
@@ -38,7 +38,7 @@ const EVENT_FILTERS = [
 ]
 
 function EventPill({ event }: { event: string }) {
-  const cls = EVENT_COLORS[event] ?? 'bg-slate-700 text-slate-300'
+  const cls = EVENT_COLORS[event] ?? 'bg-surface-hi text-fg-2'
   return (
     <span className={`inline-block px-2 py-0.5 rounded text-xs font-medium ${cls}`}>
       {event.replace('_', ' ')}
@@ -101,20 +101,20 @@ function AuditRow({ entry }: { entry: AuditEntry }) {
   return (
     <>
       <tr
-        className={`border-b border-slate-700/50 hover:bg-slate-800/50 transition-colors ${
+        className={`border-b border-edge/50 hover:bg-surface/50 transition-colors ${
           hasDetail ? 'cursor-pointer' : ''
         }`}
         onClick={() => hasDetail && setExpanded(e => !e)}
       >
         {/* Expand toggle */}
-        <td className="px-3 py-3 w-6 text-slate-500">
+        <td className="px-3 py-3 w-6 text-fg-3">
           {hasDetail && (
             expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />
           )}
         </td>
 
         {/* Timestamp */}
-        <td className="px-3 py-3 text-sm text-slate-400 whitespace-nowrap">
+        <td className="px-3 py-3 text-sm text-fg-3 whitespace-nowrap">
           <RelativeTime ts={entry.timestamp} />
         </td>
 
@@ -127,49 +127,49 @@ function AuditRow({ entry }: { entry: AuditEntry }) {
         </td>
 
         {/* Description */}
-        <td className="px-3 py-3 text-sm text-slate-200">
+        <td className="px-3 py-3 text-sm text-fg-2">
           {entry.op_description ?? (
-            <span className="text-slate-500 italic">System event</span>
+            <span className="text-fg-3 italic">System event</span>
           )}
         </td>
 
         {/* Actor */}
-        <td className="px-3 py-3 text-sm text-slate-400 whitespace-nowrap">
+        <td className="px-3 py-3 text-sm text-fg-3 whitespace-nowrap">
           {ACTOR_LABELS[entry.actor ?? ''] ?? entry.actor ?? '—'}
         </td>
 
         {/* Agent */}
-        <td className="px-3 py-3 text-sm text-slate-400 whitespace-nowrap">
+        <td className="px-3 py-3 text-sm text-fg-3 whitespace-nowrap">
           {entry.agent_label ?? (entry.agent_id ? `Agent #${entry.agent_id}` : '—')}
         </td>
       </tr>
 
       {/* Expanded detail row */}
       {expanded && (
-        <tr className="bg-slate-800/70 border-b border-slate-700/50">
+        <tr className="bg-surface/70 border-b border-edge/50">
           <td colSpan={6} className="px-6 py-4">
             <div className="space-y-2 text-sm">
               {entry.operation_id && (
                 <div>
-                  <span className="text-slate-400">Operation ID: </span>
-                  <code className="text-slate-300 font-mono text-xs">{entry.operation_id}</code>
+                  <span className="text-fg-3">Operation ID: </span>
+                  <code className="text-fg-2 font-mono text-xs">{entry.operation_id}</code>
                   {entry.op_status && (
-                    <span className="ml-2 text-slate-400">
-                      · Status: <span className="text-slate-200">{entry.op_status}</span>
+                    <span className="ml-2 text-fg-3">
+                      · Status: <span className="text-fg-2">{entry.op_status}</span>
                     </span>
                   )}
                 </div>
               )}
               {entry.op_type && (
                 <div>
-                  <span className="text-slate-400">Op type: </span>
-                  <span className="text-slate-200">{entry.op_type}</span>
+                  <span className="text-fg-3">Op type: </span>
+                  <span className="text-fg-2">{entry.op_type}</span>
                 </div>
               )}
               {entry.detail && (
                 <div>
-                  <span className="text-slate-400">Detail: </span>
-                  <pre className="mt-1 p-2 bg-slate-900 rounded text-xs text-slate-300 overflow-auto max-h-32">
+                  <span className="text-fg-3">Detail: </span>
+                  <pre className="mt-1 p-2 bg-bg rounded text-xs text-fg-2 overflow-auto max-h-32">
                     {JSON.stringify(entry.detail, null, 2)}
                   </pre>
                 </div>
@@ -177,18 +177,18 @@ function AuditRow({ entry }: { entry: AuditEntry }) {
 
               {/* Undo action */}
               {canUndo && (
-                <div className="pt-2 border-t border-slate-700/50">
+                <div className="pt-2 border-t border-edge/50">
                   {!confirmUndo ? (
                     <button
                       onClick={(e) => { e.stopPropagation(); setConfirmUndo(true) }}
                       className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium
-                        bg-slate-700 hover:bg-amber-800/60 border border-slate-600 hover:border-amber-600
-                        text-slate-300 hover:text-amber-200 transition-colors"
+                        bg-surface-hi hover:bg-amber-800/60 border border-edge hover:border-amber-600
+                        text-fg-2 hover:text-amber-200 transition-colors"
                     >
                       <Undo2 className="w-3.5 h-3.5" />
                       Undo this operation
                       {entry.undo_expires_at && (
-                        <span className="text-slate-500 ml-1">
+                        <span className="text-fg-3 ml-1">
                           · expires {formatDistanceToNow(fromUnixTime(entry.undo_expires_at), { addSuffix: true })}
                         </span>
                       )}
@@ -206,8 +206,8 @@ function AuditRow({ entry }: { entry: AuditEntry }) {
                       </button>
                       <button
                         onClick={(e) => { e.stopPropagation(); setConfirmUndo(false) }}
-                        className="px-2 py-1 rounded text-xs font-medium bg-slate-700 hover:bg-slate-600
-                          text-slate-300 transition-colors"
+                        className="px-2 py-1 rounded text-xs font-medium bg-surface-hi hover:bg-edge
+                          text-fg-2 transition-colors"
                       >
                         Cancel
                       </button>
@@ -218,8 +218,8 @@ function AuditRow({ entry }: { entry: AuditEntry }) {
 
               {/* Already undone */}
               {entry.event === 'executed' && entry.op_status === 'reverted' && (
-                <div className="pt-2 border-t border-slate-700/50">
-                  <span className="inline-flex items-center gap-1.5 text-xs text-slate-500">
+                <div className="pt-2 border-t border-edge/50">
+                  <span className="inline-flex items-center gap-1.5 text-xs text-fg-3">
                     <Undo2 className="w-3.5 h-3.5" />
                     This operation was undone
                   </span>
@@ -302,9 +302,9 @@ export default function AuditView() {
       {/* Header */}
       <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
         <div>
-          <h1 className="text-xl font-semibold text-slate-100">Audit</h1>
+          <h1 className="text-xl font-semibold text-fg">Audit</h1>
           {data && (
-            <p className="text-sm text-slate-400 mt-0.5">
+            <p className="text-sm text-fg-3 mt-0.5">
               {data.total.toLocaleString()} total entries
             </p>
           )}
@@ -317,7 +317,7 @@ export default function AuditView() {
               setAgentFilter(value ? Number(value) : undefined)
               setPage(0)
             }}
-            className="px-3 py-2 rounded-md bg-slate-700 hover:bg-slate-600 text-sm text-slate-200 border border-slate-600"
+            className="px-3 py-2 rounded-md bg-surface-hi hover:bg-edge text-sm text-fg-2 border border-edge"
           >
             <option value="">All agents</option>
             {(agents ?? []).map(agent => (
@@ -329,7 +329,7 @@ export default function AuditView() {
           <button
             onClick={() => refetch()}
             disabled={isFetching}
-            className="flex items-center gap-1.5 px-3 py-2 rounded-md bg-slate-700 hover:bg-slate-600 text-sm text-slate-200 disabled:opacity-50 transition-colors"
+            className="flex items-center gap-1.5 px-3 py-2 rounded-md bg-surface-hi hover:bg-edge text-sm text-fg-2 disabled:opacity-50 transition-colors"
           >
             <RefreshCw size={14} className={isFetching ? 'animate-spin' : ''} />
             Refresh
@@ -337,7 +337,7 @@ export default function AuditView() {
           <button
             onClick={handleExport}
             disabled={exporting}
-            className="flex items-center gap-1.5 px-3 py-2 rounded-md bg-slate-700 hover:bg-slate-600 text-sm text-slate-200 disabled:opacity-50 transition-colors"
+            className="flex items-center gap-1.5 px-3 py-2 rounded-md bg-surface-hi hover:bg-edge text-sm text-fg-2 disabled:opacity-50 transition-colors"
           >
             <Download size={14} />
             {exporting ? 'Exporting…' : 'Export JSON'}
@@ -350,7 +350,7 @@ export default function AuditView() {
         <select
           value={opTypeFilter ?? ''}
           onChange={(e) => { setOpTypeFilter(e.target.value || undefined); setPage(0) }}
-          className="px-3 py-1.5 rounded-md bg-slate-700 text-sm text-slate-200 border border-slate-600 hover:bg-slate-600"
+          className="px-3 py-1.5 rounded-md bg-surface-hi text-sm text-fg-2 border border-edge hover:bg-edge"
         >
           <option value="">All op types</option>
           {['move', 'trash', 'archive', 'copy', 'mark_read', 'mark_unread',
@@ -363,16 +363,16 @@ export default function AuditView() {
           type="date"
           value={sinceDate}
           onChange={(e) => { setSinceDate(e.target.value); setPage(0) }}
-          className="px-3 py-1.5 rounded-md bg-slate-700 text-sm text-slate-200 border border-slate-600"
+          className="px-3 py-1.5 rounded-md bg-surface-hi text-sm text-fg-2 border border-edge"
           title="From date"
           placeholder="From"
         />
-        <span className="text-slate-500 text-sm">–</span>
+        <span className="text-fg-3 text-sm">–</span>
         <input
           type="date"
           value={untilDate}
           onChange={(e) => { setUntilDate(e.target.value); setPage(0) }}
-          className="px-3 py-1.5 rounded-md bg-slate-700 text-sm text-slate-200 border border-slate-600"
+          className="px-3 py-1.5 rounded-md bg-surface-hi text-sm text-fg-2 border border-edge"
           title="To date"
         />
 
@@ -381,15 +381,15 @@ export default function AuditView() {
           value={searchText}
           onChange={(e) => { setSearchText(e.target.value); setPage(0) }}
           placeholder="Search description…"
-          className="px-3 py-1.5 rounded-md bg-slate-700 text-sm text-slate-200 border border-slate-600
-            placeholder:text-slate-500 min-w-[180px]"
+          className="px-3 py-1.5 rounded-md bg-surface-hi text-sm text-fg-2 border border-edge
+            placeholder:text-fg-3 min-w-[180px]"
         />
 
         {activeFilterCount > 0 && (
           <button
             onClick={resetFilters}
-            className="px-3 py-1.5 rounded-md text-sm text-slate-400 hover:text-slate-200
-              bg-slate-700/50 hover:bg-slate-700 border border-slate-600 transition-colors"
+            className="px-3 py-1.5 rounded-md text-sm text-fg-3 hover:text-fg-2
+              bg-surface-hi/50 hover:bg-surface-hi border border-edge transition-colors"
           >
             Clear all ({activeFilterCount})
           </button>
@@ -404,8 +404,8 @@ export default function AuditView() {
             onClick={() => { setEventFilter(f.value); setPage(0) }}
             className={`px-3 py-1 rounded-full text-sm font-medium transition-colors ${
               eventFilter === f.value
-                ? 'bg-indigo-600 text-white'
-                : 'bg-slate-700 text-slate-300 hover:bg-slate-600'
+                ? 'bg-accent text-white'
+                : 'bg-surface-hi text-fg-2 hover:bg-edge'
             }`}
           >
             {f.label}
@@ -421,19 +421,19 @@ export default function AuditView() {
       ) : isLoading ? (
         <div className="space-y-2">
           {Array.from({ length: 8 }).map((_, i) => (
-            <div key={i} className="h-12 bg-slate-800 rounded animate-pulse" />
+            <div key={i} className="h-12 bg-surface rounded animate-pulse" />
           ))}
         </div>
       ) : !data || data.entries.length === 0 ? (
-        <div className="text-center py-16 text-slate-500">
+        <div className="text-center py-16 text-fg-3">
           <p className="text-lg">No audit entries yet</p>
           <p className="text-sm mt-1">Entries appear when operations are staged, approved, or rejected.</p>
         </div>
       ) : (
-        <div className="bg-slate-800/50 rounded-lg border border-slate-700 overflow-hidden">
+        <div className="bg-surface/50 rounded-lg border border-edge overflow-hidden">
           <table className="w-full text-left">
             <thead>
-              <tr className="border-b border-slate-700 text-xs text-slate-400 uppercase tracking-wide">
+              <tr className="border-b border-edge text-xs text-fg-3 uppercase tracking-wide">
                 <th className="px-3 py-2 w-6" />
                 <th className="px-3 py-2">When</th>
                 <th className="px-3 py-2">Event</th>
@@ -457,17 +457,17 @@ export default function AuditView() {
           <button
             onClick={() => setPage(p => Math.max(0, p - 1))}
             disabled={page === 0}
-            className="px-4 py-2 rounded-md bg-slate-700 hover:bg-slate-600 text-sm text-slate-200 disabled:opacity-40 transition-colors"
+            className="px-4 py-2 rounded-md bg-surface-hi hover:bg-edge text-sm text-fg-2 disabled:opacity-40 transition-colors"
           >
             ← Previous
           </button>
-          <span className="text-sm text-slate-400">
+          <span className="text-sm text-fg-3">
             Page {page + 1} of {totalPages}
           </span>
           <button
             onClick={() => setPage(p => Math.min(totalPages - 1, p + 1))}
             disabled={page >= totalPages - 1}
-            className="px-4 py-2 rounded-md bg-slate-700 hover:bg-slate-600 text-sm text-slate-200 disabled:opacity-40 transition-colors"
+            className="px-4 py-2 rounded-md bg-surface-hi hover:bg-edge text-sm text-fg-2 disabled:opacity-40 transition-colors"
           >
             Next →
           </button>

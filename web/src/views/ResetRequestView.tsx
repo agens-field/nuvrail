@@ -30,20 +30,20 @@ export default function ResetRequestView() {
   if (submitted) {
     return (
       <div className="max-w-md mx-auto mt-16">
-        <div className="bg-slate-800 rounded-lg p-8 border border-slate-700 text-center space-y-4">
+        <div className="bg-surface rounded-lg p-8 border border-edge text-center space-y-4">
           <p className="text-2xl">✉️</p>
-          <h1 className="text-xl font-bold text-slate-100">Check your inbox</h1>
-          <p className="text-slate-400 text-sm">
-            If <span className="text-slate-200">{email}</span> is registered, a reset
+          <h1 className="text-xl font-bold text-fg">Check your inbox</h1>
+          <p className="text-fg-3 text-sm">
+            If <span className="text-fg-2">{email}</span> is registered, a reset
             link has been sent. It expires in 1 hour.
           </p>
-          <p className="text-slate-500 text-xs">
+          <p className="text-fg-3 text-xs">
             (Phase 2a: the link is logged on the server. Check the container logs if
             email delivery is not configured.)
           </p>
           <a
             href="#/login"
-            className="block text-indigo-400 hover:text-indigo-300 underline text-sm"
+            className="block text-accent hover:text-accent underline text-sm"
           >
             Back to sign in
           </a>
@@ -54,15 +54,15 @@ export default function ResetRequestView() {
 
   return (
     <div className="max-w-md mx-auto mt-16">
-      <div className="bg-slate-800 rounded-lg p-8 border border-slate-700">
-        <h1 className="text-2xl font-bold text-indigo-400 mb-2">Reset password</h1>
-        <p className="text-slate-400 text-sm mb-6">
+      <div className="bg-surface rounded-lg p-8 border border-edge">
+        <h1 className="text-2xl font-display font-black text-fg mb-2">Reset password</h1>
+        <p className="text-fg-3 text-sm mb-6">
           Enter your email address and we'll send you a reset link.
         </p>
 
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
-            <label className="block text-sm font-medium text-slate-300 mb-1">
+            <label className="block text-sm font-medium text-fg-2 mb-1">
               Email
             </label>
             <input
@@ -71,7 +71,7 @@ export default function ResetRequestView() {
               onChange={(e) => setEmail(e.target.value)}
               required
               autoComplete="email"
-              className="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              className="w-full bg-surface-hi border border-edge rounded px-3 py-2 text-fg focus:outline-none focus:ring-2 focus:ring-accent"
               placeholder="you@example.com"
             />
           </div>
@@ -81,14 +81,14 @@ export default function ResetRequestView() {
           <button
             type="submit"
             disabled={loading}
-            className="w-full bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white font-medium py-2 px-4 rounded transition-colors"
+            className="w-full bg-accent hover:bg-accent-hi disabled:opacity-50 text-white font-medium py-2 px-4 rounded transition-colors"
           >
             {loading ? 'Sending…' : 'Send reset link'}
           </button>
         </form>
 
-        <p className="mt-4 text-center text-sm text-slate-400">
-          <a href="#/login" className="text-indigo-400 hover:text-indigo-300 underline">
+        <p className="mt-4 text-center text-sm text-fg-3">
+          <a href="#/login" className="text-accent hover:text-accent underline">
             Back to sign in
           </a>
         </p>

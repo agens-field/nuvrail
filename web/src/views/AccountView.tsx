@@ -65,15 +65,15 @@ export default function AccountView() {
 
   return (
     <div className="max-w-md mx-auto space-y-8">
-      <h1 className="text-2xl font-bold text-slate-100">Account</h1>
+      <h1 className="text-2xl font-bold text-fg">Account</h1>
 
       {/* ── Change password ───────────────────────────────────────────── */}
-      <section className="bg-slate-800 rounded-lg p-6 border border-slate-700 space-y-4">
-        <h2 className="text-lg font-semibold text-slate-100">Change password</h2>
+      <section className="bg-surface rounded-lg p-6 border border-edge space-y-4">
+        <h2 className="text-lg font-semibold text-fg">Change password</h2>
 
         <form onSubmit={handleChangePassword} className="space-y-4">
           <div>
-            <label className="block text-sm font-medium text-slate-300 mb-1">
+            <label className="block text-sm font-medium text-fg-2 mb-1">
               Current password
             </label>
             <input
@@ -82,12 +82,12 @@ export default function AccountView() {
               onChange={(e) => setCurrentPw(e.target.value)}
               required
               autoComplete="current-password"
-              className="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              className="w-full bg-surface-hi border border-edge rounded px-3 py-2 text-fg focus:outline-none focus:ring-2 focus:ring-accent"
             />
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-slate-300 mb-1">
+            <label className="block text-sm font-medium text-fg-2 mb-1">
               New password
             </label>
             <input
@@ -97,13 +97,13 @@ export default function AccountView() {
               required
               minLength={12}
               autoComplete="new-password"
-              className="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              className="w-full bg-surface-hi border border-edge rounded px-3 py-2 text-fg focus:outline-none focus:ring-2 focus:ring-accent"
             />
-            <p className="mt-1 text-xs text-slate-500">Minimum 12 characters</p>
+            <p className="mt-1 text-xs text-fg-3">Minimum 12 characters</p>
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-slate-300 mb-1">
+            <label className="block text-sm font-medium text-fg-2 mb-1">
               Confirm new password
             </label>
             <input
@@ -112,7 +112,7 @@ export default function AccountView() {
               onChange={(e) => setConfirmPw(e.target.value)}
               required
               autoComplete="new-password"
-              className="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              className="w-full bg-surface-hi border border-edge rounded px-3 py-2 text-fg focus:outline-none focus:ring-2 focus:ring-accent"
             />
           </div>
 
@@ -124,17 +124,17 @@ export default function AccountView() {
           <button
             type="submit"
             disabled={pwLoading}
-            className="w-full bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white font-medium py-2 px-4 rounded transition-colors"
+            className="w-full bg-accent hover:bg-accent-hi disabled:opacity-50 text-white font-medium py-2 px-4 rounded transition-colors"
           >
             {pwLoading ? 'Updating…' : 'Update password'}
           </button>
         </form>
 
-        <p className="text-sm text-slate-400">
+        <p className="text-sm text-fg-3">
           Forgot your current password?{' '}
           <a
             href="#/reset-request"
-            className="text-indigo-400 hover:text-indigo-300 underline"
+            className="text-accent hover:text-accent underline"
           >
             Reset it
           </a>
@@ -142,15 +142,15 @@ export default function AccountView() {
       </section>
 
       {/* ── Log out ───────────────────────────────────────────────────── */}
-      <section className="bg-slate-800 rounded-lg p-6 border border-slate-700">
-        <h2 className="text-lg font-semibold text-slate-100 mb-3">Log out</h2>
-        <p className="text-sm text-slate-400 mb-4">
+      <section className="bg-surface rounded-lg p-6 border border-edge">
+        <h2 className="text-lg font-semibold text-fg mb-3">Log out</h2>
+        <p className="text-sm text-fg-3 mb-4">
           Clears your session and revokes the server-side token.
         </p>
         <button
           onClick={handleLogout}
           disabled={logoutLoading}
-          className="bg-slate-700 hover:bg-slate-600 disabled:opacity-50 text-slate-100 font-medium py-2 px-4 rounded transition-colors border border-slate-600"
+          className="bg-surface-hi hover:bg-edge disabled:opacity-50 text-fg font-medium py-2 px-4 rounded transition-colors border border-edge"
         >
           {logoutLoading ? 'Logging out…' : 'Log out'}
         </button>
