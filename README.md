@@ -487,6 +487,51 @@ sudo ufw enable
 
 ---
 
+## Security
+
+### Secret scanning (gitleaks)
+
+Nuvrail uses [gitleaks](https://github.com/gitleaks/gitleaks) to prevent credential leaks before they reach the remote.
+
+A pre-push hook runs `gitleaks detect` automatically on every `git push`. The hook is in `.git/hooks/pre-push` — it is a no-op if gitleaks is not installed (prints a warning, doesn't block).
+
+**Installation:**
+
+```bash
+# macOS
+brew install gitleaks
+
+# Ubuntu 22.04+
+sudo apt install gitleaks
+
+# From source (requires Go)
+go install github.com/gitleaks/gitleaks/v8@latest
+```
+
+**Manual scan:**
+
+```bash
+gitleaks detect --source . --no-git --config .gitleaks.toml
+```
+
+The Nuvrail-specific rules are in `.gitleaks.toml` (committed to the repo). They block:
+- `.env` files containing secrets
+- `master.key` (AES-256-GCM key material)
+- `vapid_private.pem` (Web Push credentials)
+- Files under `~/.nuvrail/` (runtime data directory)
+- Google OAuth2 `client_secret.json` files
+
+If you hit a false positive, add an allowlist entry to `.gitleaks.toml` and commit it.
+
+### npm audit status
+
+| Directory | Status |
+|-----------|--------|
+| `web/` | 0 vulnerabilities ✅ |
+| `web/landing/` | 2 moderate (postcss in Next.js transitive deps — unfixable without downgrading to next@9.3.3, which is a worse outcome; tracked until Next.js ships a fix upstream) |
+
+---
+
 ## License
 
 MIT. See [LICENSE](LICENSE).

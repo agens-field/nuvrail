@@ -20,6 +20,9 @@ client_secret.json
 # Key material — must never be committed
 *.key
 *.pem
+
+# gitleaks config MUST be committed — do not ignore it
+!.gitleaks.toml
 *.p12
 *.pfx
 

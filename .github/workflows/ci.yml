@@ -36,6 +36,17 @@ jobs:
             --json-report-file=pytest-report.json \
           || true  # allow failure so KPI reporter always runs
 
+      - name: Security scan (gitleaks)
+        # Informational only — non-blocking. Flags leaked secrets for human review.
+        # Switch `|| true` to a hard failure once baseline is clean in CI.
+        # Requires gitleaks to be available on the runner (ubuntu-latest has it).
+        run: |
+          if command -v gitleaks &>/dev/null; then
+            gitleaks detect --source . --no-git --config .gitleaks.toml || true
+          else
+            echo "gitleaks not found on runner — skipping scan"
+          fi
+
       - name: Report test KPIs to Ripple Path
         # Posts pass rate and deploy success signal to the Engineering Health path.
         # Requires RIPPLEPATH_API_TOKEN secret set on the repo.
