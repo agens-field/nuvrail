@@ -189,6 +189,7 @@ async def register(
         email=body.email,
         display_name=body.display_name,
         created_at=now,
+        token=api_token,  # plaintext — shown once, stored as hash
     )
 
 

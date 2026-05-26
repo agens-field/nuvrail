@@ -11,6 +11,7 @@ import OAuthCallbackView from './views/OAuthCallbackView'
 import AccountView from './views/AccountView'
 import ResetRequestView from './views/ResetRequestView'
 import ResetView from './views/ResetView'
+import SetupView from './views/SetupView'
 import ThemeToggle, { useTheme } from './components/ThemeToggle'
 import { getToken, setupPushNotifications } from './api/client'
 
@@ -131,6 +132,7 @@ export default function App() {
                 <Route path="/account" element={<AccountView />} />
                 <Route path="/reset-request" element={<ResetRequestView />} />
                 <Route path="/reset" element={<ResetView />} />
+                <Route path="/setup" element={<SetupView />} />
               </Routes>
             </main>
           </div>

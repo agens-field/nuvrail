@@ -110,6 +110,7 @@ export interface RegisterResponse {
   email: string
   display_name?: string
   created_at: number
+  token?: string  // present on registration — use to auto-login
 }
 
 export interface LoginResponse {

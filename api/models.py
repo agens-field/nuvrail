@@ -201,6 +201,7 @@ class UserResponse(BaseModel):
     email: str
     display_name: Optional[str] = None
     created_at: int
+    token: Optional[str] = None  # included on registration so client can auto-login
 
 
 class LoginRequest(BaseModel):
