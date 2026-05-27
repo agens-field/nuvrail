@@ -190,6 +190,19 @@ class AuthAbuseProtector:
 
             return FailureResult(lockout_applied, retry_after)
 
+    def reset(self) -> None:
+        """Clear all in-memory rate-limit and lockout state.
+
+        Intended for use in tests to prevent cross-test contamination.
+        Not safe to call in production (clears real lockout state).
+        """
+        self._attempts_by_ip.clear()
+        self._attempts_by_account.clear()
+        self._failures_by_ip.clear()
+        self._failures_by_account.clear()
+        self._lockout_until.clear()
+        self._lockout_count.clear()
+
 
 def build_auth_abuse_protector(namespace: str) -> AuthAbuseProtector:
     return AuthAbuseProtector(

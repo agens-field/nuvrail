@@ -1,21 +1,24 @@
 """
 Account self-service endpoints.
 
-GET  /api/v1/account/token        — view current token metadata (issue #28)
-POST /api/v1/account/token/rotate — revoke old token, issue new one (issue #28)
-GET  /api/v1/account/export       — GDPR data portability export (issue #27)
+GET    /api/v1/account/token        — view current token metadata (issue #28)
+POST   /api/v1/account/token/rotate — revoke old token, issue new one (issue #28)
+GET    /api/v1/account/export       — GDPR data portability export (issue #27)
+DELETE /api/v1/account              — self-serve account deletion (issue #26)
 """
 from __future__ import annotations
 
 import time
 from pathlib import Path
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import Response
 
-from api.auth import generate_token, get_current_user, hash_token_for_storage
+from api.auth import generate_token, get_current_user, hash_token_for_storage, verify_password
 from api.models import (
     DataExportResponse,
+    DeleteAccountRequest,
+    DeleteAccountResponse,
     ExportAccount,
     ExportAgent,
     ExportAuditEntry,
@@ -199,3 +202,115 @@ async def export_account_data(
 
 
 
+
+
+# ---------------------------------------------------------------------------
+# Issue #26 — Self-serve account deletion
+# ---------------------------------------------------------------------------
+
+
+@router.delete("/account", response_model=DeleteAccountResponse)
+async def delete_account(
+    body: DeleteAccountRequest,
+    current_user: dict = Depends(get_current_user),
+    db_path: Path = Depends(get_db_path),
+) -> DeleteAccountResponse:
+    """Permanently delete the current user's account.
+
+    Steps (all in a single transaction):
+      1. Verify password (prevents accidental or CSRF-driven deletion).
+      2. Revoke all agent credentials (revoked_at = now).
+      3. Delete push subscriptions for this user's agents.
+      4. Null out encrypted credential columns in agent_credentials.
+      5. Null out display_name, hashed_password, api_token, reset_token in users row.
+      6. Set users.deleted_at = now.
+      7. Mark all pending ops for this user's agents as 'cancelled'.
+      8. Write 'account_deleted' audit event.
+
+    After deletion, the auth middleware rejects any further requests from this
+    account (deleted_at IS NOT NULL check in get_current_user).
+    """
+    if not verify_password(body.password, current_user["hashed_password"]):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Password is incorrect.",
+        )
+
+    now = int(time.time())
+    user_id: int = current_user["id"]
+
+    async with get_db(db_path) as db:
+        # 1. Fetch agent IDs for this user
+        async with db.execute(
+            "SELECT id FROM agent_credentials WHERE user_id = ?",
+            (user_id,),
+        ) as cur:
+            agent_id_rows = await cur.fetchall()
+        agent_ids = [row["id"] for row in agent_id_rows]
+
+        # 2. Revoke all agent credentials
+        if agent_ids:
+            placeholders = ",".join("?" * len(agent_ids))
+            await db.execute(
+                f"UPDATE agent_credentials SET revoked_at = ? WHERE id IN ({placeholders})",  # noqa: S608
+                [now, *agent_ids],
+            )
+
+        # 3. Delete push subscriptions (push_subscriptions has no user_id FK —
+        #    Phase 0 table is global; Phase 1 will add user_id and scope here).
+
+        # 4. Null out encrypted credential columns in agent_credentials
+        if agent_ids:
+            await db.execute(
+                f"""
+                UPDATE agent_credentials
+                SET upstream_password = NULL,
+                    oauth2_refresh_token = NULL,
+                    oauth2_access_token = NULL,
+                    oauth2_client_secret = NULL,
+                    hashed_token = ''
+                WHERE id IN ({placeholders})
+                """,  # noqa: S608
+                agent_ids,
+            )
+
+        # 5 & 6. Scrub sensitive user columns and mark deleted
+        await db.execute(
+            """
+            UPDATE users
+            SET display_name = NULL,
+                hashed_password = '',
+                api_token = NULL,
+                reset_token = NULL,
+                reset_token_expires_at = NULL,
+                deleted_at = ?
+            WHERE id = ?
+            """,
+            (now, user_id),
+        )
+
+        # 7. Cancel all pending ops for this user's agents
+        if agent_ids:
+            await db.execute(
+                f"""
+                UPDATE staged_operations
+                SET status = 'cancelled', decided_at = ?, decided_by = 'system'
+                WHERE agent_id IN ({placeholders})
+                  AND status = 'pending'
+                """,  # noqa: S608
+                [now, *[str(aid) for aid in agent_ids]],
+            )
+
+        # 8. Write audit event (before commit so it's in the same transaction)
+        await db.execute(
+            """
+            INSERT INTO audit_log
+                (timestamp, operation_id, event, actor, user_id, detail)
+            VALUES (?, NULL, 'account_deleted', 'human', ?, NULL)
+            """,
+            (now, user_id),
+        )
+
+        await db.commit()
+
+    return DeleteAccountResponse(ok=True)

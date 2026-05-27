@@ -247,3 +247,187 @@ async def test_export_requires_auth(client: httpx.AsyncClient) -> None:
     """GET /account/export returns 401 without a token."""
     resp = await client.get("/api/v1/account/export")
     assert resp.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# Issue #26 — Account deletion
+# ---------------------------------------------------------------------------
+
+from api.auth import _last_used_update  # noqa: E402
+
+
+async def test_delete_account_success(
+    client: httpx.AsyncClient, db_path: Path
+) -> None:
+    """DELETE /account with correct password returns 200 ok=true."""
+    token, _ = await _register_and_login(client)
+    resp = await client.request(
+        "DELETE",
+        "/api/v1/account",
+        json={"password": "supersecurepass"},
+        headers=_auth(token),
+    )
+    assert resp.status_code == 200
+    assert resp.json()["ok"] is True
+
+
+async def test_delete_account_wrong_password(
+    client: httpx.AsyncClient, db_path: Path
+) -> None:
+    """DELETE /account with wrong password returns 400."""
+    token, _ = await _register_and_login(client)
+    resp = await client.request(
+        "DELETE",
+        "/api/v1/account",
+        json={"password": "wrongpassword"},
+        headers=_auth(token),
+    )
+    assert resp.status_code == 400
+
+
+async def test_deleted_account_rejected_on_next_request(
+    client: httpx.AsyncClient, db_path: Path
+) -> None:
+    """After deletion, the old token is rejected with 401."""
+    token, _ = await _register_and_login(client)
+    _last_used_update.clear()
+
+    await client.request(
+        "DELETE",
+        "/api/v1/account",
+        json={"password": "supersecurepass"},
+        headers=_auth(token),
+    )
+
+    resp = await client.get("/api/v1/auth/me", headers=_auth(token))
+    assert resp.status_code == 401
+
+
+async def test_delete_account_sets_deleted_at(
+    client: httpx.AsyncClient, db_path: Path
+) -> None:
+    """DELETE /account sets users.deleted_at to a non-null timestamp."""
+    email = _unique_email()
+    token, _ = await _register_and_login(client, email=email)
+    await client.request(
+        "DELETE",
+        "/api/v1/account",
+        json={"password": "supersecurepass"},
+        headers=_auth(token),
+    )
+
+    async with get_db(db_path) as db:
+        async with db.execute(
+            "SELECT deleted_at FROM users WHERE email = ?", (email,)
+        ) as cur:
+            row = await cur.fetchone()
+    assert row is not None
+    assert row["deleted_at"] is not None
+
+
+async def test_delete_account_scrubs_sensitive_fields(
+    client: httpx.AsyncClient, db_path: Path
+) -> None:
+    """DELETE /account nulls out sensitive user fields."""
+    email = _unique_email()
+    token, _ = await _register_and_login(client, email=email)
+    await client.request(
+        "DELETE",
+        "/api/v1/account",
+        json={"password": "supersecurepass"},
+        headers=_auth(token),
+    )
+
+    async with get_db(db_path) as db:
+        async with db.execute(
+            "SELECT hashed_password, api_token, display_name FROM users WHERE email = ?",
+            (email,),
+        ) as cur:
+            row = await cur.fetchone()
+    assert row is not None
+    assert row["api_token"] is None
+    assert row["display_name"] is None
+    assert row["hashed_password"] == ""
+
+
+async def test_delete_account_writes_audit_event(
+    client: httpx.AsyncClient, db_path: Path
+) -> None:
+    """DELETE /account writes an 'account_deleted' audit event."""
+    token, _ = await _register_and_login(client)
+    await client.request(
+        "DELETE",
+        "/api/v1/account",
+        json={"password": "supersecurepass"},
+        headers=_auth(token),
+    )
+
+    async with get_db(db_path) as db:
+        async with db.execute(
+            "SELECT event FROM audit_log WHERE event = 'account_deleted'"
+        ) as cur:
+            row = await cur.fetchone()
+    assert row is not None
+
+
+async def test_delete_account_requires_auth(client: httpx.AsyncClient) -> None:
+    """DELETE /account returns 401 without a token."""
+    resp = await client.request(
+        "DELETE",
+        "/api/v1/account",
+        json={"password": "anything"},
+    )
+    assert resp.status_code == 401
+
+
+async def test_delete_account_cancels_pending_ops(
+    client: httpx.AsyncClient, db_path: Path
+) -> None:
+    """DELETE /account marks pending ops for this user's agents as 'cancelled'."""
+    import time as _time
+
+    token, email = await _register_and_login(client)
+
+    async with get_db(db_path) as db:
+        async with db.execute(
+            "SELECT id FROM users WHERE email = ?", (email,)
+        ) as cur:
+            user_row = await cur.fetchone()
+        user_id = user_row["id"]
+
+        cur2 = await db.execute(
+            """INSERT INTO agent_credentials
+               (user_id, label, agent_username, hashed_token,
+                upstream_host, upstream_user, upstream_password, created_at)
+               VALUES (?, 'test', 'nuvrail_delXX', 'hash', 'imap.example.com',
+                       'u@example.com', NULL, ?)""",
+            (user_id, int(_time.time())),
+        )
+        await db.commit()
+        agent_id = cur2.lastrowid
+
+        now = int(_time.time())
+        op_id = f"op_d{agent_id}"
+        await db.execute(
+            """INSERT INTO staged_operations
+               (id, created_at, expires_at, status, op_type, protocol,
+                description, agent_id)
+               VALUES (?, ?, ?, 'pending', 'move', 'imap', 'Test op', ?)""",
+            (op_id, now, now + 172800, str(agent_id)),
+        )
+        await db.commit()
+
+    await client.request(
+        "DELETE",
+        "/api/v1/account",
+        json={"password": "supersecurepass"},
+        headers=_auth(token),
+    )
+
+    async with get_db(db_path) as db:
+        async with db.execute(
+            "SELECT status FROM staged_operations WHERE id = ?", (op_id,)
+        ) as cur:
+            row = await cur.fetchone()
+    assert row is not None
+    assert row["status"] == "cancelled"

@@ -407,3 +407,17 @@ class DataExportResponse(BaseModel):
     operations: List[ExportOperation]
     audit_log: List[ExportAuditEntry]
     auto_approval_rules: List[ExportAutoApprovalRule]
+
+
+# ---------------------------------------------------------------------------
+# Account deletion model (issue #26)
+# ---------------------------------------------------------------------------
+
+
+class DeleteAccountRequest(BaseModel):
+    """Body for DELETE /api/v1/account — password required for confirmation."""
+    password: str
+
+
+class DeleteAccountResponse(BaseModel):
+    ok: bool
