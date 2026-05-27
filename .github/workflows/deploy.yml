@@ -1,0 +1,118 @@
+name: Deploy
+
+# Option C (staged gate): CI tests run automatically on push (ci.yml).
+# Production deploys are always manual — triggered here via workflow_dispatch.
+#
+# Flow:
+#   1. Run full test suite (reuses ci.yml via workflow_call)
+#   2. Deploy gateway + web in parallel to the target environment
+#   3. If staging: automatically run E2E smoke tests after deploy
+#   4. Production: protected by the "production" GitHub Environment
+#      (configure required reviewers in Settings → Environments → production)
+#
+# Required GitHub secrets (Settings → Secrets and variables → Actions):
+#   FLY_API_TOKEN   — fly.io deploy token (set by Martin)
+#
+# Required GitHub variables (Settings → Secrets and variables → Actions → Variables):
+#   FLY_MAIL_APP_STAGING   — fly.io app name for gateway, staging   e.g. nuvrail-mail-staging
+#   FLY_WEB_APP_STAGING    — fly.io app name for web,     staging   e.g. nuvrail-app-staging
+#   FLY_MAIL_APP_PROD      — fly.io app name for gateway, prod      e.g. nuvrail-mail
+#   FLY_WEB_APP_PROD       — fly.io app name for web,     prod      e.g. nuvrail-app
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Target environment"
+        required: true
+        default: staging
+        type: choice
+        options:
+          - staging
+          - production
+
+jobs:
+
+  # ── Gate: full test suite must pass before any deploy ─────────────────────
+  ci:
+    name: "CI gate"
+    uses: ./.github/workflows/ci.yml
+    secrets: inherit
+
+  # ── Deploy: gateway service ────────────────────────────────────────────────
+  deploy-gateway:
+    name: "Deploy gateway (${{ inputs.environment }})"
+    needs: ci
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up flyctl
+        uses: superfly/flyctl-actions/setup-flyctl@master
+
+      - name: Resolve app name
+        id: app
+        run: |
+          if [ "${{ inputs.environment }}" = "production" ]; then
+            echo "name=${{ vars.FLY_MAIL_APP_PROD }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "name=${{ vars.FLY_MAIL_APP_STAGING }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Deploy gateway to fly.io
+        run: |
+          flyctl deploy \
+            --app "${{ steps.app.outputs.name }}" \
+            --config fly.gateway.toml \
+            --remote-only \
+            --wait-timeout 300
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+
+  # ── Deploy: web app ────────────────────────────────────────────────────────
+  deploy-web:
+    name: "Deploy web (${{ inputs.environment }})"
+    needs: ci
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up flyctl
+        uses: superfly/flyctl-actions/setup-flyctl@master
+
+      - name: Resolve app names
+        id: app
+        run: |
+          if [ "${{ inputs.environment }}" = "production" ]; then
+            echo "name=${{ vars.FLY_WEB_APP_PROD }}" >> "$GITHUB_OUTPUT"
+            echo "api_url=https://${{ vars.FLY_MAIL_APP_PROD }}.fly.dev" >> "$GITHUB_OUTPUT"
+            echo "proxy_host=${{ vars.FLY_MAIL_APP_PROD }}.fly.dev" >> "$GITHUB_OUTPUT"
+          else
+            echo "name=${{ vars.FLY_WEB_APP_STAGING }}" >> "$GITHUB_OUTPUT"
+            echo "api_url=https://${{ vars.FLY_MAIL_APP_STAGING }}.fly.dev" >> "$GITHUB_OUTPUT"
+            echo "proxy_host=${{ vars.FLY_MAIL_APP_STAGING }}.fly.dev" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Deploy web to fly.io
+        run: |
+          flyctl deploy \
+            --app "${{ steps.app.outputs.name }}" \
+            --config web/fly.toml \
+            --build-arg "VITE_API_URL=${{ steps.app.outputs.api_url }}" \
+            --build-arg "VITE_PROXY_HOST=${{ steps.app.outputs.proxy_host }}" \
+            --remote-only \
+            --wait-timeout 300
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+
+  # ── Post-staging: E2E smoke tests ─────────────────────────────────────────
+  e2e:
+    name: "E2E smoke (staging)"
+    needs: [deploy-gateway, deploy-web]
+    if: inputs.environment == 'staging'
+    uses: ./.github/workflows/e2e.yml
+    secrets: inherit

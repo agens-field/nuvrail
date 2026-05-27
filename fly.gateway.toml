@@ -1,0 +1,85 @@
+# fly.io config — Nuvrail gateway service (IMAP proxy + SMTP proxy + REST API)
+#
+# App name is set per-environment via --app flag in deploy.yml.
+# Do not hardcode a production app name here.
+#
+# Secrets to set via `flyctl secrets set` (or Martin configures in fly.io dashboard):
+#   NUVRAIL_MASTER_KEY      — 64 hex chars (32 bytes AES key)
+#   NUVRAIL_VAPID_PRIVATE   — VAPID private key PEM
+#   NUVRAIL_VAPID_PUBLIC    — VAPID public key PEM
+#   LOOPS_API_KEY           — Loops.so (optional, for transactional email)
+#
+# Persistent volume is required for SQLite. Create once per app:
+#   flyctl volumes create nuvrail_data --size 1 --app <app-name>
+
+app = "nuvrail-mail-staging"   # placeholder — overridden by --app in CI
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile.gateway"
+
+[env]
+  NUVRAIL_DATA_DIR = "/data"
+  NUVRAIL_IMAP_PORT = "10143"
+  NUVRAIL_SMTP_PORT = "10587"
+  PORT = "8080"
+
+[[mounts]]
+  source = "nuvrail_data"
+  destination = "/data"
+
+# ── REST API (HTTPS) ──────────────────────────────────────────────────────────
+[[services]]
+  internal_port = 8080
+  protocol = "tcp"
+  auto_stop_machines = true
+  auto_start_machines = true
+  min_machines_running = 0
+
+  [[services.ports]]
+    handlers = ["http"]
+    port = 80
+    force_https = true
+
+  [[services.ports]]
+    handlers = ["tls", "http"]
+    port = 443
+
+  [services.concurrency]
+    type = "connections"
+    hard_limit = 100
+    soft_limit = 80
+
+# ── IMAP proxy (SSL, port 993) ────────────────────────────────────────────────
+[[services]]
+  internal_port = 10143
+  protocol = "tcp"
+  auto_stop_machines = false   # IMAP is long-lived; never auto-stop
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[services.ports]]
+    handlers = ["tls"]
+    port = 993
+
+# ── SMTP proxy (SMTPS, port 465) ─────────────────────────────────────────────
+[[services]]
+  internal_port = 10587
+  protocol = "tcp"
+  auto_stop_machines = false   # SMTP sessions can be long-lived
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[services.ports]]
+    handlers = ["tls"]
+    port = 465
+
+[checks]
+  [checks.api_health]
+    port = 8080
+    type = "http"
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "10s"
+    method = "GET"
+    path = "/health"

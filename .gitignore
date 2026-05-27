@@ -21,8 +21,9 @@ client_secret.json
 *.key
 *.pem
 
-fly.gateway.toml
-web/fly.web.toml
+# fly.toml files are tracked — app names are placeholders, secrets are never stored here
+# fly.gateway.toml
+# web/fly.web.toml
 
 # gitleaks config MUST be committed — do not ignore it
 !.gitleaks.toml
