@@ -1,9 +1,10 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Bot, ClipboardList, Mail, RefreshCw, Server, Trash2 } from 'lucide-react'
+import { Bot, ClipboardList, RefreshCw, Trash2 } from 'lucide-react'
 import { fetchAgents, revokeAgent, startGmailOAuth, createAgent, fetchAgentAuditLog } from '../api/client'
 import type { AgentResponse, AgentCreateResponse } from '../api/client'
 import type { AuditEntry } from '../types'
+import ProviderPicker, { type Provider } from '../components/ProviderPicker'
 
 function formatDate(ts: number): string {
   return new Date(ts * 1000).toLocaleDateString(undefined, {
@@ -184,82 +185,12 @@ function AgentCard({
 }
 
 // ---------------------------------------------------------------------------
-// Connect Gmail inline widget
+// Add Agent modal — ProviderPicker + per-provider forms
 // ---------------------------------------------------------------------------
 
-function ConnectGmailButton() {
-  const [open, setOpen] = useState(false)
-  const [label, setLabel] = useState('')
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+function AddAgentModal({ onCreated, onClose }: { onCreated: () => void; onClose: () => void }) {
+  const [provider, setProvider] = useState<Provider | null>(null)
 
-  async function handleConnect() {
-    setError(null)
-    setLoading(true)
-    try {
-      const res = await startGmailOAuth(label.trim() || undefined)
-      window.location.href = res.auth_url
-    } catch (err) {
-      setLoading(false)
-      const msg = err instanceof Error ? err.message : String(err)
-      if (msg.includes('oauth2_not_configured')) {
-        setError('Gmail OAuth2 is not configured on this server.')
-      } else {
-        setError(msg)
-      }
-    }
-  }
-
-  if (!open) {
-    return (
-      <button
-        onClick={() => setOpen(true)}
-        className="flex items-center gap-1.5 bg-red-600 hover:bg-red-700 text-white text-sm font-medium px-3 py-1.5 rounded transition-colors"
-      >
-        <Mail className="w-3.5 h-3.5" />
-        Connect Gmail
-      </button>
-    )
-  }
-
-  return (
-    <div className="flex items-center gap-2">
-      <input
-        autoFocus
-        type="text"
-        value={label}
-        onChange={(e) => setLabel(e.target.value)}
-        onKeyDown={(e) => { if (e.key === 'Enter') void handleConnect() }}
-        placeholder="Label (optional)"
-        disabled={loading}
-        className="bg-surface-hi border border-edge rounded px-2 py-1 text-sm text-fg w-36 focus:outline-none focus:ring-1 focus:ring-red-500 disabled:opacity-50"
-      />
-      <button
-        onClick={() => void handleConnect()}
-        disabled={loading}
-        className="flex items-center gap-1 bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white text-sm font-medium px-3 py-1.5 rounded transition-colors"
-      >
-        <Mail className="w-3.5 h-3.5" />
-        {loading ? 'Redirecting…' : 'Connect'}
-      </button>
-      <button
-        onClick={() => { setOpen(false); setLabel(''); setError(null) }}
-        disabled={loading}
-        className="text-fg-3 hover:text-fg-2 text-sm disabled:opacity-50"
-      >
-        Cancel
-      </button>
-      {error && <p className="text-red-400 text-xs">{error}</p>}
-    </div>
-  )
-}
-
-// ---------------------------------------------------------------------------
-// Add IMAP / App Password inline widget
-// ---------------------------------------------------------------------------
-
-function AddImapAgentWidget({ onCreated }: { onCreated: () => void }) {
-  const [open, setOpen] = useState(false)
   const [label, setLabel] = useState('')
   const [upstreamHost, setUpstreamHost] = useState('')
   const [imapPort, setImapPort] = useState(993)
@@ -270,6 +201,9 @@ function AddImapAgentWidget({ onCreated }: { onCreated: () => void }) {
   const [error, setError] = useState<string | null>(null)
   const [result, setResult] = useState<AgentCreateResponse | null>(null)
   const [copied, setCopied] = useState(false)
+  const [gmailLabel, setGmailLabel] = useState('')
+  const [gmailLoading, setGmailLoading] = useState(false)
+  const [gmailError, setGmailError] = useState<string | null>(null)
 
   function mapConnectionError(message: string): string {
     if (message.includes('imap_auth_failed')) return 'Wrong password — for Gmail or iCloud, use an app-specific password.'
@@ -280,7 +214,7 @@ function AddImapAgentWidget({ onCreated }: { onCreated: () => void }) {
   }
 
   function reset() {
-    setOpen(false)
+    setProvider(null)
     setLabel('')
     setUpstreamHost('')
     setImapPort(993)
@@ -290,6 +224,29 @@ function AddImapAgentWidget({ onCreated }: { onCreated: () => void }) {
     setError(null)
     setResult(null)
     setCopied(false)
+    setGmailLabel('')
+    setGmailError(null)
+  }
+
+  async function handleGmailConnect() {
+    setGmailError(null)
+    setGmailLoading(true)
+    try {
+      const res = await startGmailOAuth(gmailLabel.trim() || undefined)
+      window.location.href = res.auth_url
+    } catch (err) {
+      setGmailLoading(false)
+      const msg = err instanceof Error ? err.message : String(err)
+      setGmailError(msg.includes('oauth2_not_configured')
+        ? 'Gmail OAuth2 is not configured on this server.' : msg)
+    }
+  }
+
+  function handleProviderSelect(p: Provider) {
+    setProvider(p)
+    // Pre-fill host for known providers
+    if (p === 'icloud') { setUpstreamHost('imap.mail.me.com'); setImapPort(993); setSmtpPort(587) }
+    if (p === 'other') { setUpstreamHost(''); setImapPort(993); setSmtpPort(587) }
   }
 
   async function handleSubmit(e: React.FormEvent) {
@@ -395,15 +352,46 @@ function AddImapAgentWidget({ onCreated }: { onCreated: () => void }) {
     setTimeout(() => setCopied(false), 2000)
   }
 
-  if (!open) {
+  // Outer modal shell — provider picker or per-provider form
+  if (!provider) {
     return (
-      <button
-        onClick={() => setOpen(true)}
-        className="flex items-center gap-1.5 bg-accent hover:bg-accent-hi text-white text-sm font-medium px-3 py-1.5 rounded transition-colors"
-      >
-        <Server className="w-3.5 h-3.5" />
-        IMAP / App Password
-      </button>
+      <div className="bg-surface border border-edge rounded-xl p-5">
+        <div className="flex items-center justify-between mb-4">
+          <span className="text-xs font-mono text-fg-3 uppercase tracking-wider">Add agent</span>
+          <button onClick={onClose} className="text-fg-3 hover:text-fg-2 text-sm">✕</button>
+        </div>
+        <ProviderPicker
+          onSelect={handleProviderSelect}
+          heading="Connect an email account"
+          subheading="Choose your provider. The agent will connect through the Nuvrail proxy."
+        />
+      </div>
+    )
+  }
+
+  // Gmail flow
+  if (provider === 'gmail') {
+    return (
+      <div className="bg-surface border border-edge rounded-xl p-5 space-y-4">
+        <div className="flex items-center justify-between">
+          <h2 className="text-base font-display font-black text-fg">Connect Gmail</h2>
+          <button onClick={reset} className="text-fg-3 hover:text-fg-2 text-sm">✕</button>
+        </div>
+        <p className="text-sm text-fg-3">You'll be redirected to Google to authorise access.</p>
+        <div>
+          <label className="block text-sm font-medium text-fg-2 mb-1">Label <span className="text-fg-3 font-normal">(optional)</span></label>
+          <input type="text" value={gmailLabel} onChange={(e) => setGmailLabel(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter') void handleGmailConnect() }}
+            className="w-full bg-surface-hi border border-edge rounded px-3 py-2 text-fg placeholder-fg-3 focus:outline-none focus:ring-2 focus:ring-accent"
+            placeholder="e.g. Work, Personal" />
+        </div>
+        {gmailError && <p className="text-red-400 text-sm">{gmailError}</p>}
+        <button onClick={() => void handleGmailConnect()} disabled={gmailLoading}
+          className="w-full bg-accent hover:bg-accent-hi disabled:opacity-50 text-white dark:text-[#111c27] font-semibold py-2 px-4 rounded transition-colors">
+          {gmailLoading ? 'Redirecting to Google…' : 'Continue with Google'}
+        </button>
+        <button onClick={reset} className="w-full text-sm text-fg-3 hover:text-fg-2 py-1 transition-colors">← Back</button>
+      </div>
     )
   }
 
@@ -443,12 +431,12 @@ function AddImapAgentWidget({ onCreated }: { onCreated: () => void }) {
         </div>
         <div className="flex gap-3">
           <button
-            onClick={() => { setResult(null); setLabel(''); setUpstreamHost(''); setUpstreamUser(''); setUpstreamPassword('') }}
-            className="bg-slate-600 hover:bg-slate-500 text-fg-2 text-sm font-medium py-2 px-4 rounded"
+            onClick={() => { setResult(null); setProvider(null); setLabel(''); setUpstreamHost(''); setUpstreamUser(''); setUpstreamPassword('') }}
+            className="bg-surface-hi hover:bg-edge text-fg-2 text-sm font-medium py-2 px-4 rounded"
           >
             Add another
           </button>
-          <button onClick={reset} className="bg-accent hover:bg-accent-hi text-white text-sm font-medium py-2 px-4 rounded">
+          <button onClick={() => { reset(); onCreated() }} className="bg-accent hover:bg-accent-hi text-white dark:text-[#111c27] text-sm font-medium py-2 px-4 rounded">
             Done
           </button>
         </div>
@@ -456,12 +444,26 @@ function AddImapAgentWidget({ onCreated }: { onCreated: () => void }) {
     )
   }
 
+  const isICloud = provider === 'icloud'
+
   return (
-    <div className="bg-surface border border-edge rounded-lg p-5">
+    <div className="bg-surface border border-edge rounded-xl p-5">
       <div className="flex items-center justify-between mb-4">
-        <h2 className="text-base font-semibold text-fg-2">Connect via IMAP / App Password</h2>
-        <button onClick={reset} className="text-fg-3 hover:text-fg-2 text-sm">Cancel</button>
+        <h2 className="text-base font-display font-black text-fg">
+          {isICloud ? 'Connect iCloud Mail' : 'Connect via IMAP'}
+        </h2>
+        <button onClick={onClose} className="text-fg-3 hover:text-fg-2 text-sm">✕</button>
       </div>
+      {isICloud && (
+        <p className="text-sm text-fg-3 mb-4">
+          Use an app-specific password from{' '}
+          <a href="https://appleid.apple.com" target="_blank" rel="noreferrer" className="text-accent hover:underline">appleid.apple.com</a>
+          {' '}→ Sign-In and Security → App-Specific Passwords.
+        </p>
+      )}
+      {!isICloud && (
+        <p className="text-sm text-fg-3 mb-4">Enter your IMAP server details. Any standard IMAP/SMTP provider works.</p>
+      )}
       <form onSubmit={(e) => void handleSubmit(e)} className="space-y-4">
         <div>
           <label className="block text-sm font-medium text-fg-2 mb-1">
@@ -472,10 +474,16 @@ function AddImapAgentWidget({ onCreated }: { onCreated: () => void }) {
             placeholder="Work" />
         </div>
         <div>
-          <label className="block text-sm font-medium text-fg-2 mb-1">Upstream IMAP host</label>
-          <input type="text" value={upstreamHost} onChange={(e) => setUpstreamHost(e.target.value)} required
-            className="w-full bg-surface-hi border border-edge rounded px-3 py-2 text-fg focus:outline-none focus:ring-2 focus:ring-accent"
-            placeholder="imap.mail.me.com" />
+          <label className="block text-sm font-medium text-fg-2 mb-1">IMAP host</label>
+          {isICloud ? (
+            <p className="text-xs text-fg-3 font-mono bg-surface-hi border border-edge rounded px-3 py-2">
+              imap.mail.me.com:993 · smtp.mail.me.com:587
+            </p>
+          ) : (
+            <input type="text" value={upstreamHost} onChange={(e) => setUpstreamHost(e.target.value)} required
+              className="w-full bg-surface-hi border border-edge rounded px-3 py-2 text-fg placeholder-fg-3 focus:outline-none focus:ring-2 focus:ring-accent"
+              placeholder="imap.example.com" />
+          )}
         </div>
         <div className="flex gap-4">
           <div className="flex-1">
@@ -518,6 +526,7 @@ function AddImapAgentWidget({ onCreated }: { onCreated: () => void }) {
 
 export default function AgentsView() {
   const qc = useQueryClient()
+  const [showAddModal, setShowAddModal] = useState(false)
 
   const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ['agents'],
@@ -546,10 +555,25 @@ export default function AgentsView() {
           >
             <RefreshCw className="w-4 h-4" />
           </button>
-          <ConnectGmailButton />
-          <AddImapAgentWidget onCreated={() => qc.invalidateQueries({ queryKey: ['agents'] })} />
+          <button
+            onClick={() => setShowAddModal(true)}
+            className="flex items-center gap-1.5 bg-accent hover:bg-accent-hi text-white dark:text-[#111c27] text-sm font-semibold px-3 py-1.5 rounded transition-colors"
+          >
+            + Add agent
+          </button>
         </div>
       </div>
+
+      {/* Add agent modal */}
+      {showAddModal && (
+        <AddAgentModal
+          onCreated={() => {
+            qc.invalidateQueries({ queryKey: ['agents'] })
+            setShowAddModal(false)
+          }}
+          onClose={() => setShowAddModal(false)}
+        />
+      )}
 
       {/* Loading */}
       {isLoading && (
@@ -565,7 +589,7 @@ export default function AgentsView() {
       {!isLoading && !isError && agents.length === 0 && (
         <div className="flex flex-col items-center justify-center py-20 text-fg-3 gap-3">
           <Bot className="w-10 h-10 opacity-40" />
-          <p className="text-sm">No agents yet — use the buttons above to connect your first email account.</p>
+          <p className="text-sm">No agents yet — click <strong className="text-fg-2">+ Add agent</strong> to connect your first email account.</p>
         </div>
       )}
 

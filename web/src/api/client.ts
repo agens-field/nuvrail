@@ -162,6 +162,7 @@ export async function fetchMe(): Promise<MeResponse> {
 // ---------------------------------------------------------------------------
 
 export interface AgentCreateRequest {
+  upstream_smtp_host?: string
   label?: string
   upstream_host: string
   upstream_imap_port?: number
