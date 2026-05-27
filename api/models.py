@@ -333,3 +333,77 @@ class TokenRotateResponse(BaseModel):
     token_type: str = "bearer"
     user_id: int
     email: str
+
+
+# ---------------------------------------------------------------------------
+# Data export models (issue #27)
+# ---------------------------------------------------------------------------
+
+
+class ExportAccount(BaseModel):
+    email: str
+    display_name: Optional[str] = None
+    created_at: int
+
+
+class ExportAgent(BaseModel):
+    id: int
+    label: str
+    upstream_host: str
+    upstream_user: str
+    created_at: int
+    revoked_at: Optional[int] = None
+
+
+class ExportOperation(BaseModel):
+    id: str
+    created_at: int
+    expires_at: int
+    status: str
+    op_type: str
+    protocol: str
+    description: str
+    agent_id: Optional[str] = None
+    decided_at: Optional[int] = None
+    executed_at: Optional[int] = None
+    error: Optional[str] = None
+
+
+class ExportAuditEntry(BaseModel):
+    id: int
+    timestamp: int
+    operation_id: Optional[str] = None
+    event: str
+    actor: Optional[str] = None
+    detail: Optional[dict] = None
+
+    @field_validator("detail", mode="before")
+    @classmethod
+    def parse_detail(cls, v: object) -> object:
+        if isinstance(v, str):
+            try:
+                return json.loads(v)
+            except Exception:  # noqa: BLE001
+                return None
+        return v
+
+
+class ExportAutoApprovalRule(BaseModel):
+    id: int
+    enabled: bool
+    priority: int
+    op_type: Optional[str] = None
+    sender_pattern: Optional[str] = None
+    folder_from: Optional[str] = None
+    action: str
+    description: str
+    created_at: int
+
+
+class DataExportResponse(BaseModel):
+    exported_at: int
+    account: ExportAccount
+    agents: List[ExportAgent]
+    operations: List[ExportOperation]
+    audit_log: List[ExportAuditEntry]
+    auto_approval_rules: List[ExportAutoApprovalRule]

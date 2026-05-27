@@ -168,3 +168,82 @@ async def test_rotate_token_requires_auth(client: httpx.AsyncClient) -> None:
     """POST /account/token/rotate returns 401 without a token."""
     resp = await client.post("/api/v1/account/token/rotate")
     assert resp.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# Issue #27 — Data export
+# ---------------------------------------------------------------------------
+
+from gateway.state_db import get_db  # noqa: E402
+
+
+async def test_export_returns_json_attachment(
+    client: httpx.AsyncClient, db_path: Path
+) -> None:
+    """GET /account/export returns JSON with Content-Disposition attachment."""
+    token, _ = await _register_and_login(client)
+    resp = await client.get("/api/v1/account/export", headers=_auth(token))
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("application/json")
+    cd = resp.headers.get("content-disposition", "")
+    assert "attachment" in cd
+    assert "nuvrail-export-" in cd
+
+
+async def test_export_contains_expected_fields(
+    client: httpx.AsyncClient, db_path: Path
+) -> None:
+    """Export JSON contains all required top-level fields."""
+    token, _ = await _register_and_login(client)
+    resp = await client.get("/api/v1/account/export", headers=_auth(token))
+    data = resp.json()
+    for field in ("exported_at", "account", "agents", "operations", "audit_log", "auto_approval_rules"):
+        assert field in data, f"Missing field: {field}"
+
+
+async def test_export_account_fields(
+    client: httpx.AsyncClient, db_path: Path
+) -> None:
+    """Export account block has email, display_name, created_at."""
+    email = _unique_email()
+    token, _ = await _register_and_login(client, email=email)
+    resp = await client.get("/api/v1/account/export", headers=_auth(token))
+    account = resp.json()["account"]
+    assert account["email"] == email
+    assert account["display_name"] == "Test User"
+    assert isinstance(account["created_at"], int)
+
+
+async def test_export_no_credentials(
+    client: httpx.AsyncClient, db_path: Path
+) -> None:
+    """Export agents list does not contain credential values."""
+    token, _ = await _register_and_login(client)
+    resp = await client.get("/api/v1/account/export", headers=_auth(token))
+    data = resp.json()
+    for agent in data["agents"]:
+        for forbidden_key in ("hashed_token", "upstream_password", "oauth2_refresh_token",
+                               "oauth2_client_secret", "oauth2_access_token"):
+            assert forbidden_key not in agent, f"Credential field leaked: {forbidden_key}"
+
+
+async def test_export_writes_audit_event(
+    client: httpx.AsyncClient, db_path: Path
+) -> None:
+    """Exporting writes an 'export_requested' audit log event."""
+    token, _ = await _register_and_login(client)
+    await client.get("/api/v1/account/export", headers=_auth(token))
+
+    async with get_db(db_path) as db:
+        async with db.execute(
+            "SELECT event FROM audit_log WHERE event = 'export_requested'"
+        ) as cur:
+            row = await cur.fetchone()
+    assert row is not None
+    assert row["event"] == "export_requested"
+
+
+async def test_export_requires_auth(client: httpx.AsyncClient) -> None:
+    """GET /account/export returns 401 without a token."""
+    resp = await client.get("/api/v1/account/export")
+    assert resp.status_code == 401
