@@ -232,12 +232,16 @@ async def init_db(path: Path = DB_PATH) -> None:
                     f"ALTER TABLE agent_credentials ADD COLUMN {col_name} {col_type}"  # noqa: S608
                 )
 
-        # Migration: add reset_token columns to users if absent (issue #16).
+        # Migration: add reset_token columns to users if absent (issue #16),
+        # and token-tracking columns (issue #28), and deleted_at (issue #26).
         async with db.execute("PRAGMA table_info(users)") as cur:
             user_cols = {row["name"] for row in await cur.fetchall()}
         for col_name, col_type in [
             ("reset_token", "TEXT"),
             ("reset_token_expires_at", "INTEGER"),
+            ("api_token_created_at", "INTEGER"),
+            ("api_token_last_used_at", "INTEGER"),
+            ("deleted_at", "INTEGER"),
         ]:
             if col_name not in user_cols:
                 await db.execute(

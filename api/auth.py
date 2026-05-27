@@ -7,6 +7,7 @@ Lane 2: AI agent → proxy via agent username + token (IMAP/SMTP password).
 from __future__ import annotations
 
 import secrets
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -15,6 +16,11 @@ from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from gateway.state_db import DB_PATH, get_db
+
+# In-memory throttle: track the last time we updated api_token_last_used_at per user.
+# At most one DB write per user per hour (issue #28).
+_last_used_update: dict[int, float] = {}
+_LAST_USED_UPDATE_INTERVAL: float = 3600.0  # seconds
 
 _bearer = HTTPBearer(auto_error=False)
 
@@ -82,11 +88,38 @@ async def get_user_by_token(token: str, db_path: Path = DB_PATH) -> Optional[dic
     return dict(row) if row else None
 
 
+async def touch_last_used_at(user_id: int, db_path: Path = DB_PATH) -> None:
+    """Lazily update api_token_last_used_at — at most once per hour per user.
+
+    Uses an in-memory dict to throttle DB writes.  Skips silently on any
+    error so authentication is never blocked by a stats-write failure.
+    """
+    now = time.time()
+    last = _last_used_update.get(user_id, 0.0)
+    if now - last < _LAST_USED_UPDATE_INTERVAL:
+        return
+    _last_used_update[user_id] = now
+    try:
+        async with get_db(db_path) as db:
+            await db.execute(
+                "UPDATE users SET api_token_last_used_at = ? WHERE id = ?",
+                (int(now), user_id),
+            )
+            await db.commit()
+    except Exception:  # noqa: BLE001
+        pass  # non-fatal: stats update failure must not break auth
+
+
 async def get_current_user(
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(_bearer),
     db_path: Path = Depends(get_auth_db_path),
 ) -> dict:
-    """FastAPI dependency: validate Bearer token and return the user row."""
+    """FastAPI dependency: validate Bearer token and return the user row.
+
+    Also:
+    - Rejects requests from deleted accounts (deleted_at IS NOT NULL) — issue #26.
+    - Lazily updates api_token_last_used_at at most once per hour — issue #28.
+    """
     if not credentials or credentials.scheme.lower() != "bearer":
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -100,4 +133,13 @@ async def get_current_user(
             detail="Invalid or expired token",
             headers={"WWW-Authenticate": "Bearer"},
         )
+    # Issue #26: reject deleted accounts.
+    if user.get("deleted_at") is not None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Account has been deleted",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    # Issue #28: lazily track last-used timestamp (non-blocking).
+    await touch_last_used_at(user["id"], db_path=db_path)
     return user

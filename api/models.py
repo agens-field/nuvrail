@@ -314,3 +314,22 @@ class ResetPasswordResponse(BaseModel):
 
 class LogoutResponse(BaseModel):
     ok: bool
+
+
+# ---------------------------------------------------------------------------
+# Session / token management models (issue #28)
+# ---------------------------------------------------------------------------
+
+
+class TokenInfoResponse(BaseModel):
+    """Response for GET /api/v1/account/token."""
+    created_at: Optional[int] = None
+    last_used_at: Optional[int] = None
+
+
+class TokenRotateResponse(BaseModel):
+    """Response for POST /api/v1/account/token/rotate — same shape as LoginResponse."""
+    token: str
+    token_type: str = "bearer"
+    user_id: int
+    email: str

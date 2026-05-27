@@ -1,13 +1,13 @@
 """
-Auth + agent credential endpoints — Milestone auth.
+Auth + agent credential endpoints - Milestone auth.
 
-POST /api/v1/auth/register  — create a user account
-POST /api/v1/auth/login     — exchange email/password for a bearer token
-GET  /api/v1/auth/me        — return current user info (requires Bearer)
+POST /api/v1/auth/register  - create a user account
+POST /api/v1/auth/login     - exchange email/password for a bearer token
+GET  /api/v1/auth/me        - return current user info (requires Bearer)
 
-POST   /api/v1/agents       — register upstream email account, get agent credentials (shown once)
-GET    /api/v1/agents       — list agent credentials for current user (no token field)
-DELETE /api/v1/agents/{id}  — revoke an agent credential
+POST   /api/v1/agents       - register upstream email account, get agent credentials (shown once)
+GET    /api/v1/agents       - list agent credentials for current user (no token field)
+DELETE /api/v1/agents/{id}  - revoke an agent credential
 
 Lane 3: human → REST API (bearer token)
 Lane 2: AI agent → proxy (agent_username + agent_token as IMAP/SMTP password)
@@ -176,10 +176,11 @@ async def register(
 
         cur2 = await db.execute(
             """
-            INSERT INTO users (email, display_name, hashed_password, api_token, created_at)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO users (email, display_name, hashed_password, api_token,
+                               api_token_created_at, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
-            (body.email, body.display_name, hashed, hash_token_for_storage(api_token), now),
+            (body.email, body.display_name, hashed, hash_token_for_storage(api_token), now, now),
         )
         await db.commit()
         user_id = cur2.lastrowid
@@ -189,7 +190,7 @@ async def register(
         email=body.email,
         display_name=body.display_name,
         created_at=now,
-        token=api_token,  # plaintext — shown once, stored as hash
+        token=api_token,  # plaintext - shown once, stored as hash
     )
 
 
@@ -248,15 +249,16 @@ async def login(
     # hash so the DB never holds a recoverable secret.  Each login invalidates
     # the previous token (only the latest hash is stored).
     fresh_token = generate_token()
+    now_login = int(time.time())
     async with get_db(db_path) as db:
         await db.execute(
-            "UPDATE users SET api_token = ? WHERE id = ?",
-            (hash_token_for_storage(fresh_token), user["id"]),
+            "UPDATE users SET api_token = ?, api_token_created_at = ? WHERE id = ?",
+            (hash_token_for_storage(fresh_token), now_login, user["id"]),
         )
         await db.commit()
 
     return LoginResponse(
-        token=fresh_token,  # plaintext — shown once, not stored
+        token=fresh_token,  # plaintext - shown once, not stored
         token_type="bearer",
         user_id=user["id"],
         email=user["email"],
@@ -297,7 +299,7 @@ async def create_agent(
         oauth2_client_secret, and oauth2_refresh_token.
 
     The plaintext agent_token is returned ONCE in this response.
-    It is NEVER stored and NEVER returned again — the caller must save it.
+    It is NEVER stored and NEVER returned again - the caller must save it.
     """
     # --- Validate auth mode -------------------------------------------------
     using_oauth2 = bool(body.oauth2_provider)
@@ -399,7 +401,7 @@ async def create_agent(
     return AgentCreateResponse(
         id=cred_id,  # type: ignore[arg-type]
         agent_username=agent_username,
-        agent_token=agent_token_plain,  # SHOWN ONCE — never stored as plaintext
+        agent_token=agent_token_plain,  # SHOWN ONCE - never stored as plaintext
         label=label,
         upstream_host=body.upstream_host,
         upstream_user=body.upstream_user,
@@ -532,7 +534,7 @@ async def reset_request(
             row = await cur.fetchone()
 
     if row is None:
-        # Return 200 — no account enumeration
+        # Return 200 - no account enumeration
         return ResetRequestResponse(ok=True)
 
     user_id = row["id"]
@@ -617,7 +619,7 @@ async def logout(
 ) -> LogoutResponse:
     """Revoke the current bearer token server-side.
 
-    After this call, the token stored in the DB is nulled — future requests
+    After this call, the token stored in the DB is nulled - future requests
     with the same token will receive 401. The client should also clear its
     local token storage.
     """
