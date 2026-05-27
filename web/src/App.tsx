@@ -34,7 +34,7 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
   const location = useLocation()
 
   useEffect(() => {
-    const publicRoutes = ['/login', '/reset-request', '/reset']
+    const publicRoutes = ['/login', '/reset-request', '/reset', '/setup']
     const isPublic = publicRoutes.some((r) => location.pathname === r)
     if (!isPublic && !getToken()) {
       navigate('/login', { replace: true })
