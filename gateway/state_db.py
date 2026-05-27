@@ -211,6 +211,11 @@ async def init_db(path: Path = DB_PATH) -> None:
                 "CREATE INDEX IF NOT EXISTS idx_staged_ops_batch_id"
                 " ON staged_operations(batch_id)"
             )
+        # Migration: add body_scrubbed_at column to staged_operations (issue #29).
+        if "body_scrubbed_at" not in staged_cols:
+            await db.execute(
+                "ALTER TABLE staged_operations ADD COLUMN body_scrubbed_at INTEGER"
+            )
 
         new_columns = [
             ("oauth2_provider",              "TEXT"),
