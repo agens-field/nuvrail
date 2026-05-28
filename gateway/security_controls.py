@@ -135,7 +135,6 @@ class AuthAbuseProtector:
             return AuthDecision(True, 0, "allowed")
 
     async def record_success(self, *, ip: str, account: str) -> None:
-        now = int(time.time())
         ip_key = f"ip:{ip}"
         account_key = f"acct:{account.lower()}"
         async with self._lock:

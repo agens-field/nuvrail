@@ -25,7 +25,6 @@ import time
 from typing import Optional
 
 import pytest
-import pytest_asyncio
 
 from tests.e2e.helpers import (
     delete_message_by_uid,

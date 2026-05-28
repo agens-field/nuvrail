@@ -20,7 +20,6 @@ from typing import Optional
 import pytest
 
 from tests.e2e.helpers import (
-    check_message_exists,
     delete_message_by_uid,
     get_message_flags,
     send_direct_smtp,

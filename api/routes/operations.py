@@ -51,7 +51,10 @@ import re
 import time
 from email.mime.text import MIMEText
 from pathlib import Path
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
+
+if TYPE_CHECKING:
+    import email.message
 
 import aioimaplib
 from aioimaplib import quoted as imap_quoted
@@ -677,7 +680,6 @@ async def _do_approve(op_id: str, row: dict, db_path: Path) -> ApproveResponse:
         else:
             envelope = {}
 
-        sender = envelope.get("from", "")
         recipients = envelope.get("to", [])
         subject = envelope.get("subject", "<no subject>")
         # Use full body when available; fall back to body_preview for ops staged

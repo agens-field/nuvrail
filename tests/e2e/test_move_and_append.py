@@ -35,7 +35,6 @@ import aioimaplib
 import pytest
 
 from tests.e2e.helpers import (
-    delete_message_by_uid,
     send_direct_smtp,
     wait_for_message,
 )

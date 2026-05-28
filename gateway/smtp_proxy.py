@@ -58,11 +58,11 @@ responses inline is both simpler and correct for the SMTP protocol.
 from __future__ import annotations
 
 import asyncio
-import base64
 import logging
 import os
 import re
 import ssl
+from pathlib import Path
 from typing import Optional
 
 from dotenv import load_dotenv
@@ -70,7 +70,7 @@ from dotenv import load_dotenv
 from gateway.credentials import decrypt_credential
 from gateway.security_controls import build_auth_abuse_protector
 from gateway.staging import create_operation
-from gateway.state_db import DB_PATH, get_db
+from gateway.state_db import get_db
 from logging_config import redact_protocol_line
 
 load_dotenv()
@@ -514,8 +514,8 @@ async def handle_smtp_client(
 
                 else:
                     client_writer.write(
-                        f"504 5.5.4 Authentication mechanism not supported"
-                        f" — try AUTH PLAIN\r\n".encode()
+                        "504 5.5.4 Authentication mechanism not supported"
+                        " — try AUTH PLAIN\r\n".encode()
                     )
                     await client_writer.drain()
                     logger.warning(

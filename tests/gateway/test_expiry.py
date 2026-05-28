@@ -149,7 +149,6 @@ async def test_expire_stale_sets_decided_at(db_path: Path) -> None:
 
 async def test_expire_stale_reverts_snapshot(db_path: Path) -> None:
     """expire_stale_operations restores flags and queues pending_reverts when snapshot exists."""
-    import json
 
     folder_id = await get_or_create_folder("INBOX", db_path=db_path)
     await upsert_message(folder_id, 42, seq_num=1, flags=[], db_path=db_path)
@@ -194,7 +193,7 @@ async def test_expire_stale_returns_count(db_path: Path) -> None:
     """expire_stale_operations returns the number of ops expired."""
     await _make_expired_op(db_path)
     await _make_expired_op(db_path)
-    live_id = await _make_live_op(db_path)
+    await _make_live_op(db_path)
 
     count = await expire_stale_operations(db_path=db_path)
     assert count == 2

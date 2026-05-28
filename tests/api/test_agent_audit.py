@@ -20,7 +20,7 @@ import pytest_asyncio
 from api.auth import get_auth_db_path, get_current_user
 from api.main import app
 from api.routes.operations import get_db_path
-from gateway.staging import create_operation, update_operation_status
+from gateway.staging import create_operation
 from gateway.state_db import get_db, init_db
 
 # ---------------------------------------------------------------------------

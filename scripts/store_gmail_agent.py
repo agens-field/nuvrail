@@ -91,10 +91,10 @@ def main() -> None:
     print(f"upstream_user  : {data.get('upstream_user')}")
     print("\nSave the agent_token now — it is shown exactly once.")
     print("Configure your AI client with:")
-    print(f"  IMAP host : test.nuvrail.com  port: 993")
-    print(f"  SMTP host : test.nuvrail.com  port: 465")
+    print("  IMAP host : test.nuvrail.com  port: 993")
+    print("  SMTP host : test.nuvrail.com  port: 465")
     print(f"  Username  : {data.get('agent_username')}")
-    print(f"  Password  : <agent_token above>\n")
+    print("  Password  : <agent_token above>\n")
 
 
 if __name__ == "__main__":
