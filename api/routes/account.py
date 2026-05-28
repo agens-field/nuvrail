@@ -154,14 +154,16 @@ async def export_account_data(
         ) as cur:
             audit_rows = [dict(r) for r in await cur.fetchall()]
 
-        # Fetch auto_approval_rules
+        # Fetch auto_approval_rules (scoped to this user)
         async with db.execute(
             """
             SELECT id, enabled, priority, op_type, sender_pattern,
                    folder_from, action, description, created_at
             FROM auto_approval_rules
+            WHERE user_id = ?
             ORDER BY priority DESC, created_at ASC
             """,
+            (user_id,),
         ) as cur:
             rule_rows = [dict(r) for r in await cur.fetchall()]
 

@@ -62,6 +62,7 @@ CREATE TABLE IF NOT EXISTS push_subscriptions (
 
 CREATE TABLE IF NOT EXISTS auto_approval_rules (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id        INTEGER REFERENCES users(id),  -- owning user; rules apply only to that user's operations
     enabled        INTEGER NOT NULL DEFAULT 1,
     priority       INTEGER NOT NULL DEFAULT 0,
     op_type        TEXT,
@@ -265,6 +266,21 @@ async def init_db(path: Path = DB_PATH) -> None:
         # Idempotent index for per-agent queries.
         await db.execute(
             "CREATE INDEX IF NOT EXISTS idx_audit_log_agent_id ON audit_log(agent_id)"
+        )
+
+        # Migration: add user_id to auto_approval_rules so rules are tenant-scoped.
+        # Rules predating this column have NULL user_id and intentionally match no
+        # operation (fail closed) — a global rule must never act on another user's
+        # mail. The owner must re-create such rules under their account.
+        async with db.execute("PRAGMA table_info(auto_approval_rules)") as cur:
+            rule_cols = {row["name"] for row in await cur.fetchall()}
+        if "user_id" not in rule_cols:
+            await db.execute(
+                "ALTER TABLE auto_approval_rules ADD COLUMN user_id INTEGER"
+            )
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_auto_rules_user_id"
+            " ON auto_approval_rules(user_id)"
         )
 
         # Migration: drop NOT NULL from upstream_password to support OAuth2 agents.

@@ -75,16 +75,27 @@ def _matches(rule: dict, op: dict) -> bool:
     return True
 
 
-async def get_matching_rule(op: dict, db_path: Path = DB_PATH) -> Optional[dict]:
-    """Return the first enabled rule matching the operation, else None."""
+async def get_matching_rule(
+    op: dict, db_path: Path = DB_PATH, user_id: Optional[int] = None
+) -> Optional[dict]:
+    """Return the first enabled rule matching the operation, else None.
+
+    Rules are tenant-scoped: only rules owned by ``user_id`` are considered.
+    When ``user_id`` is None the function matches nothing (fail closed) — a
+    rule must never act on an operation it cannot be attributed to. Callers
+    must resolve the operation's owning user and pass it explicitly.
+    """
+    if user_id is None:
+        return None
     async with get_db(db_path) as db:
         async with db.execute(
             """
             SELECT *
             FROM auto_approval_rules
-            WHERE enabled = 1
+            WHERE enabled = 1 AND user_id = ?
             ORDER BY priority DESC, id ASC
-            """
+            """,
+            (user_id,),
         ) as cur:
             rows = await cur.fetchall()
 
@@ -95,9 +106,14 @@ async def get_matching_rule(op: dict, db_path: Path = DB_PATH) -> Optional[dict]
     return None
 
 
-async def evaluate_rules(op: dict, db_path: Path = DB_PATH) -> str | None:
-    """Return 'approve', 'reject', or None for a staged operation."""
-    rule = await get_matching_rule(op, db_path=db_path)
+async def evaluate_rules(
+    op: dict, db_path: Path = DB_PATH, user_id: Optional[int] = None
+) -> str | None:
+    """Return 'approve', 'reject', or None for a staged operation.
+
+    Scoped to ``user_id``'s rules only — see get_matching_rule.
+    """
+    rule = await get_matching_rule(op, db_path=db_path, user_id=user_id)
     if rule is None:
         return None
     action = rule.get("action")

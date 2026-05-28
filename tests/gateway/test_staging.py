@@ -28,6 +28,26 @@ async def db_path(tmp_path: Path) -> Path:
     return path
 
 
+async def _seed_agent(db_path: Path, user_id: int = 1) -> int:
+    """Insert an agent_credentials row owned by ``user_id``; return its id.
+
+    Auto-approval rules are tenant-scoped, so operations must carry an
+    agent_id that resolves to the rule's owning user for the rule to apply.
+    """
+    async with get_db(db_path) as db:
+        cur = await db.execute(
+            """INSERT INTO agent_credentials
+               (user_id, label, agent_username, hashed_token,
+                upstream_host, upstream_imap_port, upstream_smtp_port,
+                upstream_user, upstream_password, created_at)
+               VALUES (?, 'test', ?, 'x', 'imap.example.com', 993, 587,
+                       'u@example.com', 'p', 0)""",
+            (user_id, f"nuvrail_seed_{user_id}"),
+        )
+        await db.commit()
+        return int(cur.lastrowid)
+
+
 async def test_create_operation_returns_id(db_path: Path) -> None:
     """Operation ID must match op_XXXXXX pattern."""
     op_id = await create_operation(
@@ -201,12 +221,13 @@ async def test_create_operation_without_snapshot_stores_null(db_path: Path) -> N
 
 async def test_create_operation_auto_approved_by_rule(db_path: Path) -> None:
     """Matching auto-approval rule updates op status to approved on stage."""
+    agent_id = await _seed_agent(db_path, user_id=1)
     async with get_db(db_path) as db:
         await db.execute(
             """
             INSERT INTO auto_approval_rules
-                (enabled, priority, op_type, sender_pattern, folder_from, action, description, created_at)
-            VALUES (1, 10, 'mark_read', '*@substack.com', NULL, 'approve', 'Substack mark-read', 0)
+                (user_id, enabled, priority, op_type, sender_pattern, folder_from, action, description, created_at)
+            VALUES (1, 1, 10, 'mark_read', '*@substack.com', NULL, 'approve', 'Substack mark-read', 0)
             """
         )
         await db.commit()
@@ -215,6 +236,7 @@ async def test_create_operation_auto_approved_by_rule(db_path: Path) -> None:
         op_type="mark_read",
         protocol="imap",
         description="Mark as read",
+        agent_id=agent_id,
         smtp_envelope={"from": "digest@substack.com"},
         db_path=db_path,
     )
@@ -252,12 +274,13 @@ async def test_create_operation_auto_rejected_by_rule_restores_snapshot(db_path:
     pre = await get_message(folder_id, 42, db_path=db_path)
     assert r"\Seen" in json.loads(pre["flags"])
 
+    agent_id = await _seed_agent(db_path, user_id=1)
     async with get_db(db_path) as db:
         await db.execute(
             """
             INSERT INTO auto_approval_rules
-                (enabled, priority, op_type, sender_pattern, folder_from, action, description, created_at)
-            VALUES (1, 10, 'mark_read', '*@substack.com', 'INBOX', 'reject', 'Reject substack mark-read', 0)
+                (user_id, enabled, priority, op_type, sender_pattern, folder_from, action, description, created_at)
+            VALUES (1, 1, 10, 'mark_read', '*@substack.com', 'INBOX', 'reject', 'Reject substack mark-read', 0)
             """
         )
         await db.commit()
@@ -266,6 +289,7 @@ async def test_create_operation_auto_rejected_by_rule_restores_snapshot(db_path:
         op_type="mark_read",
         protocol="imap",
         description="Mark as read",
+        agent_id=agent_id,
         message_ids=["42"],
         folder_from="INBOX",
         smtp_envelope={"from": "digest@substack.com"},
@@ -303,12 +327,13 @@ async def test_create_operation_auto_rejected_by_rule_restores_snapshot(db_path:
 
 async def test_create_operation_skips_push_for_auto_approved(db_path: Path) -> None:
     """Auto-decided operations should not trigger staged push notifications."""
+    agent_id = await _seed_agent(db_path, user_id=1)
     async with get_db(db_path) as db:
         await db.execute(
             """
             INSERT INTO auto_approval_rules
-                (enabled, priority, op_type, sender_pattern, folder_from, action, description, created_at)
-            VALUES (1, 10, 'mark_read', '*@substack.com', NULL, 'approve', 'Substack mark-read', 0)
+                (user_id, enabled, priority, op_type, sender_pattern, folder_from, action, description, created_at)
+            VALUES (1, 1, 10, 'mark_read', '*@substack.com', NULL, 'approve', 'Substack mark-read', 0)
             """
         )
         await db.commit()
@@ -318,6 +343,7 @@ async def test_create_operation_skips_push_for_auto_approved(db_path: Path) -> N
             op_type="mark_read",
             protocol="imap",
             description="Mark as read",
+            agent_id=agent_id,
             smtp_envelope={"from": "digest@substack.com"},
             db_path=db_path,
         )

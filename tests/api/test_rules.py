@@ -11,7 +11,7 @@ import pytest
 from api.auth import get_auth_db_path, get_current_user
 from api.main import app
 from api.routes.operations import get_db_path
-from gateway.state_db import init_db
+from gateway.state_db import get_db, init_db
 
 _FAKE_USER = {
     "id": 1,
@@ -183,6 +183,68 @@ async def test_rules_list_hits_count_increments_from_audit_log(
     rules = resp.json()
     rule = next(r for r in rules if r['id'] == rule_id)
     assert rule['hits'] == 2
+
+
+async def _insert_foreign_rule(db_path: Path, user_id: int = 2) -> int:
+    """Insert a rule owned by a different user (default id=2); return its id."""
+    async with get_db(db_path) as db:
+        cur = await db.execute(
+            """
+            INSERT INTO auto_approval_rules
+                (user_id, enabled, priority, op_type, sender_pattern, folder_from, action, description, created_at)
+            VALUES (?, 1, 10, 'mark_read', '*@victim.com', NULL, 'approve', "Victim's rule", 0)
+            """,
+            (user_id,),
+        )
+        await db.commit()
+        return int(cur.lastrowid)
+
+
+async def test_rules_list_excludes_other_users(client: httpx.AsyncClient, db_path: Path) -> None:
+    """A user's rule list must not include rules owned by other users."""
+    foreign_id = await _insert_foreign_rule(db_path)
+    rows = (await client.get("/api/v1/rules")).json()
+    assert all(r["id"] != foreign_id for r in rows)
+
+
+async def test_rules_patch_other_users_rule_404(client: httpx.AsyncClient, db_path: Path) -> None:
+    """A user cannot modify another user's rule."""
+    foreign_id = await _insert_foreign_rule(db_path)
+    resp = await client.patch(f"/api/v1/rules/{foreign_id}", json={"action": "reject"})
+    assert resp.status_code == 404
+    # Confirm the rule was not altered.
+    async with get_db(db_path) as db:
+        async with db.execute(
+            "SELECT action FROM auto_approval_rules WHERE id = ?", (foreign_id,)
+        ) as cur:
+            row = await cur.fetchone()
+    assert row["action"] == "approve"
+
+
+async def test_rules_delete_other_users_rule_404(client: httpx.AsyncClient, db_path: Path) -> None:
+    """A user cannot delete another user's rule."""
+    foreign_id = await _insert_foreign_rule(db_path)
+    resp = await client.delete(f"/api/v1/rules/{foreign_id}")
+    assert resp.status_code == 404
+    # Confirm the rule still exists.
+    async with get_db(db_path) as db:
+        async with db.execute(
+            "SELECT id FROM auto_approval_rules WHERE id = ?", (foreign_id,)
+        ) as cur:
+            assert await cur.fetchone() is not None
+
+
+async def test_rules_test_does_not_match_other_users_rule(
+    client: httpx.AsyncClient, db_path: Path
+) -> None:
+    """Dry-run /rules/test must not fire on another user's rule."""
+    await _insert_foreign_rule(db_path)
+    resp = await client.post(
+        "/api/v1/rules/test",
+        json={"op_type": "mark_read", "sender": "spam@victim.com"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["matched"] is False
 
 
 async def test_rules_test_no_match(client: httpx.AsyncClient) -> None:
