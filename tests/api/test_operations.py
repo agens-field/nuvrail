@@ -516,8 +516,8 @@ async def test_auto_approved_operation_not_listed_as_pending(
         await db.execute(
             """
             INSERT INTO auto_approval_rules
-                (enabled, priority, op_type, sender_pattern, folder_from, action, description, created_at)
-            VALUES (1, 10, 'mark_read', '*@substack.com', NULL, 'approve', 'Approve substack mark-read', 0)
+                (user_id, enabled, priority, op_type, sender_pattern, folder_from, action, description, created_at)
+            VALUES (1, 1, 10, 'mark_read', '*@substack.com', NULL, 'approve', 'Approve substack mark-read', 0)
             """
         )
         await db.commit()

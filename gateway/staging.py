@@ -41,6 +41,23 @@ _URGENT_OP_TYPES = {"smtp_send", "trash"}
 _logger = logging.getLogger(__name__)
 
 
+async def _resolve_user_id_for_agent(
+    agent_id: Optional[int], db_path: Path
+) -> Optional[int]:
+    """Return the user_id that owns ``agent_id``, or None if unresolvable.
+
+    Used to scope auto-approval rule evaluation to the operation's owner.
+    """
+    if agent_id is None:
+        return None
+    async with get_db(db_path) as db:
+        async with db.execute(
+            "SELECT user_id FROM agent_credentials WHERE id = ?", (agent_id,)
+        ) as cur:
+            row = await cur.fetchone()
+    return row["user_id"] if row is not None else None
+
+
 def _decision_to_status(action: str) -> Optional[str]:
     if action == "approve":
         return "approved"
@@ -158,30 +175,25 @@ async def create_operation(
         )
         await db.commit()
 
+    # Resolve the operation's owning user from its agent so auto-rules are
+    # evaluated against that user's rules only — never another tenant's.
+    # Operations with no resolvable owner get no auto-rule evaluation.
+    rule_user_id = await _resolve_user_id_for_agent(agent_id, db_path)
+
     # Evaluate auto-rules before push notifications. Auto-approved/rejected
     # operations should not create pending-review push noise.
-    auto_action = await evaluate_rules(
-        {
-            "id": op_id,
-            "op_type": op_type,
-            "sender": (smtp_envelope or {}).get("from") if smtp_envelope else None,
-            "smtp_envelope": smtp_envelope,
-            "folder_from": folder_from,
-            "snapshot": snapshot,
-        },
-        db_path=db_path,
-    )
+    rule_op = {
+        "id": op_id,
+        "op_type": op_type,
+        "sender": (smtp_envelope or {}).get("from") if smtp_envelope else None,
+        "smtp_envelope": smtp_envelope,
+        "folder_from": folder_from,
+        "snapshot": snapshot,
+    }
+    auto_action = await evaluate_rules(rule_op, db_path=db_path, user_id=rule_user_id)
     if auto_action in {"approve", "reject"}:
         matched_rule = await get_matching_rule(
-            {
-                "id": op_id,
-                "op_type": op_type,
-                "sender": (smtp_envelope or {}).get("from") if smtp_envelope else None,
-                "smtp_envelope": smtp_envelope,
-                "folder_from": folder_from,
-                "snapshot": snapshot,
-            },
-            db_path=db_path,
+            rule_op, db_path=db_path, user_id=rule_user_id
         )
         if matched_rule is not None:
             await _apply_auto_rule_decision(

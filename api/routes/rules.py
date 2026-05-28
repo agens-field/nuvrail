@@ -52,8 +52,9 @@ async def list_rules(
 
     Each rule includes a `hits` count — the number of operations that were
     auto-approved or auto-rejected by that rule, derived from the audit log.
+
+    Scoped to the authenticated user's own rules.
     """
-    del current_user
     async with get_db(db_path) as db:
         async with db.execute(
             """
@@ -66,8 +67,10 @@ async def list_rules(
                          AND CAST(json_extract(a.detail, '$.rule_id') AS INTEGER) = r.id
                    ), 0) AS hits
             FROM auto_approval_rules r
+            WHERE r.user_id = ?
             ORDER BY r.priority DESC, r.id ASC
-            """
+            """,
+            (current_user["id"],),
         ) as cur:
             rows = [dict(r) for r in await cur.fetchall()]
     return [_row_to_rule(r) for r in rows]
@@ -96,9 +99,8 @@ async def test_rule(
     """Dry-run the ruleset against a sample operation.
 
     Returns the first matching rule and what action it would take.
-    No operation is staged or executed.
+    No operation is staged or executed. Scoped to the user's own rules.
     """
-    del current_user
     from gateway.rules import get_matching_rule  # noqa: PLC0415
 
     op = {
@@ -106,7 +108,9 @@ async def test_rule(
         "sender": body.sender,
         "folder_from": body.folder_from,
     }
-    matched_rule = await get_matching_rule(op, db_path=db_path)
+    matched_rule = await get_matching_rule(
+        op, db_path=db_path, user_id=current_user["id"]
+    )
     if matched_rule is None:
         return RuleTestResponse(matched=False)
     return RuleTestResponse(
@@ -123,17 +127,17 @@ async def create_rule(
     db_path: Path = Depends(get_db_path),
     current_user: dict = Depends(get_current_user),
 ) -> AutoApprovalRule:
-    """Create an auto-approval rule."""
-    del current_user
+    """Create an auto-approval rule owned by the authenticated user."""
     now = int(time.time())
     async with get_db(db_path) as db:
         cur = await db.execute(
             """
             INSERT INTO auto_approval_rules
-                (enabled, priority, op_type, sender_pattern, folder_from, action, description, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                (user_id, enabled, priority, op_type, sender_pattern, folder_from, action, description, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
+                current_user["id"],
                 1 if body.enabled else 0,
                 body.priority,
                 body.op_type,
@@ -164,8 +168,7 @@ async def update_rule(
     db_path: Path = Depends(get_db_path),
     current_user: dict = Depends(get_current_user),
 ) -> AutoApprovalRule:
-    """Update a rule's fields."""
-    del current_user
+    """Update a rule's fields (only if it belongs to the authenticated user)."""
     update_data = body.model_dump(exclude_unset=True)
     if not update_data:
         raise HTTPException(status_code=400, detail="No fields provided for update")
@@ -179,10 +182,10 @@ async def update_rule(
         else:
             values.append(value)
 
-    values.append(rule_id)
+    values.extend([rule_id, current_user["id"]])
     async with get_db(db_path) as db:
         cur = await db.execute(
-            f"UPDATE auto_approval_rules SET {', '.join(columns)} WHERE id = ?",  # noqa: S608
+            f"UPDATE auto_approval_rules SET {', '.join(columns)} WHERE id = ? AND user_id = ?",  # noqa: S608
             values,
         )
         if cur.rowcount == 0:
@@ -192,8 +195,8 @@ async def update_rule(
             )
         await db.commit()
         async with db.execute(
-            "SELECT * FROM auto_approval_rules WHERE id = ?",
-            (rule_id,),
+            "SELECT * FROM auto_approval_rules WHERE id = ? AND user_id = ?",
+            (rule_id, current_user["id"]),
         ) as cur2:
             row = await cur2.fetchone()
     if row is None:
@@ -207,12 +210,11 @@ async def delete_rule(
     db_path: Path = Depends(get_db_path),
     current_user: dict = Depends(get_current_user),
 ) -> None:
-    """Delete a rule by ID."""
-    del current_user
+    """Delete a rule by ID (only if it belongs to the authenticated user)."""
     async with get_db(db_path) as db:
         cur = await db.execute(
-            "DELETE FROM auto_approval_rules WHERE id = ?",
-            (rule_id,),
+            "DELETE FROM auto_approval_rules WHERE id = ? AND user_id = ?",
+            (rule_id, current_user["id"]),
         )
         if cur.rowcount == 0:
             raise HTTPException(
