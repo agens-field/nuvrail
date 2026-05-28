@@ -193,6 +193,7 @@ function AddAgentModal({ onCreated, onClose }: { onCreated: () => void; onClose:
 
   const [label, setLabel] = useState('')
   const [upstreamHost, setUpstreamHost] = useState('')
+  const [upstreamSmtpHost, setUpstreamSmtpHost] = useState('')
   const [imapPort, setImapPort] = useState(993)
   const [smtpPort, setSmtpPort] = useState(587)
   const [upstreamUser, setUpstreamUser] = useState('')
@@ -205,8 +206,11 @@ function AddAgentModal({ onCreated, onClose }: { onCreated: () => void; onClose:
   const [gmailLoading, setGmailLoading] = useState(false)
   const [gmailError, setGmailError] = useState<string | null>(null)
 
-  function mapConnectionError(message: string): string {
-    if (message.includes('imap_auth_failed')) return 'Wrong password — for Gmail or iCloud, use an app-specific password.'
+  function mapConnectionError(message: string, prov: Provider | null): string {
+    if (message.includes('imap_auth_failed')) {
+      if (prov === 'icloud') return 'Wrong app-specific password. Generate one at appleid.apple.com → Sign-In and Security → App-Specific Passwords.'
+      return 'Wrong username or password.'
+    }
     if (message.includes('imap_connection_failed')) return 'Could not reach the IMAP server. Check the host and IMAP port.'
     if (message.includes('imap_ssl_error')) return 'SSL/TLS error. Check that you are using the correct IMAP SSL port.'
     if (message.includes('imap_timeout')) return 'Connection timed out while verifying. Please try again.'
@@ -217,6 +221,7 @@ function AddAgentModal({ onCreated, onClose }: { onCreated: () => void; onClose:
     setProvider(null)
     setLabel('')
     setUpstreamHost('')
+    setUpstreamSmtpHost('')
     setImapPort(993)
     setSmtpPort(587)
     setUpstreamUser('')
@@ -245,8 +250,8 @@ function AddAgentModal({ onCreated, onClose }: { onCreated: () => void; onClose:
   function handleProviderSelect(p: Provider) {
     setProvider(p)
     // Pre-fill host for known providers
-    if (p === 'icloud') { setUpstreamHost('imap.mail.me.com'); setImapPort(993); setSmtpPort(587) }
-    if (p === 'other') { setUpstreamHost(''); setImapPort(993); setSmtpPort(587) }
+    if (p === 'icloud') { setUpstreamHost('imap.mail.me.com'); setUpstreamSmtpHost('smtp.mail.me.com'); setImapPort(993); setSmtpPort(587) }
+    if (p === 'other') { setUpstreamHost(''); setUpstreamSmtpHost(''); setImapPort(993); setSmtpPort(587) }
   }
 
   async function handleSubmit(e: React.FormEvent) {
@@ -257,15 +262,17 @@ function AddAgentModal({ onCreated, onClose }: { onCreated: () => void; onClose:
       const data = await createAgent({
         label: label.trim() || undefined,
         upstream_host: upstreamHost,
+        upstream_smtp_host: upstreamSmtpHost.trim() || undefined,
         upstream_imap_port: imapPort,
         upstream_smtp_port: smtpPort,
         upstream_user: upstreamUser,
         upstream_password: upstreamPassword,
       })
       setResult(data)
-      onCreated()
+      // Do NOT call onCreated() here — the user must see and copy their credentials
+      // before the modal closes. onCreated() is called from the Done button instead.
     } catch (err) {
-      setError(err instanceof Error ? mapConnectionError(err.message) : 'Failed to create agent')
+      setError(err instanceof Error ? mapConnectionError(err.message, provider) : 'Failed to create agent')
     } finally {
       setLoading(false)
     }
@@ -431,7 +438,7 @@ function AddAgentModal({ onCreated, onClose }: { onCreated: () => void; onClose:
         </div>
         <div className="flex gap-3">
           <button
-            onClick={() => { setResult(null); setProvider(null); setLabel(''); setUpstreamHost(''); setUpstreamUser(''); setUpstreamPassword('') }}
+            onClick={() => { setResult(null); setProvider(null); setLabel(''); setUpstreamHost(''); setUpstreamSmtpHost(''); setUpstreamUser(''); setUpstreamPassword('') }}
             className="bg-surface-hi hover:bg-edge text-fg-2 text-sm font-medium py-2 px-4 rounded"
           >
             Add another
@@ -473,18 +480,33 @@ function AddAgentModal({ onCreated, onClose }: { onCreated: () => void; onClose:
             className="w-full bg-surface-hi border border-edge rounded px-3 py-2 text-fg focus:outline-none focus:ring-2 focus:ring-accent"
             placeholder="Work" />
         </div>
-        <div>
-          <label className="block text-sm font-medium text-fg-2 mb-1">IMAP host</label>
-          {isICloud ? (
+        {isICloud ? (
+          <div>
+            <label className="block text-sm font-medium text-fg-2 mb-1">Mail servers</label>
             <p className="text-xs text-fg-3 font-mono bg-surface-hi border border-edge rounded px-3 py-2">
-              imap.mail.me.com:993 · smtp.mail.me.com:587
+              IMAP&nbsp; imap.mail.me.com:993 &nbsp;·&nbsp; SMTP&nbsp; smtp.mail.me.com:587
             </p>
-          ) : (
-            <input type="text" value={upstreamHost} onChange={(e) => setUpstreamHost(e.target.value)} required
-              className="w-full bg-surface-hi border border-edge rounded px-3 py-2 text-fg placeholder-fg-3 focus:outline-none focus:ring-2 focus:ring-accent"
-              placeholder="imap.example.com" />
-          )}
-        </div>
+          </div>
+        ) : (
+          <div className="flex gap-4">
+            <div className="flex-1">
+              <label className="block text-sm font-medium text-fg-2 mb-1">IMAP host</label>
+              <input type="text" value={upstreamHost} onChange={(e) => setUpstreamHost(e.target.value)} required
+                autoComplete="off"
+                className="w-full bg-surface-hi border border-edge rounded px-3 py-2 text-fg placeholder-fg-3 focus:outline-none focus:ring-2 focus:ring-accent"
+                placeholder="imap.example.com" />
+            </div>
+            <div className="flex-1">
+              <label className="block text-sm font-medium text-fg-2 mb-1">
+                SMTP host <span className="text-fg-3 font-normal">(if different)</span>
+              </label>
+              <input type="text" value={upstreamSmtpHost} onChange={(e) => setUpstreamSmtpHost(e.target.value)}
+                autoComplete="off"
+                className="w-full bg-surface-hi border border-edge rounded px-3 py-2 text-fg placeholder-fg-3 focus:outline-none focus:ring-2 focus:ring-accent"
+                placeholder="smtp.example.com" />
+            </div>
+          </div>
+        )}
         <div className="flex gap-4">
           <div className="flex-1">
             <label className="block text-sm font-medium text-fg-2 mb-1">IMAP port</label>
@@ -499,16 +521,29 @@ function AddAgentModal({ onCreated, onClose }: { onCreated: () => void; onClose:
         </div>
         <div>
           <label className="block text-sm font-medium text-fg-2 mb-1">Email address</label>
-          <input type="email" value={upstreamUser} onChange={(e) => setUpstreamUser(e.target.value)} required
-            className="w-full bg-surface-hi border border-edge rounded px-3 py-2 text-fg focus:outline-none focus:ring-2 focus:ring-accent"
-            placeholder="you@example.com" />
+          <input
+            type="text"
+            inputMode="email"
+            autoComplete="off"
+            value={upstreamUser}
+            onChange={(e) => setUpstreamUser(e.target.value)}
+            required
+            className="w-full bg-surface-hi border border-edge rounded px-3 py-2 text-fg placeholder-fg-3 focus:outline-none focus:ring-2 focus:ring-accent"
+            placeholder="you@example.com"
+          />
         </div>
         <div>
           <label className="block text-sm font-medium text-fg-2 mb-1">
-            App password <span className="text-fg-3">(IMAP/SMTP)</span>
+            {isICloud ? 'App-specific password' : 'Password'}
           </label>
-          <input type="password" value={upstreamPassword} onChange={(e) => setUpstreamPassword(e.target.value)} required
-            className="w-full bg-surface-hi border border-edge rounded px-3 py-2 text-fg focus:outline-none focus:ring-2 focus:ring-accent" />
+          <input
+            type="password"
+            autoComplete="new-password"
+            value={upstreamPassword}
+            onChange={(e) => setUpstreamPassword(e.target.value)}
+            required
+            className="w-full bg-surface-hi border border-edge rounded px-3 py-2 text-fg focus:outline-none focus:ring-2 focus:ring-accent"
+          />
         </div>
         {error && <p className="text-red-400 text-sm">{error}</p>}
         <button type="submit" disabled={loading}
