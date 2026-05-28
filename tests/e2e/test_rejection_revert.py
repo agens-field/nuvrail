@@ -127,12 +127,12 @@ async def test_rejection_injects_unsolicited_fetch_on_noop(
         writer.write(b"T01 LOGIN " + user.encode() + b" " + password.encode() + b"\r\n")
         await writer.drain()
         login_resp = await _read_until_tagged(reader, "T01")
-        assert any("OK" in l.upper() for l in login_resp), f"LOGIN failed: {login_resp}"
+        assert any("OK" in line.upper() for line in login_resp), f"LOGIN failed: {login_resp}"
 
         writer.write(b"T02 SELECT INBOX\r\n")
         await writer.drain()
         select_resp = await _read_until_tagged(reader, "T02")
-        assert any("OK" in l.upper() for l in select_resp), f"SELECT failed: {select_resp}"
+        assert any("OK" in line.upper() for line in select_resp), f"SELECT failed: {select_resp}"
 
         # Brief settle to let the u2c pump sync the SELECT response to the state DB
         # so folder_id is set in session before the STORE snapshot runs.
@@ -169,7 +169,7 @@ async def test_rejection_injects_unsolicited_fetch_on_noop(
         noop_lines = await _read_until_tagged(reader, "T04")
 
         # Look for "* N FETCH (UID <uid> FLAGS (...))" in response lines
-        fetch_lines = [l for l in noop_lines if "FETCH" in l.upper() and str(uid) in l]
+        fetch_lines = [line for line in noop_lines if "FETCH" in line.upper() and str(uid) in line]
         assert fetch_lines, (
             f"Expected unsolicited FETCH for UID {uid} in NOOP response, "
             f"got lines: {noop_lines!r}"
@@ -253,7 +253,7 @@ async def test_rejection_revert_does_not_fire_for_write_commands(
         await writer.drain()
         store2 = await _read_until_tagged(reader, "U04")
         # STORE response must NOT contain an injected FETCH
-        assert not any("FETCH" in l.upper() for l in store2), (
+        assert not any("FETCH" in line.upper() for line in store2), (
             f"Unexpected FETCH injection in STORE response: {store2!r}"
         )
 
@@ -261,7 +261,7 @@ async def test_rejection_revert_does_not_fire_for_write_commands(
         writer.write(b"U05 NOOP\r\n")
         await writer.drain()
         noop_lines = await _read_until_tagged(reader, "U05")
-        fetch_lines = [l for l in noop_lines if "FETCH" in l.upper() and str(uid) in l]
+        fetch_lines = [line for line in noop_lines if "FETCH" in line.upper() and str(uid) in line]
         assert fetch_lines, (
             f"Expected injected FETCH in NOOP after rejection, got: {noop_lines!r}"
         )

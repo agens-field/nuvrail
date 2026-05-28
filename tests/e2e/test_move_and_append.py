@@ -132,14 +132,14 @@ async def _imap_proxy_login_and_select(
     # LOGIN
     await _raw_send(writer, f"A01 LOGIN {agent_user} {agent_token}")
     login_lines = await _raw_read_until_tagged(reader, "A01")
-    assert any("OK" in l.upper() for l in login_lines), (
+    assert any("OK" in line.upper() for line in login_lines), (
         f"LOGIN failed: {login_lines!r}"
     )
 
     # SELECT mailbox
     await _raw_send(writer, f"A02 SELECT {mailbox}")
     select_lines = await _raw_read_until_tagged(reader, "A02")
-    assert any("OK" in l.upper() for l in select_lines), (
+    assert any("OK" in line.upper() for line in select_lines), (
         f"SELECT {mailbox} failed: {select_lines!r}"
     )
 
@@ -263,7 +263,7 @@ async def test_imap_move_staged_then_approved(
 
         # Response must be a tagged OK with [STAGED] and an op_id
         tagged_line = next(
-            (l for l in move_lines if l.upper().startswith(tag.upper() + " OK")), None
+            (line for line in move_lines if line.upper().startswith(tag.upper() + " OK")), None
         )
         assert tagged_line is not None, (
             f"No tagged OK in MOVE response: {move_lines!r}"
@@ -369,7 +369,7 @@ async def test_imap_append_to_drafts_staged_then_approved(
             # LOGIN
             await _raw_send(writer, f"A01 LOGIN {agent_user} {agent_token}")
             login_lines = await _raw_read_until_tagged(reader, "A01")
-            assert any("OK" in l.upper() for l in login_lines), (
+            assert any("OK" in line.upper() for line in login_lines), (
                 f"LOGIN failed: {login_lines!r}"
             )
 
@@ -397,7 +397,7 @@ async def test_imap_append_to_drafts_staged_then_approved(
 
         # Response must be OK [STAGED] with an op_id
         tagged_line = next(
-            (l for l in append_lines if l.upper().startswith(tag.upper() + " OK")), None
+            (line for line in append_lines if line.upper().startswith(tag.upper() + " OK")), None
         )
         assert tagged_line is not None, (
             f"No tagged OK in APPEND response: {append_lines!r}"
