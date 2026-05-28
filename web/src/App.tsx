@@ -14,6 +14,7 @@ import ResetView from './views/ResetView'
 import SetupView from './views/SetupView'
 import ThemeToggle, { useTheme } from './components/ThemeToggle'
 import PlausibleAnalytics from './components/PlausibleAnalytics'
+import CookieConsentBanner from './components/CookieConsentBanner'
 import { getToken, setupPushNotifications } from './api/client'
 
 const queryClient = new QueryClient({
@@ -68,6 +69,7 @@ export default function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <PlausibleAnalytics />
+      <CookieConsentBanner />
       <HashRouter>
         <AuthGuard>
           <div className="min-h-screen bg-bg text-fg">
