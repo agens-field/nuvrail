@@ -225,6 +225,7 @@ async def init_db(path: Path = DB_PATH) -> None:
             ("oauth2_access_token",          "TEXT"),
             ("oauth2_access_token_expires_at", "INTEGER"),
             ("upstream_smtp_host",           "TEXT"),  # NULL → falls back to upstream_host
+            ("sent_folder",                  "TEXT"),  # cached Sent folder (discovered via LIST)
         ]
         for col_name, col_type in new_columns:
             if col_name not in existing_cols:

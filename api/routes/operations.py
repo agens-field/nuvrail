@@ -47,6 +47,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import time
 from email.mime.text import MIMEText
 from pathlib import Path
@@ -109,6 +110,103 @@ async def _get_agent_credential(agent_id: Optional[int], db_path: Path) -> Optio
     return dict(row) if row else None
 
 
+# ---------------------------------------------------------------------------
+# Sent-folder discovery
+# ---------------------------------------------------------------------------
+
+_LIST_LINE_RE = re.compile(
+    r"\("                         # opening paren
+    r"([^)]*)"                    # flags  (group 1)
+    r"\)\s+"
+    r'(?:"[^"]*"|NIL)\s+'        # delimiter (quoted or NIL — discard)
+    r'(?:"([^"]+)"|(\S+))'       # folder name: quoted (group 2) or bare (group 3)
+    r"\s*$",
+    re.IGNORECASE,
+)
+
+
+def _parse_list_line(line: bytes) -> "tuple[set[str], str | None]":
+    """
+    Parse one raw ``* LIST`` response line into (flags, folder_name).
+
+    IMAP LIST lines look like::
+
+        * LIST (\\Sent \\HasNoChildren) "." "Sent"
+        * LIST (\\Sent) "/" "[Gmail]/Sent Mail"
+        * LIST (\\HasNoChildren) NIL INBOX.Sent
+
+    Returns (set_of_lowercase_flags, folder_name) or (set(), None) on parse
+    failure.
+    """
+    try:
+        decoded = line.decode("utf-8", errors="replace").strip()
+        m = _LIST_LINE_RE.search(decoded)
+        if not m:
+            return set(), None
+        raw_flags = m.group(1)
+        folder = m.group(2) or m.group(3)
+        flags = {f.strip().lower() for f in raw_flags.split() if f.strip()}
+        return flags, folder
+    except Exception:  # noqa: BLE001
+        return set(), None
+
+
+async def _discover_sent_folder(client: "aioimaplib.IMAP4_SSL") -> "str | None":
+    """
+    Discover the Sent folder on an already-authenticated IMAP client.
+
+    Strategy
+    --------
+    Pass 1 — LIST "" "*":
+        Walk every folder's flags and return the first one carrying the
+        ``\\Sent`` special-use attribute (RFC 6154).  All modern servers
+        set this; no extra capability is needed.
+
+    Pass 2 — name probe:
+        If no ``\\Sent`` flag was found (very old server or quirky config),
+        check whether any of the common Sent-folder names exist using
+        individual ``LIST "" <name>`` calls.
+
+    Returns the exact folder name as the server advertises it, or None if
+    neither pass succeeds.
+    """
+    # Pass 1: look for \Sent flag in full listing
+    status, lines = await client.list("", "*")
+    if status == "OK":
+        for line in lines:
+            if not isinstance(line, bytes):
+                continue
+            flags, folder = _parse_list_line(line)
+            if "\\sent" in flags and folder:
+                logger.debug("[sent-discovery] Found via \\Sent flag: %r", folder)
+                return folder
+
+    # Pass 2: probe common names
+    for candidate in ("Sent", "Sent Items", "Sent Messages", "INBOX.Sent"):
+        probe_status, probe_lines = await client.list("", candidate)
+        if probe_status == "OK":
+            for pline in probe_lines:
+                if not isinstance(pline, bytes):
+                    continue
+                _, found = _parse_list_line(pline)
+                if found:
+                    logger.debug("[sent-discovery] Found via name probe: %r", found)
+                    return found
+
+    logger.warning("[sent-discovery] Could not discover Sent folder")
+    return None
+
+
+async def _update_agent_sent_folder(cred_id: int, folder: str, db_path: Path) -> None:
+    """Persist the discovered Sent folder name so subsequent sends skip discovery."""
+    async with get_db(db_path) as db:
+        await db.execute(
+            "UPDATE agent_credentials SET sent_folder = ? WHERE id = ?",
+            (folder, cred_id),
+        )
+        await db.commit()
+
+
 async def _save_to_sent_folder(
     msg: "email.message.Message",
     op_id: str,
@@ -121,25 +219,30 @@ async def _save_to_sent_folder(
     Called after a successful SMTP relay. Non-fatal: errors are logged but
     never propagate — the email was already sent and this is best-effort.
 
-    Flow:
+    Folder resolution order
+    -----------------------
+    1. ``cred['sent_folder']``  — cached in DB from a previous discovery.
+       Fast path: no IMAP round-trip beyond the APPEND itself.
+    2. RFC 6154 ``\\Sent`` flag via ``LIST "" "*"``  — works on all modern
+       servers regardless of folder name or locale.
+    3. Name probe  — tries Sent / Sent Items / Sent Messages / INBOX.Sent
+       for servers that pre-date RFC 6154 or don't set the flag.
+    4. Profile default (``profile.sent_folder``)  — hostname-based guess
+       of last resort (Generic IMAP → "Sent").
 
-      detect provider from upstream_host
-              │
-              ├─ sent_folder is None  →  skip (Gmail / Outlook auto-save on relay)
-              │
-              └─ sent_folder is set  →  IMAP4_SSL connect → LOGIN / XOAUTH2
-                                          → APPEND msg with \\Seen flag
-                                          → LOGOUT
-                                          (log warning on any error; never raise)
+    Once discovered the name is persisted to ``agent_credentials.sent_folder``
+    so steps 2-4 only ever run once per agent.
+
+    Skipped entirely for providers that auto-save on relay (Gmail, Outlook —
+    their profile has ``sent_folder = None``).
     """
-    import email as _email_module  # noqa: PLC0415
     from gateway.provider_profiles import detect_provider  # noqa: PLC0415
 
     imap_host = cred["upstream_host"]
     profile = detect_provider(imap_host)
-    sent_folder = profile.sent_folder
 
-    if sent_folder is None:
+    # Skip for providers that auto-save on relay (Gmail, Outlook)
+    if profile.sent_folder is None:
         logger.info(
             "[approve] Sent-folder save skipped op=%s — %s auto-saves on relay",
             op_id, profile.name,
@@ -150,15 +253,24 @@ async def _save_to_sent_folder(
     imap_user = cred["upstream_user"]
     is_oauth2 = bool(cred.get("oauth2_provider"))
 
-    logger.info(
-        "[approve] Sent-folder APPEND start op=%s host=%s folder=%r",
-        op_id, imap_host, sent_folder,
-    )
+    # Use cached folder if already discovered; otherwise discover via IMAP LIST
+    target_folder: "str | None" = cred.get("sent_folder") or None
+    if target_folder:
+        logger.info(
+            "[approve] Sent-folder APPEND start op=%s host=%s folder=%r (cached)",
+            op_id, imap_host, target_folder,
+        )
+    else:
+        logger.info(
+            "[approve] Sent-folder APPEND start op=%s host=%s (discovery needed)",
+            op_id, imap_host,
+        )
 
     client = aioimaplib.IMAP4_SSL(host=imap_host, port=imap_port)
     try:
         await client.wait_hello_from_server()
 
+        # Authenticate
         if is_oauth2:
             from gateway.oauth2_tokens import OAuth2Error, get_access_token  # noqa: PLC0415
             try:
@@ -190,26 +302,45 @@ async def _save_to_sent_folder(
                 )
                 return
 
+        # Discover and cache the Sent folder name if not already known
+        if not target_folder:
+            discovered = await _discover_sent_folder(client)
+            if discovered:
+                target_folder = discovered
+                await _update_agent_sent_folder(int(cred["id"]), target_folder, db_path)
+                logger.info(
+                    "[approve] Sent folder discovered and cached op=%s folder=%r",
+                    op_id, target_folder,
+                )
+            else:
+                # Last resort: use profile default
+                target_folder = profile.sent_folder
+                logger.warning(
+                    "[approve] Sent folder discovery failed, using profile default "
+                    "op=%s folder=%r",
+                    op_id, target_folder,
+                )
+
+        # APPEND with \Seen (it's a sent message — already read by definition)
         msg_bytes = msg.as_bytes()
         status, data = await client.append(
             msg_bytes,
-            mailbox=imap_quoted(sent_folder),
+            mailbox=imap_quoted(target_folder),
             flags="(\\Seen)",
         )
         if status == "OK":
             logger.info(
-                "[approve] Sent-folder APPEND succeeded op=%s folder=%r", op_id, sent_folder
+                "[approve] Sent-folder APPEND succeeded op=%s folder=%r", op_id, target_folder
             )
         else:
             logger.warning(
                 "[approve] Sent-folder APPEND non-OK op=%s folder=%r status=%s data=%s",
-                op_id, sent_folder, status, data,
+                op_id, target_folder, status, data,
             )
 
     except Exception as exc:
         logger.warning(
-            "[approve] Sent-folder APPEND failed (non-fatal) op=%s folder=%r: %s",
-            op_id, sent_folder, exc,
+            "[approve] Sent-folder APPEND failed (non-fatal) op=%s: %s", op_id, exc
         )
     finally:
         try:
