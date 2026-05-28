@@ -28,6 +28,7 @@ from api.models import (
     TokenRotateResponse,
 )
 from api.routes.operations import get_db_path
+from gateway.audit import insert_audit_event
 from gateway.state_db import get_db
 
 router = APIRouter()
@@ -165,13 +166,7 @@ async def export_account_data(
             rule_rows = [dict(r) for r in await cur.fetchall()]
 
         # Write 'export_requested' audit event
-        await db.execute(
-            """
-            INSERT INTO audit_log (timestamp, operation_id, event, actor, user_id, detail)
-            VALUES (?, NULL, 'export_requested', 'human', ?, NULL)
-            """,
-            (now, user_id),
-        )
+        await insert_audit_event(db, timestamp=now, event='export_requested', actor='human', user_id=user_id)
         await db.commit()
 
     export = DataExportResponse(
@@ -302,14 +297,7 @@ async def delete_account(
             )
 
         # 8. Write audit event (before commit so it's in the same transaction)
-        await db.execute(
-            """
-            INSERT INTO audit_log
-                (timestamp, operation_id, event, actor, user_id, detail)
-            VALUES (?, NULL, 'account_deleted', 'human', ?, NULL)
-            """,
-            (now, user_id),
-        )
+        await insert_audit_event(db, timestamp=now, event='account_deleted', actor='human', user_id=user_id)
 
         await db.commit()
 

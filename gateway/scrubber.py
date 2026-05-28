@@ -40,6 +40,7 @@ import os
 import time
 from pathlib import Path
 
+from gateway.audit import insert_audit_event
 from gateway.state_db import DB_PATH, get_db
 
 logger = logging.getLogger(__name__)
@@ -107,13 +108,9 @@ async def _scrub_one(op: dict, db_path: Path) -> None:
             """,
             (scrubbed_envelope, now, op_id),
         )
-        await db.execute(
-            """
-            INSERT INTO audit_log
-                (timestamp, operation_id, event, actor, agent_id, op_type, detail)
-            VALUES (?, ?, 'body_scrubbed', 'system', ?, ?, NULL)
-            """,
-            (now, op_id, op.get("agent_id"), op.get("op_type")),
+        await insert_audit_event(
+            db, timestamp=now, event='body_scrubbed', actor='system',
+            operation_id=op_id, agent_id=op.get('agent_id'), op_type=op.get('op_type'),
         )
         await db.commit()
 

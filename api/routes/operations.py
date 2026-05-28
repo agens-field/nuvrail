@@ -74,6 +74,7 @@ from api.models import (
     RejectResponse,
     UndoResponse,
 )
+from gateway.audit import insert_audit_event
 from gateway.staging import get_operation, list_operations, update_operation_status
 from gateway.state_db import DB_PATH, get_db, insert_pending_reverts, restore_from_snapshot
 
@@ -806,13 +807,10 @@ async def _do_approve(op_id: str, row: dict, db_path: Path) -> ApproveResponse:
             logger.error("[approve] SMTP relay failed for %s: %s", op_id, exc)
             await update_operation_status(op_id, "failed", error=str(exc), db_path=db_path)
             async with get_db(db_path) as db:
-                await db.execute(
-                    """
-                    INSERT INTO audit_log (timestamp, operation_id, event, actor, agent_id, op_type, detail)
-                    VALUES (?, ?, 'execution_failed', 'system', ?, ?, ?)
-                    """,
-                    (int(time.time()), op_id, row.get("agent_id"), row.get("op_type"),
-                     json.dumps({"error": str(exc)})),
+                await insert_audit_event(
+                    db, timestamp=int(time.time()), event='execution_failed', actor='system',
+                    operation_id=op_id, agent_id=row.get('agent_id'), op_type=row.get('op_type'),
+                    detail=json.dumps({'error': str(exc)}),
                 )
                 await db.commit()
             raise HTTPException(status_code=500, detail=f"SMTP relay failed: {exc}") from exc
@@ -825,13 +823,10 @@ async def _do_approve(op_id: str, row: dict, db_path: Path) -> ApproveResponse:
             logger.error("[approve] IMAP execution failed for %s: %s", op_id, exc)
             await update_operation_status(op_id, "failed", error=str(exc), db_path=db_path)
             async with get_db(db_path) as db:
-                await db.execute(
-                    """
-                    INSERT INTO audit_log (timestamp, operation_id, event, actor, agent_id, op_type, detail)
-                    VALUES (?, ?, 'execution_failed', 'system', ?, ?, ?)
-                    """,
-                    (int(time.time()), op_id, row.get("agent_id"), row.get("op_type"),
-                     json.dumps({"error": str(exc)})),
+                await insert_audit_event(
+                    db, timestamp=int(time.time()), event='execution_failed', actor='system',
+                    operation_id=op_id, agent_id=row.get('agent_id'), op_type=row.get('op_type'),
+                    detail=json.dumps({'error': str(exc)}),
                 )
                 await db.commit()
             raise HTTPException(
@@ -841,12 +836,9 @@ async def _do_approve(op_id: str, row: dict, db_path: Path) -> ApproveResponse:
     # Mark operation as executed and insert audit log
     await update_operation_status(op_id, "executed", db_path=db_path)
     async with get_db(db_path) as db:
-        await db.execute(
-            """
-            INSERT INTO audit_log (timestamp, operation_id, event, actor, agent_id, op_type, detail)
-            VALUES (?, ?, 'executed', 'human', ?, ?, NULL)
-            """,
-            (int(time.time()), op_id, row.get("agent_id"), row.get("op_type")),
+        await insert_audit_event(
+            db, timestamp=int(time.time()), event='executed', actor='human',
+            operation_id=op_id, agent_id=row.get('agent_id'), op_type=row.get('op_type'),
         )
         await db.commit()
 
@@ -874,12 +866,9 @@ async def _do_reject(op_id: str, row: dict, db_path: Path) -> RejectResponse:  #
     """
     await update_operation_status(op_id, "rejected", db_path=db_path)
     async with get_db(db_path) as db:
-        await db.execute(
-            """
-            INSERT INTO audit_log (timestamp, operation_id, event, actor, agent_id, op_type, detail)
-            VALUES (?, ?, 'rejected', 'human', ?, ?, NULL)
-            """,
-            (int(time.time()), op_id, row.get("agent_id"), row.get("op_type")),
+        await insert_audit_event(
+            db, timestamp=int(time.time()), event='rejected', actor='human',
+            operation_id=op_id, agent_id=row.get('agent_id'), op_type=row.get('op_type'),
         )
         await db.commit()
 

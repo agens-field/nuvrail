@@ -253,8 +253,10 @@ async def init_db(path: Path = DB_PATH) -> None:
         async with db.execute("PRAGMA table_info(audit_log)") as cur:
             audit_cols = {row["name"] for row in await cur.fetchall()}
         for col_name, col_type in [
-            ("user_id",  "INTEGER"),   # direct user scope — avoids join on hot path
-            ("op_type",  "TEXT"),       # denormalized from staged_operations
+            ("user_id",    "INTEGER"),   # direct user scope — avoids join on hot path
+            ("op_type",    "TEXT"),       # denormalized from staged_operations
+            ("prev_hash",  "TEXT"),       # hash chain: entry_hash of preceding row
+            ("entry_hash", "TEXT"),       # SHA-256 of this row's fields
         ]:
             if col_name not in audit_cols:
                 await db.execute(

@@ -21,6 +21,7 @@ from typing import Optional
 
 import asyncio
 
+from gateway.audit import insert_audit_event
 from gateway.rules import evaluate_rules, get_matching_rule
 from gateway.state_db import DB_PATH, get_db
 from gateway.state_db import insert_pending_reverts, restore_from_snapshot
@@ -71,12 +72,9 @@ async def _apply_auto_rule_decision(
         }
     )
     async with get_db(db_path) as db:
-        await db.execute(
-            """
-            INSERT INTO audit_log (timestamp, operation_id, event, actor, agent_id, op_type, detail)
-            VALUES (?, ?, ?, 'auto_rule', ?, ?, ?)
-            """,
-            (now, op_id, status, agent_id, op_type, detail),
+        await insert_audit_event(
+            db, timestamp=now, event=status, actor='auto_rule',
+            operation_id=op_id, agent_id=agent_id, op_type=op_type, detail=detail,
         )
         await db.commit()
 
@@ -154,12 +152,9 @@ async def create_operation(
                 batch_id,
             ),
         )
-        await db.execute(
-            """
-            INSERT INTO audit_log (timestamp, operation_id, event, actor, agent_id, op_type, detail)
-            VALUES (?, ?, 'staged', 'ai_agent', ?, ?, NULL)
-            """,
-            (now, op_id, agent_id, op_type),
+        await insert_audit_event(
+            db, timestamp=now, event='staged', actor='ai_agent',
+            operation_id=op_id, agent_id=agent_id, op_type=op_type,
         )
         await db.commit()
 

@@ -36,6 +36,7 @@ import os
 import time
 from pathlib import Path
 
+from gateway.audit import insert_audit_event
 from gateway.state_db import DB_PATH, get_db, insert_pending_reverts, restore_from_snapshot
 
 logger = logging.getLogger(__name__)
@@ -101,12 +102,9 @@ async def _expire_one(op_id: str, db_path: Path) -> None:
             op_row = await cur.fetchone()
         _agent_id = op_row["agent_id"] if op_row else None
         _op_type = op_row["op_type"] if op_row else None
-        await db.execute(
-            """
-            INSERT INTO audit_log (timestamp, operation_id, event, actor, agent_id, op_type, detail)
-            VALUES (?, ?, 'expired', 'system', ?, ?, NULL)
-            """,
-            (now, op_id, _agent_id, _op_type),
+        await insert_audit_event(
+            db, timestamp=now, event='expired', actor='system',
+            operation_id=op_id, agent_id=_agent_id, op_type=_op_type,
         )
         await db.commit()
 
