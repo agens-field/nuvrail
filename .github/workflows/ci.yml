@@ -1,11 +1,12 @@
 name: CI
 
 on:
-  push:
-    branches: [main]
   pull_request:
     branches: [main]
-  workflow_call:   # allow deploy.yml to run CI as a pre-deploy gate
+  workflow_call:   # deploy.yml calls this as a gate before every deploy
+  # Note: push to main is intentionally omitted here. deploy.yml handles
+  # push → main by calling this workflow before deploying to staging.
+  # Keeping it here would run the test suite twice on every push to main.
 
 jobs:
   test:
