@@ -7,8 +7,9 @@
  *   3. Log out (clears localStorage token + optionally revokes server-side)
  */
 import { useState } from 'react'
+import { useQuery, useMutation } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
-import { applyChangePassword, logoutUser, clearToken } from '../api/client'
+import { applyChangePassword, logoutUser, clearToken, setToken, fetchTokenInfo, rotateToken } from '../api/client'
 
 export default function AccountView() {
   const navigate = useNavigate()
@@ -23,6 +24,23 @@ export default function AccountView() {
 
   // Logout state
   const [logoutLoading, setLogoutLoading] = useState(false)
+
+  // Token rotate state
+  const [rotateConfirm, setRotateConfirm] = useState(false)
+  const [newToken, setNewToken] = useState<string | null>(null)
+  const [tokenCopied, setTokenCopied] = useState(false)
+
+  const tokenInfoQuery = useQuery({ queryKey: ['token-info'], queryFn: fetchTokenInfo })
+
+  const rotateMutation = useMutation({
+    mutationFn: rotateToken,
+    onSuccess: (data) => {
+      setToken(data.token)          // keep current session alive
+      setNewToken(data.token)
+      setRotateConfirm(false)
+      tokenInfoQuery.refetch()
+    },
+  })
 
   async function handleChangePassword(e: React.FormEvent) {
     e.preventDefault()
@@ -139,6 +157,87 @@ export default function AccountView() {
             Reset it
           </a>
         </p>
+      </section>
+
+      {/* ── Session token ─────────────────────────────────────────────── */}
+      <section className="bg-surface rounded-lg p-6 border border-edge space-y-4">
+        <h2 className="text-lg font-semibold text-fg">Session token</h2>
+
+        {tokenInfoQuery.data && (
+          <div className="text-sm text-fg-3 space-y-1 font-mono">
+            <div>
+              <span className="text-fg-2">Issued: </span>
+              {tokenInfoQuery.data.created_at
+                ? new Date(tokenInfoQuery.data.created_at * 1000).toLocaleString()
+                : 'unknown'}
+            </div>
+            <div>
+              <span className="text-fg-2">Last used: </span>
+              {tokenInfoQuery.data.last_used_at
+                ? new Date(tokenInfoQuery.data.last_used_at * 1000).toLocaleString()
+                : 'not recorded yet'}
+            </div>
+          </div>
+        )}
+
+        {/* New token display — shown once after rotation */}
+        {newToken && (
+          <div className="space-y-2">
+            <p className="text-sm text-amber-400 font-medium">New token — copy it now, it won't be shown again.</p>
+            <div className="flex items-center gap-2">
+              <code className="flex-1 bg-surface-hi border border-edge rounded px-3 py-2 text-xs text-fg font-mono break-all">
+                {newToken}
+              </code>
+              <button
+                onClick={() => { navigator.clipboard.writeText(newToken); setTokenCopied(true) }}
+                className="shrink-0 text-xs bg-accent hover:bg-accent-hi text-white px-3 py-2 rounded transition-colors"
+              >
+                {tokenCopied ? 'Copied!' : 'Copy'}
+              </button>
+            </div>
+            <button
+              onClick={() => { setNewToken(null); setTokenCopied(false) }}
+              className="text-xs text-fg-3 hover:text-fg-2 underline"
+            >
+              Done
+            </button>
+          </div>
+        )}
+
+        {!newToken && (
+          rotateConfirm ? (
+            <div className="space-y-3">
+              <p className="text-sm text-amber-400">
+                This will immediately invalidate your current token. You'll stay logged in on this device but any other active sessions will be logged out.
+              </p>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => rotateMutation.mutate()}
+                  disabled={rotateMutation.isPending}
+                  className="text-sm bg-red-700 hover:bg-red-600 disabled:opacity-50 text-white px-4 py-2 rounded transition-colors"
+                >
+                  {rotateMutation.isPending ? 'Rotating…' : 'Yes, rotate token'}
+                </button>
+                <button
+                  onClick={() => setRotateConfirm(false)}
+                  className="text-sm bg-surface-hi hover:bg-edge text-fg-2 px-4 py-2 rounded border border-edge transition-colors"
+                >
+                  Cancel
+                </button>
+              </div>
+              {rotateMutation.isError && (
+                <p className="text-red-400 text-sm">Failed to rotate token. Try again.</p>
+              )}
+            </div>
+          ) : (
+            <button
+              onClick={() => setRotateConfirm(true)}
+              className="text-sm bg-surface-hi hover:bg-edge text-fg-2 px-4 py-2 rounded border border-edge transition-colors"
+            >
+              Rotate token
+            </button>
+          )
+        )}
       </section>
 
       {/* ── Log out ───────────────────────────────────────────────────── */}

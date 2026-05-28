@@ -497,3 +497,27 @@ export async function undoOperation(opId: string): Promise<import('../types').Un
     method: 'POST',
   })
 }
+
+// ---------------------------------------------------------------------------
+// Session token management (issue #28)
+// ---------------------------------------------------------------------------
+
+export interface TokenInfo {
+  created_at: number | null
+  last_used_at: number | null
+}
+
+export interface TokenRotateResult {
+  token: string
+  token_type: string
+  user_id: number
+  email: string
+}
+
+export async function fetchTokenInfo(): Promise<TokenInfo> {
+  return apiFetch<TokenInfo>('/api/v1/account/token')
+}
+
+export async function rotateToken(): Promise<TokenRotateResult> {
+  return apiFetch<TokenRotateResult>('/api/v1/account/token/rotate', { method: 'POST' })
+}
