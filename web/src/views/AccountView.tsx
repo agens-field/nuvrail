@@ -9,7 +9,7 @@
 import { useState } from 'react'
 import { useQuery, useMutation } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
-import { applyChangePassword, logoutUser, clearToken, setToken, fetchTokenInfo, rotateToken, downloadAccountData } from '../api/client'
+import { applyChangePassword, logoutUser, clearToken, setToken, fetchTokenInfo, rotateToken, downloadAccountData, deleteAccount } from '../api/client'
 
 export default function AccountView() {
   const navigate = useNavigate()
@@ -24,6 +24,27 @@ export default function AccountView() {
 
   // Logout state
   const [logoutLoading, setLogoutLoading] = useState(false)
+
+  // Account deletion state
+  const [deleteStep, setDeleteStep] = useState<'idle' | 'confirm' | 'password'>('idle')
+  const [deletePassword, setDeletePassword] = useState('')
+  const [deleteLoading, setDeleteLoading] = useState(false)
+  const [deleteError, setDeleteError] = useState<string | null>(null)
+
+  async function handleDeleteAccount(e: React.FormEvent) {
+    e.preventDefault()
+    setDeleteError(null)
+    setDeleteLoading(true)
+    try {
+      await deleteAccount(deletePassword)
+      clearToken()
+      navigate('/login', { replace: true })
+    } catch (err) {
+      setDeleteError(err instanceof Error ? err.message : 'Deletion failed. Check your password and try again.')
+    } finally {
+      setDeleteLoading(false)
+    }
+  }
 
   // Data export state
   const [exportLoading, setExportLoading] = useState(false)
@@ -272,6 +293,80 @@ export default function AccountView() {
         >
           {exportLoading ? 'Preparing download…' : 'Download my data'}
         </button>
+      </section>
+
+      {/* ── Delete account ────────────────────────────────────────────── */}
+      <section className="bg-surface rounded-lg p-6 border border-red-900/40 space-y-3">
+        <h2 className="text-lg font-semibold text-red-400">Delete account</h2>
+
+        {deleteStep === 'idle' && (
+          <>
+            <p className="text-sm text-fg-3">
+              Permanently deletes your account, all agents, and all credentials.
+              The audit log is retained per our privacy policy. This cannot be undone.
+            </p>
+            <button
+              onClick={() => setDeleteStep('confirm')}
+              className="text-sm border border-red-800 text-red-400 hover:bg-red-900/30 px-4 py-2 rounded transition-colors"
+            >
+              Delete my account…
+            </button>
+          </>
+        )}
+
+        {deleteStep === 'confirm' && (
+          <>
+            <p className="text-sm text-amber-400 font-medium">
+              This will immediately revoke all your agents and delete your credentials. Are you sure?
+            </p>
+            <div className="flex gap-2">
+              <button
+                onClick={() => setDeleteStep('password')}
+                className="text-sm bg-red-800 hover:bg-red-700 text-white px-4 py-2 rounded transition-colors"
+              >
+                Yes, continue
+              </button>
+              <button
+                onClick={() => setDeleteStep('idle')}
+                className="text-sm bg-surface-hi hover:bg-edge text-fg-2 px-4 py-2 rounded border border-edge transition-colors"
+              >
+                Cancel
+              </button>
+            </div>
+          </>
+        )}
+
+        {deleteStep === 'password' && (
+          <form onSubmit={handleDeleteAccount} className="space-y-3">
+            <p className="text-sm text-fg-3">Enter your password to confirm deletion.</p>
+            <input
+              type="password"
+              value={deletePassword}
+              onChange={(e) => setDeletePassword(e.target.value)}
+              required
+              autoComplete="current-password"
+              placeholder="Your current password"
+              className="w-full bg-surface-hi border border-edge rounded px-3 py-2 text-fg focus:outline-none focus:ring-2 focus:ring-red-700 text-sm"
+            />
+            {deleteError && <p className="text-red-400 text-sm">{deleteError}</p>}
+            <div className="flex gap-2">
+              <button
+                type="submit"
+                disabled={deleteLoading}
+                className="text-sm bg-red-800 hover:bg-red-700 disabled:opacity-50 text-white px-4 py-2 rounded transition-colors"
+              >
+                {deleteLoading ? 'Deleting…' : 'Delete account permanently'}
+              </button>
+              <button
+                type="button"
+                onClick={() => { setDeleteStep('idle'); setDeletePassword(''); setDeleteError(null) }}
+                className="text-sm bg-surface-hi hover:bg-edge text-fg-2 px-4 py-2 rounded border border-edge transition-colors"
+              >
+                Cancel
+              </button>
+            </div>
+          </form>
+        )}
       </section>
 
       {/* ── Log out ───────────────────────────────────────────────────── */}

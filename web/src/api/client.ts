@@ -526,6 +526,22 @@ export async function rotateToken(): Promise<TokenRotateResult> {
 // GDPR data export (issue #27)
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Account deletion (issue #26)
+// ---------------------------------------------------------------------------
+
+export async function deleteAccount(password: string): Promise<{ ok: boolean }> {
+  return apiFetch<{ ok: boolean }>('/api/v1/account', {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ password }),
+  })
+}
+
+// ---------------------------------------------------------------------------
+// GDPR data export (issue #27)
+// ---------------------------------------------------------------------------
+
 export async function downloadAccountData(): Promise<void> {
   const token = getToken()
   const headers: Record<string, string> = {}
