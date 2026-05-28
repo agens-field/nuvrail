@@ -95,6 +95,7 @@ async def _scrub_one(op: dict, db_path: Path) -> None:
         logger.warning("[scrubber] op=%s: smtp_envelope unparseable, nulling entirely", op_id)
     else:
         envelope["body_preview"] = None
+        envelope["body"] = None        # full RFC 2822 body added after issue was filed
         scrubbed_envelope = json.dumps(envelope)
 
     async with get_db(db_path) as db:
