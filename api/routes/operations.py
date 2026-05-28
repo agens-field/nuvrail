@@ -492,6 +492,25 @@ async def _do_approve(op_id: str, row: dict, db_path: Path) -> ApproveResponse:
             del msg["From"]
         msg["From"] = smtp_user
 
+        # Normalise recipients to a flat list of strings.
+        # Use the SMTP envelope captured at staging time (RCPT TO), not the
+        # message To: header — they can legitimately differ.
+        relay_recipients: list[str] = (
+            recipients if isinstance(recipients, list)
+            else [recipients] if recipients
+            else []
+        )
+        if not relay_recipients:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Operation {op_id} has no recipients in the staged envelope.",
+            )
+
+        logger.info(
+            "[approve] SMTP relay start op=%s host=%s port=%d user=%s recipients=%s",
+            op_id, smtp_host, smtp_port, smtp_user, relay_recipients,
+        )
+
         try:
             if is_oauth2:
                 # OAuth2 agents: authenticate with XOAUTH2 via aiosmtplib native support.
@@ -507,17 +526,37 @@ async def _do_approve(op_id: str, row: dict, db_path: Path) -> ApproveResponse:
                     hostname=smtp_host, port=smtp_port, start_tls=True
                 ) as smtp:
                     await smtp.auth_xoauth2(smtp_user, access_token)
-                    await smtp.sendmail(smtp_user, recipients, msg.as_string())
+                    errors, server_msg = await smtp.sendmail(
+                        smtp_user, relay_recipients, msg.as_string()
+                    )
+                    if errors:
+                        logger.warning(
+                            "[approve] SMTP relay partial errors op=%s errors=%s",
+                            op_id, errors,
+                        )
             else:
-                await aiosmtplib.send(
+                # Explicitly pass sender and recipients from the staged envelope.
+                # Do NOT rely on header extraction — the To: header and the RCPT TO
+                # envelope can differ; using envelope recipients is correct.
+                relay_errors, relay_server_msg = await aiosmtplib.send(
                     msg,
+                    sender=smtp_user,
+                    recipients=relay_recipients,
                     hostname=smtp_host,
                     port=smtp_port,
                     username=smtp_user,
                     password=smtp_pass,
                     start_tls=True,
                 )
-            logger.info("[approve] SMTP relay succeeded for %s", op_id)
+                if relay_errors:
+                    logger.warning(
+                        "[approve] SMTP relay partial errors op=%s errors=%s server_msg=%r",
+                        op_id, relay_errors, relay_server_msg,
+                    )
+            logger.info(
+                "[approve] SMTP relay succeeded op=%s host=%s recipients=%s",
+                op_id, smtp_host, relay_recipients,
+            )
         except Exception as exc:
             logger.error("[approve] SMTP relay failed for %s: %s", op_id, exc)
             await update_operation_status(op_id, "failed", error=str(exc), db_path=db_path)
