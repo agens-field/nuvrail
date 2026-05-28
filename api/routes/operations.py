@@ -51,7 +51,10 @@ import re
 import time
 from email.mime.text import MIMEText
 from pathlib import Path
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
+
+if TYPE_CHECKING:
+    import email.message
 
 import aioimaplib
 from aioimaplib import quoted as imap_quoted
@@ -677,7 +680,6 @@ async def _do_approve(op_id: str, row: dict, db_path: Path) -> ApproveResponse:
         else:
             envelope = {}
 
-        sender = envelope.get("from", "")
         recipients = envelope.get("to", [])
         subject = envelope.get("subject", "<no subject>")
         # Use full body when available; fall back to body_preview for ops staged
@@ -901,8 +903,14 @@ async def list_ops(
     db_path: Path = Depends(get_db_path),
     current_user: dict = Depends(get_current_user),
 ) -> OperationListResponse:
-    """List staged operations, optionally filtered by status."""
-    rows = await list_operations(status=status, agent_id=agent_id, db_path=db_path)
+    """List staged operations, optionally filtered by status.
+
+    Scoped to the authenticated user's own agents — operations belonging to
+    other users are never returned.
+    """
+    rows = await list_operations(
+        status=status, agent_id=agent_id, db_path=db_path, user_id=current_user["id"]
+    )
     ops = []
     for r in rows:
         op = _row_to_response(r)
@@ -941,7 +949,7 @@ async def batch_approve(
     skipped: list[BatchApproveResult] = []
 
     for op_id in body.operation_ids:
-        row = await get_operation(op_id, db_path=db_path)
+        row = await get_operation(op_id, db_path=db_path, user_id=current_user["id"])
         if row is None:
             skipped.append(BatchApproveResult(id=op_id, status="skipped", error="not found"))
             continue
@@ -1005,7 +1013,7 @@ async def batch_reject(
     skipped: list[BatchRejectResult] = []
 
     for op_id in body.operation_ids:
-        row = await get_operation(op_id, db_path=db_path)
+        row = await get_operation(op_id, db_path=db_path, user_id=current_user["id"])
         if row is None:
             skipped.append(BatchRejectResult(id=op_id, status="skipped", error="not found"))
             continue
@@ -1045,8 +1053,8 @@ async def get_op(
     db_path: Path = Depends(get_db_path),
     current_user: dict = Depends(get_current_user),
 ) -> OperationResponse:
-    """Retrieve a single operation by ID."""
-    row = await get_operation(op_id, db_path=db_path)
+    """Retrieve a single operation by ID (scoped to the authenticated user)."""
+    row = await get_operation(op_id, db_path=db_path, user_id=current_user["id"])
     if row is None:
         raise HTTPException(status_code=404, detail=f"Operation {op_id!r} not found")
     op = _row_to_response(row)
@@ -1065,7 +1073,7 @@ async def approve_op(
     - SMTP ops: relays the message to the upstream SMTP server via aiosmtplib.
     - IMAP ops: replays the stored command against the upstream IMAP server.
     """
-    row = await get_operation(op_id, db_path=db_path)
+    row = await get_operation(op_id, db_path=db_path, user_id=current_user["id"])
     if row is None:
         raise HTTPException(status_code=404, detail=f"Operation {op_id!r} not found")
     if row["status"] != "pending":
@@ -1082,8 +1090,8 @@ async def reject_op(
     db_path: Path = Depends(get_db_path),
     current_user: dict = Depends(get_current_user),
 ) -> RejectResponse:
-    """Reject a pending operation."""
-    row = await get_operation(op_id, db_path=db_path)
+    """Reject a pending operation (scoped to the authenticated user)."""
+    row = await get_operation(op_id, db_path=db_path, user_id=current_user["id"])
     if row is None:
         raise HTTPException(status_code=404, detail=f"Operation {op_id!r} not found")
     if row["status"] != "pending":
@@ -1107,6 +1115,12 @@ async def undo_op(
     (move, trash, archive, mark_read, mark_unread, star, unstar) can be undone.
     The undo window defaults to 24h and is configurable via UNDO_WINDOW_HOURS.
     """
+    # Tenant isolation: only the owning user may undo their own operation.
+    # Return 404 (not 403) so foreign op IDs are indistinguishable from
+    # non-existent ones.
+    owned = await get_operation(op_id, db_path=db_path, user_id=current_user["id"])
+    if owned is None:
+        raise HTTPException(status_code=404, detail=f"Operation {op_id!r} not found")
     try:
         result = await undo_operation(op_id, db_path=db_path)
     except UndoError as exc:

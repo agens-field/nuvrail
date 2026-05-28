@@ -398,7 +398,7 @@ async def test_select_exists_adjusted_for_pending_move(
         writer.write(f"c004 UID MOVE {move_uid} Archive\r\n".encode())
         await writer.drain()
         move_lines = await _read_until_ok_or_no(reader, "c004")
-        assert any("STAGED" in l.upper() for l in move_lines), (
+        assert any("STAGED" in line.upper() for line in move_lines), (
             f"Expected STAGED in MOVE response, got: {move_lines!r}"
         )
 
@@ -475,7 +475,7 @@ async def test_uid_search_filters_pending_move(
         writer.write(f"d004 UID MOVE {move_uid} Archive\r\n".encode())
         await writer.drain()
         move_resp = await _read_until_ok_or_no(reader, "d004")
-        assert any("STAGED" in l.upper() for l in move_resp)
+        assert any("STAGED" in line.upper() for line in move_resp)
 
         # UID SEARCH ALL after staging — moved UID must be absent
         writer.write(b"d005 UID SEARCH ALL\r\n")
@@ -550,7 +550,7 @@ async def test_copy_store_deleted_rewrites_to_move_without_profile(
         writer.write(b"e004 UID COPY " + uid_str + b' "[Gmail]/All Mail"\r\n')
         await writer.drain()
         copy_resp = await _read_until_ok_or_no(reader, "e004")
-        assert any("OK" in l.upper() for l in copy_resp), (
+        assert any("OK" in line.upper() for line in copy_resp), (
             f"Expected OK for held COPY, got: {copy_resp!r}"
         )
 
@@ -558,10 +558,10 @@ async def test_copy_store_deleted_rewrites_to_move_without_profile(
         writer.write(b"e005 UID STORE " + uid_str + b" +FLAGS \\Deleted\r\n")
         await writer.drain()
         store_resp = await _read_until_ok_or_no(reader, "e005")
-        assert any("STAGED" in l.upper() for l in store_resp), (
+        assert any("STAGED" in line.upper() for line in store_resp), (
             f"Expected STAGED for COPY+STORE rewrite, got: {store_resp!r}"
         )
-        assert any("MOVE" in l.upper() or "STAGED" in l.upper() for l in store_resp), (
+        assert any("MOVE" in line.upper() or "STAGED" in line.upper() for line in store_resp), (
             f"Expected MOVE/STAGED in response, got: {store_resp!r}"
         )
 
@@ -569,7 +569,7 @@ async def test_copy_store_deleted_rewrites_to_move_without_profile(
         writer.write(b"e006 EXPUNGE\r\n")
         await writer.drain()
         expunge_resp = await _read_until_ok_or_no(reader, "e006")
-        assert any("OK" in l.upper() for l in expunge_resp), (
+        assert any("OK" in line.upper() for line in expunge_resp), (
             f"Expected OK for EXPUNGE (blocked gracefully), got: {expunge_resp!r}"
         )
 
@@ -578,7 +578,7 @@ async def test_copy_store_deleted_rewrites_to_move_without_profile(
         await writer.drain()
         fetch_resp = await _read_until_ok_or_no(reader, "e007")
         # The UID should not appear in any FETCH response line.
-        fetch_lines = [l for l in fetch_resp if re.match(r"^\* \d+ FETCH\b", l, re.IGNORECASE)]
+        fetch_lines = [line for line in fetch_resp if re.match(r"^\* \d+ FETCH\b", line, re.IGNORECASE)]
         for fetch_line in fetch_lines:
             assert f"UID {target_uid}" not in fetch_line, (
                 f"Pending-move UID {target_uid} should be suppressed in FETCH "
@@ -651,11 +651,11 @@ async def test_copy_store_deleted_unquoted_folder_name_held_and_rewritten(
         writer.write(b"b001 UID COPY " + uid_bytes + b" [Gmail]/All Mail\r\n")
         await writer.drain()
         copy_resp = await _read_until_ok_or_no(reader, "b001")
-        assert any("OK" in l.upper() for l in copy_resp), (
+        assert any("OK" in line.upper() for line in copy_resp), (
             f"Expected OK for held COPY (unquoted folder), got: {copy_resp!r}"
         )
         # Must NOT be STAGED yet — it should be held waiting for STORE \Deleted
-        assert not any("STAGED" in l.upper() for l in copy_resp), (
+        assert not any("STAGED" in line.upper() for line in copy_resp), (
             f"COPY with unquoted folder name was staged immediately instead of "
             f"being held for COPY+STORE→MOVE rewrite: {copy_resp!r}"
         )
@@ -664,7 +664,7 @@ async def test_copy_store_deleted_unquoted_folder_name_held_and_rewritten(
         writer.write(b"b002 UID STORE " + uid_bytes + b" +FLAGS \\Deleted\r\n")
         await writer.drain()
         store_resp = await _read_until_ok_or_no(reader, "b002")
-        assert any("STAGED" in l.upper() for l in store_resp), (
+        assert any("STAGED" in line.upper() for line in store_resp), (
             f"Expected STAGED for COPY+STORE rewrite (unquoted folder), got: {store_resp!r}"
         )
 

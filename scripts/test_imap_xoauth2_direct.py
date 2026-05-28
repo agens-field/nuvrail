@@ -61,7 +61,7 @@ async def main() -> None:
     raw = f"user={email}\x01auth=Bearer {access_token}\x01\x01"
     xoauth2_b64 = base64.b64encode(raw.encode("ascii")).decode("ascii")
 
-    print(f"\nConnecting directly to imap.gmail.com:993...")
+    print("\nConnecting directly to imap.gmail.com:993...")
     import ssl
     ssl_ctx = ssl.create_default_context()
 
@@ -97,20 +97,20 @@ async def main() -> None:
         # Read final NO.
         resp2 = await reader.readline()
         print(f"Final    : {resp2.decode(errors='replace').strip()}")
-        print(f"\n✗ Gmail rejected XOAUTH2 directly — not a proxy bug.")
-        print(f"  This is a Google/Workspace configuration issue.")
-        print(f"\n  Things to check in Google Cloud Console:")
-        print(f"  1. OAuth consent screen → is the app in 'Testing' or 'Production' mode?")
+        print("\n✗ Gmail rejected XOAUTH2 directly — not a proxy bug.")
+        print("  This is a Google/Workspace configuration issue.")
+        print("\n  Things to check in Google Cloud Console:")
+        print("  1. OAuth consent screen → is the app in 'Testing' or 'Production' mode?")
         print(f"     Testing mode: check that {email} is listed as a test user.")
-        print(f"  2. Is the Gmail API enabled for project?")
-        print(f"     https://console.cloud.google.com/apis/library/gmail.googleapis.com")
-        print(f"  3. In Workspace Admin Console > Security > API controls:")
-        print(f"     check whether the OAuth client ID is explicitly blocked.")
+        print("  2. Is the Gmail API enabled for project?")
+        print("     https://console.cloud.google.com/apis/library/gmail.googleapis.com")
+        print("  3. In Workspace Admin Console > Security > API controls:")
+        print("     check whether the OAuth client ID is explicitly blocked.")
 
     elif b" OK " in resp1.upper():
         print(f"Response : {resp1_str}")
-        print(f"\n✓ Gmail accepted XOAUTH2 directly — proxy bug likely.")
-        print(f"  The proxy is building a different XOAUTH2 string than this script.")
+        print("\n✓ Gmail accepted XOAUTH2 directly — proxy bug likely.")
+        print("  The proxy is building a different XOAUTH2 string than this script.")
 
         # Clean logout.
         writer.write(b"X002 LOGOUT\r\n")
@@ -123,7 +123,7 @@ async def main() -> None:
 
     else:
         print(f"Response : {resp1_str}")
-        print(f"\n? Unexpected response — neither a challenge nor OK.")
+        print("\n? Unexpected response — neither a challenge nor OK.")
 
     writer.close()
     try:

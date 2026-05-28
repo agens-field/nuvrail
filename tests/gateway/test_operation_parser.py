@@ -3,7 +3,6 @@ Unit tests for IMAP → Operation parser and rich description builder.
 
 Sub-milestone: 1.1
 """
-import pytest
 
 from gateway.operation_parser import (
     build_rich_description,

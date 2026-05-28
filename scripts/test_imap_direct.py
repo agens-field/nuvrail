@@ -108,7 +108,7 @@ async def main():
         print(f"Result: UNEXPECTED — {final_resp!r}")
         if len(resp_lines) > 1:
             print(f"NOTE: Proxy reads only line 1 as login_resp: {resp_lines[0]!r}")
-            print(f"      If that line lacks ' OK ', proxy fails even though final line is OK.")
+            print("      If that line lacks ' OK ', proxy fails even though final line is OK.")
 
     writer.close()
 

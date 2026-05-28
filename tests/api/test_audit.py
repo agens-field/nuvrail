@@ -5,7 +5,6 @@ Uses httpx.AsyncClient against the FastAPI app with a tmp_path-isolated DB.
 """
 from __future__ import annotations
 
-import json
 import time
 from pathlib import Path
 
@@ -220,7 +219,7 @@ async def test_audit_list_joined_fields_after_approve(
         )
         await db.commit()
 
-    resp = await client.get(f"/api/v1/audit?event=executed")
+    resp = await client.get("/api/v1/audit?event=executed")
     assert resp.status_code == 200
     executed_entries = [e for e in resp.json()["entries"] if e.get("operation_id") == op_id]
     assert executed_entries, "Expected executed audit entry for op"

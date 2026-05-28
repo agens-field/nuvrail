@@ -1,7 +1,6 @@
 """Tests for gateway/provider_profiles.py — provider detection and normalization helpers."""
 from __future__ import annotations
 
-import pytest
 
 from gateway.provider_profiles import (
     GENERIC_PROFILE,

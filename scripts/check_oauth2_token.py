@@ -38,7 +38,7 @@ async def main() -> None:
 
     from gateway.state_db import get_db
     from gateway.credentials import decrypt_credential
-    from gateway.oauth2_tokens import get_xoauth2_string, _refresh_google_token
+    from gateway.oauth2_tokens import _refresh_google_token
 
     # 1. Load the agent credentials row.
     async with get_db(DB_PATH) as db:

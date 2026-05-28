@@ -18,11 +18,28 @@ from api.auth import get_auth_db_path, get_current_user
 from api.main import app
 from api.routes.operations import get_db_path
 from gateway.credentials import encrypt_credential
-from gateway.staging import create_operation
+from gateway.staging import create_operation, get_operation
 from gateway.state_db import get_db, init_db
 
 # Fake user used to satisfy auth dependency in tests that don't test auth itself
 _FAKE_USER = {"id": 1, "email": "test@test.com", "display_name": None, "created_at": 0, "api_token": "testtoken"}
+
+# The operations API scopes every query to the caller's own agents
+# (staged_operations.agent_id → agent_credentials.user_id). Tests therefore
+# attach their operations to an agent owned by _FAKE_USER. The owner agent is
+# seeded as the first agent_credentials row in each fresh test DB, so its id is
+# deterministically 1.
+OWNER_AGENT_ID = 1
+
+
+async def _create_op(**kwargs):
+    """Stage an operation owned by _FAKE_USER unless an agent_id is supplied.
+
+    Mirrors gateway.staging.create_operation but defaults agent_id to the
+    seeded owner agent so the operation is visible under tenant-scoping.
+    """
+    kwargs.setdefault("agent_id", OWNER_AGENT_ID)
+    return await create_operation(**kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -36,6 +53,31 @@ async def db_path(tmp_path: Path) -> Path:
     path = tmp_path / "test_api.db"
     await init_db(path)
     return path
+
+
+@pytest.fixture(autouse=True)
+async def _owner_agent(db_path: Path) -> None:
+    """Seed an agent_credentials row owned by _FAKE_USER (id=1).
+
+    Operations created in tests are attached to OWNER_AGENT_ID so they are
+    visible to the authenticated user under the API's tenant-scoping. Seeded
+    first in a fresh DB so its id is 1 — asserted to fail loudly if that
+    assumption ever breaks.
+    """
+    async with get_db(db_path) as db:
+        cur = await db.execute(
+            """INSERT INTO agent_credentials
+               (user_id, label, agent_username, hashed_token,
+                upstream_host, upstream_imap_port, upstream_smtp_port,
+                upstream_user, upstream_password, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (1, "owner", "nuvrail_owner", "x", "imap.example.com", 993, 587,
+             "owner@example.com", "pass", 0),
+        )
+        await db.commit()
+        assert cur.lastrowid == OWNER_AGENT_ID, (
+            f"owner agent expected id={OWNER_AGENT_ID}, got {cur.lastrowid}"
+        )
 
 
 @pytest.fixture()
@@ -71,7 +113,7 @@ async def test_list_operations_with_pending(
     client: httpx.AsyncClient, db_path: Path
 ) -> None:
     """GET /api/v1/operations returns created pending ops."""
-    op_id = await create_operation(
+    op_id = await _create_op(
         op_type="move",
         protocol="imap",
         description="Move 42 to Archive",
@@ -89,7 +131,7 @@ async def test_list_operations_status_filter(
     client: httpx.AsyncClient, db_path: Path
 ) -> None:
     """GET /api/v1/operations?status=pending filters correctly."""
-    await create_operation(
+    await _create_op(
         op_type="move",
         protocol="imap",
         description="Pending op",
@@ -130,14 +172,14 @@ async def test_list_operations_agent_filter(
         agent_id_1 = cur1.lastrowid
         agent_id_2 = cur2.lastrowid
 
-    op_id_1 = await create_operation(
+    op_id_1 = await _create_op(
         op_type="move",
         protocol="imap",
         description="Agent 1 op",
         agent_id=agent_id_1,
         db_path=db_path,
     )
-    await create_operation(
+    await _create_op(
         op_type="move",
         protocol="imap",
         description="Agent 2 op",
@@ -157,7 +199,7 @@ async def test_get_operation_detail(
 ) -> None:
     """GET /api/v1/operations/{id} returns correct fields."""
     full_body = "Hello, this is the complete message body for approval review."
-    op_id = await create_operation(
+    op_id = await _create_op(
         op_type="smtp_send",
         protocol="smtp",
         description="Send test email",
@@ -195,7 +237,7 @@ async def test_smtp_envelope_full_body_stored_and_returned(
     """
     long_body = "A" * 500  # deliberately longer than 200-char preview limit
     preview = long_body[:200]
-    op_id = await create_operation(
+    op_id = await _create_op(
         op_type="smtp_send",
         protocol="smtp",
         description="Send long email",
@@ -229,7 +271,7 @@ async def test_reject_operation(
     client: httpx.AsyncClient, db_path: Path
 ) -> None:
     """POST /api/v1/operations/{id}/reject sets status to 'rejected'."""
-    op_id = await create_operation(
+    op_id = await _create_op(
         op_type="move",
         protocol="imap",
         description="Move to Trash: 5",
@@ -250,7 +292,7 @@ async def test_approve_already_approved(
     client: httpx.AsyncClient, db_path: Path
 ) -> None:
     """POST approve on an already-rejected op returns 409."""
-    op_id = await create_operation(
+    op_id = await _create_op(
         op_type="move",
         protocol="imap",
         description="Move op",
@@ -299,7 +341,7 @@ async def test_approve_imap_operation(
 
     folder_name = f"NuvrailTest_{int(time.time())}"
 
-    op_id = await create_operation(
+    op_id = await _create_op(
         op_type="create",
         protocol="imap",
         agent_id=agent_id,
@@ -357,7 +399,7 @@ async def test_approve_smtp_operation(
         await db.commit()
         smtp_agent_id = cur.lastrowid
 
-    op_id = await create_operation(
+    op_id = await _create_op(
         op_type="smtp_send",
         protocol="smtp",
         agent_id=smtp_agent_id,
@@ -417,7 +459,7 @@ async def test_reject_restores_snapshot_and_queues_pending_reverts(
 
     # Stage the op with a snapshot of the pre-op state
     snap = {"99": {"flags": [], "seq_num": 1, "folder_id": folder_id}}
-    op_id = await create_operation(
+    op_id = await _create_op(
         op_type="mark_read",
         protocol="imap",
         description="Mark 99 as read",
@@ -455,7 +497,7 @@ async def test_reject_without_snapshot_does_not_raise(
     client: httpx.AsyncClient, db_path: Path
 ) -> None:
     """POST /reject on an op without snapshot succeeds without error."""
-    op_id = await create_operation(
+    op_id = await _create_op(
         op_type="move",
         protocol="imap",
         description="Move to Archive",
@@ -480,7 +522,7 @@ async def test_auto_approved_operation_not_listed_as_pending(
         )
         await db.commit()
 
-    op_id = await create_operation(
+    op_id = await _create_op(
         op_type="mark_read",
         protocol="imap",
         description="Mark as read",
@@ -525,7 +567,7 @@ async def test_batch_approve_multiple(
     """
     op_ids = []
     for i in range(3):
-        op_id = await create_operation(
+        op_id = await _create_op(
             op_type="append",
             protocol="imap",
             description=f"Append op {i}",
@@ -550,13 +592,13 @@ async def test_batch_approve_skips_non_pending(
     client: httpx.AsyncClient, db_path: Path
 ) -> None:
     """Batch approve with one already-approved op → goes to skipped."""
-    op_id_pending = await create_operation(
+    op_id_pending = await _create_op(
         op_type="append",
         protocol="imap",
         description="Pending op",
         db_path=db_path,
     )
-    op_id_already = await create_operation(
+    op_id_already = await _create_op(
         op_type="append",
         protocol="imap",
         description="Already approved op",
@@ -584,7 +626,7 @@ async def test_batch_approve_skips_not_found(
     client: httpx.AsyncClient, db_path: Path
 ) -> None:
     """Batch approve with an unknown op_id → goes to skipped."""
-    op_id = await create_operation(
+    op_id = await _create_op(
         op_type="append",
         protocol="imap",
         description="Real op",
@@ -615,7 +657,7 @@ async def test_batch_approve_continues_after_failure(
 
     op_ids = []
     for i in range(3):
-        op_id = await create_operation(
+        op_id = await _create_op(
             op_type="append",
             protocol="imap",
             description=f"Op {i}",
@@ -654,7 +696,7 @@ async def test_batch_reject_multiple(
     """POST /operations/batch/reject with 3 ops → all in rejected list."""
     op_ids = []
     for i in range(3):
-        op_id = await create_operation(
+        op_id = await _create_op(
             op_type="move",
             protocol="imap",
             description=f"Move op {i}",
@@ -679,13 +721,13 @@ async def test_batch_reject_skips_non_pending(
     client: httpx.AsyncClient, db_path: Path
 ) -> None:
     """Batch reject with one already-rejected op → goes to skipped."""
-    op_id_pending = await create_operation(
+    op_id_pending = await _create_op(
         op_type="move",
         protocol="imap",
         description="Pending op",
         db_path=db_path,
     )
-    op_id_already = await create_operation(
+    op_id_already = await _create_op(
         op_type="move",
         protocol="imap",
         description="Already rejected op",
@@ -730,7 +772,7 @@ async def test_single_approve_still_works(
 
     Uses op_type='append' which is a no-op at the upstream IMAP level.
     """
-    op_id = await create_operation(
+    op_id = await _create_op(
         op_type="append",
         protocol="imap",
         description="Single approve test",
@@ -750,7 +792,7 @@ async def test_single_reject_still_works(
     client: httpx.AsyncClient, db_path: Path
 ) -> None:
     """Refactored reject_op still works correctly via single-op endpoint."""
-    op_id = await create_operation(
+    op_id = await _create_op(
         op_type="move",
         protocol="imap",
         description="Single reject test",
@@ -764,3 +806,135 @@ async def test_single_reject_still_works(
 
     detail = await client.get(f"/api/v1/operations/{op_id}")
     assert detail.json()["status"] == "rejected"
+
+
+# ---------------------------------------------------------------------------
+# Tenant isolation (cross-user IDOR) regression tests
+# ---------------------------------------------------------------------------
+
+
+async def _seed_foreign_op(db_path: Path, *, op_type: str = "move", status: str | None = None) -> str:
+    """Create an operation owned by a *different* user (id=2) and return its id.
+
+    The authenticated test user is _FAKE_USER (id=1); operations seeded here
+    belong to user 2 via a separate agent, so user 1 must never be able to see
+    or act on them.
+    """
+    async with get_db(db_path) as db:
+        cur = await db.execute(
+            """INSERT INTO agent_credentials
+               (user_id, label, agent_username, hashed_token,
+                upstream_host, upstream_imap_port, upstream_smtp_port,
+                upstream_user, upstream_password, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (2, "victim", "nuvrail_victim", "x", "imap.example.com", 993, 587,
+             "victim@example.com", "pass", 0),
+        )
+        await db.commit()
+        foreign_agent_id = cur.lastrowid
+
+    op_id = await create_operation(
+        op_type=op_type,
+        protocol="imap",
+        description="Victim's private operation",
+        agent_id=foreign_agent_id,
+        db_path=db_path,
+    )
+    if status is not None:
+        async with get_db(db_path) as db:
+            await db.execute(
+                "UPDATE staged_operations SET status = ? WHERE id = ?", (status, op_id)
+            )
+            await db.commit()
+    return op_id
+
+
+async def test_list_excludes_other_users_operations(
+    client: httpx.AsyncClient, db_path: Path
+) -> None:
+    """GET /operations must not leak operations owned by other users."""
+    foreign_op = await _seed_foreign_op(db_path)
+    mine = await _create_op(op_type="move", protocol="imap", description="My op", db_path=db_path)
+
+    resp = await client.get("/api/v1/operations")
+    assert resp.status_code == 200
+    ids = {row["id"] for row in resp.json()["operations"]}
+    assert mine in ids
+    assert foreign_op not in ids
+
+
+async def test_get_other_users_operation_returns_404(
+    client: httpx.AsyncClient, db_path: Path
+) -> None:
+    """GET /operations/{id} on another user's op returns 404 (not 403, to avoid leaking existence)."""
+    foreign_op = await _seed_foreign_op(db_path)
+    resp = await client.get(f"/api/v1/operations/{foreign_op}")
+    assert resp.status_code == 404
+
+
+async def test_approve_other_users_operation_returns_404(
+    client: httpx.AsyncClient, db_path: Path
+) -> None:
+    """A user cannot approve (execute) another user's operation."""
+    foreign_op = await _seed_foreign_op(db_path)
+    resp = await client.post(f"/api/v1/operations/{foreign_op}/approve")
+    assert resp.status_code == 404
+    # The victim's op must remain pending — never executed.
+    row = await get_operation(foreign_op, db_path=db_path)
+    assert row["status"] == "pending"
+
+
+async def test_reject_other_users_operation_returns_404(
+    client: httpx.AsyncClient, db_path: Path
+) -> None:
+    """A user cannot reject another user's operation."""
+    foreign_op = await _seed_foreign_op(db_path)
+    resp = await client.post(f"/api/v1/operations/{foreign_op}/reject")
+    assert resp.status_code == 404
+    row = await get_operation(foreign_op, db_path=db_path)
+    assert row["status"] == "pending"
+
+
+async def test_undo_other_users_operation_returns_404(
+    client: httpx.AsyncClient, db_path: Path
+) -> None:
+    """A user cannot undo another user's executed operation."""
+    foreign_op = await _seed_foreign_op(db_path, op_type="move", status="executed")
+    resp = await client.post(f"/api/v1/operations/{foreign_op}/undo")
+    assert resp.status_code == 404
+
+
+async def test_batch_approve_skips_other_users_operations(
+    client: httpx.AsyncClient, db_path: Path
+) -> None:
+    """Batch approve treats another user's op as not-found (skipped), never executed."""
+    foreign_op = await _seed_foreign_op(db_path, op_type="append")
+    resp = await client.post(
+        "/api/v1/operations/batch/approve",
+        json={"operation_ids": [foreign_op]},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data["approved"]) == 0
+    assert len(data["skipped"]) == 1
+    assert data["skipped"][0]["id"] == foreign_op
+    row = await get_operation(foreign_op, db_path=db_path)
+    assert row["status"] == "pending"
+
+
+async def test_batch_reject_skips_other_users_operations(
+    client: httpx.AsyncClient, db_path: Path
+) -> None:
+    """Batch reject treats another user's op as not-found (skipped), never rejected."""
+    foreign_op = await _seed_foreign_op(db_path)
+    resp = await client.post(
+        "/api/v1/operations/batch/reject",
+        json={"operation_ids": [foreign_op]},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data["rejected"]) == 0
+    assert len(data["skipped"]) == 1
+    assert data["skipped"][0]["id"] == foreign_op
+    row = await get_operation(foreign_op, db_path=db_path)
+    assert row["status"] == "pending"

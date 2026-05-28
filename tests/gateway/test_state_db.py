@@ -331,7 +331,6 @@ async def test_restore_from_snapshot_restores_flags(db_path: Path) -> None:
     assert r"\Seen" in json.loads(msg_after_stage["flags"])
 
     # Now restore from snapshot (simulates reject)
-    from gateway.state_db import restore_from_snapshot
     reverts = await restore_from_snapshot(op_id, db_path=db_path)
 
     assert len(reverts) == 1
@@ -346,7 +345,6 @@ async def test_restore_from_snapshot_restores_flags(db_path: Path) -> None:
 async def test_restore_from_snapshot_no_snapshot_returns_empty(db_path: Path) -> None:
     """restore_from_snapshot returns [] for ops without a snapshot."""
     from gateway.staging import create_operation
-    from gateway.state_db import restore_from_snapshot
 
     op_id = await create_operation(
         op_type="move", protocol="imap", description="Move", db_path=db_path
@@ -482,7 +480,7 @@ async def test_snapshot_captures_sender_subject(db_path: Path) -> None:
 
 async def test_restore_from_snapshot_reinserts_deleted_message(db_path: Path) -> None:
     """On MOVE rollback: restore_from_snapshot re-inserts a deleted message row."""
-    from gateway.staging import create_operation, update_operation_status
+    from gateway.staging import create_operation
 
     folder_id = await _setup_folder(db_path)
     await upsert_message(
@@ -511,8 +509,7 @@ async def test_restore_from_snapshot_reinserts_deleted_message(db_path: Path) ->
     assert gone == [], "Message should be gone after MOVE staging"
 
     # Reject the operation — restore_from_snapshot should re-insert the row
-    from gateway.state_db import restore_from_snapshot
-    reverts = await restore_from_snapshot(op_id, db_path=db_path)
+    await restore_from_snapshot(op_id, db_path=db_path)
 
     restored = await get_messages_by_uid_set(folder_id, "99", db_path=db_path)
     assert len(restored) == 1, "Message should be re-inserted after MOVE rollback"
@@ -576,7 +573,6 @@ async def test_get_pending_move_uids_for_folder_returns_nothing_without_function
 async def test_get_pending_move_uids_for_folder_single(db_path: Path) -> None:
     """get_pending_move_uids_for_folder returns staged move UID for folder."""
     from gateway.staging import create_operation
-    from gateway.state_db import get_pending_move_uids_for_folder
 
     await create_operation(
         op_type="move", protocol="imap",
@@ -597,7 +593,6 @@ async def test_get_pending_move_uids_for_folder_single(db_path: Path) -> None:
 async def test_get_pending_move_uids_excludes_approved(db_path: Path) -> None:
     """Approved/rejected ops are not returned — only pending ones."""
     from gateway.staging import create_operation, update_operation_status
-    from gateway.state_db import get_pending_move_uids_for_folder
 
     op_id = await create_operation(
         op_type="move", protocol="imap",

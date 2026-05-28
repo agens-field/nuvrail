@@ -203,12 +203,32 @@ async def create_operation(
     return op_id
 
 
-async def get_operation(op_id: str, db_path: Path = DB_PATH) -> Optional[dict]:
-    """Fetch operation by ID. Returns dict or None."""
+async def get_operation(
+    op_id: str,
+    db_path: Path = DB_PATH,
+    user_id: Optional[int] = None,
+) -> Optional[dict]:
+    """Fetch operation by ID. Returns dict or None.
+
+    When ``user_id`` is provided, the operation is only returned if it belongs
+    to that user — i.e. its ``agent_id`` maps to an ``agent_credentials`` row
+    owned by ``user_id``. Operations with a NULL ``agent_id`` (legacy/test rows
+    with no owner) are never returned in user-scoped mode. API callers MUST
+    pass ``user_id`` to enforce tenant isolation; internal callers (expiry,
+    undo execution) may omit it.
+    """
     async with get_db(db_path) as db:
-        async with db.execute(
-            "SELECT * FROM staged_operations WHERE id = ?", (op_id,)
-        ) as cursor:
+        if user_id is not None:
+            query = (
+                "SELECT so.* FROM staged_operations so "
+                "JOIN agent_credentials ac ON so.agent_id = ac.id "
+                "WHERE so.id = ? AND ac.user_id = ?"
+            )
+            params: tuple = (op_id, user_id)
+        else:
+            query = "SELECT * FROM staged_operations WHERE id = ?"
+            params = (op_id,)
+        async with db.execute(query, params) as cursor:
             row = await cursor.fetchone()
             if row is None:
                 return None
@@ -219,36 +239,41 @@ async def list_operations(
     status: Optional[str] = None,
     agent_id: Optional[int] = None,
     db_path: Path = DB_PATH,
+    user_id: Optional[int] = None,
 ) -> list:
-    """List operations, optionally filtered by status."""
+    """List operations, optionally filtered by status and/or agent_id.
+
+    When ``user_id`` is provided, results are scoped to operations whose
+    ``agent_id`` maps to an ``agent_credentials`` row owned by ``user_id``.
+    Operations with a NULL ``agent_id`` are excluded in user-scoped mode.
+    API callers MUST pass ``user_id`` to enforce tenant isolation.
+    """
+    conditions: list[str] = []
+    params: list[object] = []
+
+    if user_id is not None:
+        join = "JOIN agent_credentials ac ON so.agent_id = ac.id"
+        conditions.append("ac.user_id = ?")
+        params.append(user_id)
+    else:
+        join = ""
+
+    if status is not None:
+        conditions.append("so.status = ?")
+        params.append(status)
+    if agent_id is not None:
+        conditions.append("so.agent_id = ?")
+        params.append(agent_id)
+
+    where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+    query = (
+        f"SELECT so.* FROM staged_operations so {join} {where} "  # noqa: S608 — fragments are literal; values parameterized
+        "ORDER BY so.created_at DESC"
+    )
+
     async with get_db(db_path) as db:
-        if status is not None and agent_id is not None:
-            async with db.execute(
-                """
-                SELECT * FROM staged_operations
-                WHERE status = ? AND agent_id = ?
-                ORDER BY created_at DESC
-                """,
-                (status, agent_id),
-            ) as cursor:
-                rows = await cursor.fetchall()
-        elif status is not None:
-            async with db.execute(
-                "SELECT * FROM staged_operations WHERE status = ? ORDER BY created_at DESC",
-                (status,),
-            ) as cursor:
-                rows = await cursor.fetchall()
-        elif agent_id is not None:
-            async with db.execute(
-                "SELECT * FROM staged_operations WHERE agent_id = ? ORDER BY created_at DESC",
-                (agent_id,),
-            ) as cursor:
-                rows = await cursor.fetchall()
-        else:
-            async with db.execute(
-                "SELECT * FROM staged_operations ORDER BY created_at DESC"
-            ) as cursor:
-                rows = await cursor.fetchall()
+        async with db.execute(query, params) as cursor:
+            rows = await cursor.fetchall()
         return [dict(row) for row in rows]
 
 

@@ -40,7 +40,6 @@ import asyncio
 import base64
 import json
 import time
-import urllib.request
 from pathlib import Path
 
 from gateway.credentials import decrypt_credential, encrypt_credential
@@ -229,7 +228,9 @@ async def _refresh_google_token(
 
 def _urllib_post(url: str, payload: dict) -> tuple[int, str]:
     """Synchronous POST via urllib — used as fallback when httpx is absent."""
+    import urllib.error  # noqa: PLC0415
     import urllib.parse  # noqa: PLC0415
+    import urllib.request  # noqa: PLC0415
 
     encoded = urllib.parse.urlencode(payload).encode("ascii")
     req = urllib.request.Request(

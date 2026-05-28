@@ -27,7 +27,6 @@ import re
 import time
 from typing import Optional
 
-import aioimaplib
 import pytest
 
 from tests.e2e.helpers import (
