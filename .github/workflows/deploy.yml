@@ -110,18 +110,22 @@ jobs:
         run: |
           ENV="${{ github.event_name == 'push' && 'staging' || inputs.environment }}"
           if [ "$ENV" = "production" ]; then
-            echo "app=${{ vars.FLY_WEB_APP_PROD }}"                              >> "$GITHUB_OUTPUT"
-            echo "config=web/fly.toml"                                            >> "$GITHUB_OUTPUT"
-            echo "api_url=https://${{ vars.FLY_MAIL_APP_PROD }}.fly.dev"         >> "$GITHUB_OUTPUT"
-            echo "proxy_host=${{ vars.FLY_MAIL_APP_PROD }}.fly.dev"              >> "$GITHUB_OUTPUT"
+            echo "app=${{ vars.FLY_WEB_APP_PROD }}"                    >> "$GITHUB_OUTPUT"
+            echo "config=fly.toml"                                      >> "$GITHUB_OUTPUT"
+            echo "api_url=https://${{ vars.FLY_MAIL_APP_PROD }}.fly.dev" >> "$GITHUB_OUTPUT"
+            echo "proxy_host=${{ vars.FLY_MAIL_APP_PROD }}.fly.dev"    >> "$GITHUB_OUTPUT"
           else
-            echo "app=nuvrail-staging-web"                                        >> "$GITHUB_OUTPUT"
-            echo "config=web/fly.staging-web.toml"                               >> "$GITHUB_OUTPUT"
-            echo "api_url=https://nuvrail-staging-gateway.fly.dev"               >> "$GITHUB_OUTPUT"
-            echo "proxy_host=nuvrail-staging-gateway.fly.dev"                    >> "$GITHUB_OUTPUT"
+            echo "app=nuvrail-staging-web"                              >> "$GITHUB_OUTPUT"
+            echo "config=fly.staging-web.toml"                         >> "$GITHUB_OUTPUT"
+            echo "api_url=https://nuvrail-staging-gateway.fly.dev"     >> "$GITHUB_OUTPUT"
+            echo "proxy_host=nuvrail-staging-gateway.fly.dev"          >> "$GITHUB_OUTPUT"
           fi
 
       - name: Deploy web to fly.io
+        # Must run from web/ so the Docker build context is correct.
+        # nginx.conf, package.json etc. must be at the context root — they
+        # live in web/, not the repo root. Config paths above are relative to web/.
+        working-directory: web
         run: |
           flyctl deploy \
             --app "${{ steps.cfg.outputs.app }}" \

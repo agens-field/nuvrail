@@ -131,12 +131,15 @@ curl https://nuvrail-staging-gateway.fly.dev/health
 ### Step 6 — Deploy the web app
 
 ```bash
-# From the repo root:
+# Must run from the web/ directory so Docker's build context contains nginx.conf,
+# package.json, and all other files the Dockerfile expects at the context root.
+cd web
 flyctl deploy \
   --app nuvrail-staging-web \
-  --config web/fly.staging-web.toml \
+  --config fly.staging-web.toml \
   --remote-only \
   --wait-timeout 300
+cd ..
 ```
 
 Verify:
@@ -174,11 +177,13 @@ flyctl deploy \
   --config fly.staging-gateway.toml \
   --remote-only
 
-# Web:
+# Web (must run from web/ so the Docker build context is correct):
+cd web
 flyctl deploy \
   --app nuvrail-staging-web \
-  --config web/fly.staging-web.toml \
+  --config fly.staging-web.toml \
   --remote-only
+cd ..
 ```
 
 Or trigger via GitHub Actions → Deploy → Run workflow → staging (CI gate fires automatically).
