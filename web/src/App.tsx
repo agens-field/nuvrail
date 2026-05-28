@@ -13,6 +13,7 @@ import ResetRequestView from './views/ResetRequestView'
 import ResetView from './views/ResetView'
 import SetupView from './views/SetupView'
 import ThemeToggle, { useTheme } from './components/ThemeToggle'
+import PlausibleAnalytics from './components/PlausibleAnalytics'
 import { getToken, setupPushNotifications } from './api/client'
 
 const queryClient = new QueryClient({
@@ -66,6 +67,7 @@ function Logo() {
 export default function App() {
   return (
     <QueryClientProvider client={queryClient}>
+      <PlausibleAnalytics />
       <HashRouter>
         <AuthGuard>
           <div className="min-h-screen bg-bg text-fg">
