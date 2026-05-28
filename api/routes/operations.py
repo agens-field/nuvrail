@@ -109,6 +109,115 @@ async def _get_agent_credential(agent_id: Optional[int], db_path: Path) -> Optio
     return dict(row) if row else None
 
 
+async def _save_to_sent_folder(
+    msg: "email.message.Message",
+    op_id: str,
+    cred: dict,
+    db_path: Path,
+) -> None:
+    """
+    Append a copy of the relayed message to the upstream Sent folder.
+
+    Called after a successful SMTP relay. Non-fatal: errors are logged but
+    never propagate — the email was already sent and this is best-effort.
+
+    Flow:
+
+      detect provider from upstream_host
+              │
+              ├─ sent_folder is None  →  skip (Gmail / Outlook auto-save on relay)
+              │
+              └─ sent_folder is set  →  IMAP4_SSL connect → LOGIN / XOAUTH2
+                                          → APPEND msg with \\Seen flag
+                                          → LOGOUT
+                                          (log warning on any error; never raise)
+    """
+    import email as _email_module  # noqa: PLC0415
+    from gateway.provider_profiles import detect_provider  # noqa: PLC0415
+
+    imap_host = cred["upstream_host"]
+    profile = detect_provider(imap_host)
+    sent_folder = profile.sent_folder
+
+    if sent_folder is None:
+        logger.info(
+            "[approve] Sent-folder save skipped op=%s — %s auto-saves on relay",
+            op_id, profile.name,
+        )
+        return
+
+    imap_port = int(cred["upstream_imap_port"])
+    imap_user = cred["upstream_user"]
+    is_oauth2 = bool(cred.get("oauth2_provider"))
+
+    logger.info(
+        "[approve] Sent-folder APPEND start op=%s host=%s folder=%r",
+        op_id, imap_host, sent_folder,
+    )
+
+    client = aioimaplib.IMAP4_SSL(host=imap_host, port=imap_port)
+    try:
+        await client.wait_hello_from_server()
+
+        if is_oauth2:
+            from gateway.oauth2_tokens import OAuth2Error, get_access_token  # noqa: PLC0415
+            try:
+                imap_email, access_token = await get_access_token(str(cred["id"]), db_path)
+            except OAuth2Error as exc:
+                logger.warning(
+                    "[approve] Sent-folder APPEND skipped op=%s — OAuth2 error: %s", op_id, exc
+                )
+                return
+            response = await client.xoauth2(imap_email, access_token)
+            if response.result != "OK":
+                logger.warning(
+                    "[approve] Sent-folder APPEND skipped op=%s — XOAUTH2 failed: %s",
+                    op_id, response.lines,
+                )
+                return
+        else:
+            from gateway.credentials import decrypt_credential as _dc  # noqa: PLC0415
+            raw_pass = cred.get("upstream_password")
+            if not raw_pass:
+                logger.warning(
+                    "[approve] Sent-folder APPEND skipped op=%s — no upstream_password", op_id
+                )
+                return
+            status, data = await client.login(imap_user, _dc(raw_pass))
+            if status != "OK":
+                logger.warning(
+                    "[approve] Sent-folder APPEND skipped op=%s — LOGIN failed: %s", op_id, data
+                )
+                return
+
+        msg_bytes = msg.as_bytes()
+        status, data = await client.append(
+            msg_bytes,
+            mailbox=imap_quoted(sent_folder),
+            flags="(\\Seen)",
+        )
+        if status == "OK":
+            logger.info(
+                "[approve] Sent-folder APPEND succeeded op=%s folder=%r", op_id, sent_folder
+            )
+        else:
+            logger.warning(
+                "[approve] Sent-folder APPEND non-OK op=%s folder=%r status=%s data=%s",
+                op_id, sent_folder, status, data,
+            )
+
+    except Exception as exc:
+        logger.warning(
+            "[approve] Sent-folder APPEND failed (non-fatal) op=%s folder=%r: %s",
+            op_id, sent_folder, exc,
+        )
+    finally:
+        try:
+            await client.logout()
+        except Exception:
+            pass
+
+
 async def _execute_imap_upstream(row: dict, db_path: Path) -> None:
     """
     Replay a staged IMAP operation against the upstream server.
@@ -557,6 +666,11 @@ async def _do_approve(op_id: str, row: dict, db_path: Path) -> ApproveResponse:
                 "[approve] SMTP relay succeeded op=%s host=%s recipients=%s",
                 op_id, smtp_host, relay_recipients,
             )
+            # Best-effort: save a copy to the upstream Sent folder.
+            # Non-fatal — _save_to_sent_folder catches its own exceptions.
+            # Skipped for Gmail/Outlook which auto-save on relay.
+            if cred:
+                await _save_to_sent_folder(msg, op_id, cred, db_path)
         except Exception as exc:
             logger.error("[approve] SMTP relay failed for %s: %s", op_id, exc)
             await update_operation_status(op_id, "failed", error=str(exc), db_path=db_path)

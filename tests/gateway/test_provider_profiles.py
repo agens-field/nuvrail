@@ -6,6 +6,7 @@ import pytest
 from gateway.provider_profiles import (
     GENERIC_PROFILE,
     GMAIL_PROFILE,
+    ICLOUD_PROFILE,
     OUTLOOK_PROFILE,
     PendingCopyIntent,
     copy_archive_intent,
@@ -50,6 +51,15 @@ class TestDetectProvider:
     def test_generic_custom_host(self) -> None:
         assert detect_provider("server.mmodahl.com").name == "Generic IMAP"
 
+    def test_icloud_imap_host(self) -> None:
+        assert detect_provider("imap.mail.me.com").name == "iCloud Mail"
+
+    def test_icloud_smtp_host(self) -> None:
+        assert detect_provider("smtp.mail.me.com").name == "iCloud Mail"
+
+    def test_icloud_mac_com(self) -> None:
+        assert detect_provider("imap.mac.com").name == "iCloud Mail"
+
     def test_case_insensitive(self) -> None:
         assert detect_provider("IMAP.GMAIL.COM").name == "Gmail"
 
@@ -78,6 +88,49 @@ class TestShouldSuppressAppend:
 
     def test_gmail_all_mail_not_suppressed(self) -> None:
         assert should_suppress_append("[Gmail]/All Mail", GMAIL_PROFILE) is False
+
+    def test_icloud_sent_messages_suppressed(self) -> None:
+        assert should_suppress_append("Sent Messages", ICLOUD_PROFILE) is True
+
+    def test_icloud_inbox_not_suppressed(self) -> None:
+        assert should_suppress_append("INBOX", ICLOUD_PROFILE) is False
+
+    def test_generic_sent_not_suppressed(self) -> None:
+        # Generic profile does not suppress agent APPENDs to Sent
+        assert should_suppress_append("Sent", GENERIC_PROFILE) is False
+
+
+# ---------------------------------------------------------------------------
+# sent_folder — auto-save after SMTP relay
+# ---------------------------------------------------------------------------
+
+
+class TestSentFolder:
+    def test_gmail_no_append_needed(self) -> None:
+        # Gmail auto-saves on relay; we never APPEND
+        assert GMAIL_PROFILE.sent_folder is None
+
+    def test_outlook_no_append_needed(self) -> None:
+        # Outlook auto-saves on relay; we never APPEND
+        assert OUTLOOK_PROFILE.sent_folder is None
+
+    def test_icloud_appends_to_sent_messages(self) -> None:
+        assert ICLOUD_PROFILE.sent_folder == "Sent Messages"
+
+    def test_generic_appends_to_sent(self) -> None:
+        assert GENERIC_PROFILE.sent_folder == "Sent"
+
+    def test_detected_icloud_sent_folder(self) -> None:
+        profile = detect_provider("imap.mail.me.com")
+        assert profile.sent_folder == "Sent Messages"
+
+    def test_detected_gmail_sent_folder_none(self) -> None:
+        profile = detect_provider("imap.gmail.com")
+        assert profile.sent_folder is None
+
+    def test_detected_generic_sent_folder(self) -> None:
+        profile = detect_provider("mail.example.com")
+        assert profile.sent_folder == "Sent"
 
     def test_case_insensitive(self) -> None:
         assert should_suppress_append("[gmail]/sent mail", GMAIL_PROFILE) is True

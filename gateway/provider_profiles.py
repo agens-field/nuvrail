@@ -55,6 +55,11 @@ class ProviderProfile:
         APPEND commands targeting any of these folders are silently suppressed.
         Gmail auto-adds to [Gmail]/Sent Mail after every SMTP send; APPENDing
         there would create duplicates.
+    sent_folder : str | None
+        Folder to IMAP APPEND the sent message to after a successful SMTP relay.
+        None means the provider auto-saves on relay (Gmail, Outlook) and no
+        APPEND is needed. When set, Nuvrail performs the APPEND on approval so
+        the Sent folder is populated regardless of whether the agent does it.
     move_capable : bool
         True if this provider reliably supports RFC 6851 UID MOVE.
         Used to prefer MOVE over COPY+EXPUNGE on execution.
@@ -64,6 +69,7 @@ class ProviderProfile:
     archive_folder: Optional[str] = None
     trash_folder: Optional[str] = None
     sent_suppress_folders: list[str] = field(default_factory=list)
+    sent_folder: Optional[str] = None
     move_capable: bool = True
 
 
@@ -76,6 +82,17 @@ GMAIL_PROFILE = ProviderProfile(
     archive_folder="[Gmail]/All Mail",
     trash_folder="[Gmail]/Trash",
     sent_suppress_folders=["[Gmail]/Sent Mail"],
+    sent_folder=None,   # Gmail auto-saves to [Gmail]/Sent Mail on every SMTP relay
+    move_capable=True,
+)
+
+ICLOUD_PROFILE = ProviderProfile(
+    name="iCloud Mail",
+    archive_folder="Archive",
+    trash_folder="Deleted Messages",
+    # Suppress agent APPENDs to Sent Messages — Nuvrail handles this save after relay.
+    sent_suppress_folders=["Sent Messages"],
+    sent_folder="Sent Messages",  # iCloud does NOT auto-save via SMTP relay; we APPEND
     move_capable=True,
 )
 
@@ -84,6 +101,7 @@ OUTLOOK_PROFILE = ProviderProfile(
     archive_folder=None,          # Outlook uses standard Junk/Archive folders
     trash_folder="Deleted Items",
     sent_suppress_folders=["Sent Items", "Sent"],
+    sent_folder=None,   # Outlook auto-saves to Sent Items on every SMTP relay
     move_capable=True,
 )
 
@@ -92,6 +110,7 @@ GENERIC_PROFILE = ProviderProfile(
     archive_folder=None,
     trash_folder=None,            # leave to standard \\Trash flag
     sent_suppress_folders=[],
+    sent_folder="Sent",           # most generic servers use "Sent"; APPEND is non-fatal if missing
     move_capable=False,           # conservative default: don't assume MOVE
 )
 
@@ -100,12 +119,14 @@ GENERIC_PROFILE = ProviderProfile(
 # ---------------------------------------------------------------------------
 
 _DETECTION_TABLE: list[tuple[str, ProviderProfile]] = [
-    ("gmail.com", GMAIL_PROFILE),
-    ("googlemail.com", GMAIL_PROFILE),
-    ("outlook.com", OUTLOOK_PROFILE),
-    ("outlook.office365.com", OUTLOOK_PROFILE),
-    ("hotmail.com", OUTLOOK_PROFILE),
-    ("live.com", OUTLOOK_PROFILE),
+    ("gmail.com",              GMAIL_PROFILE),
+    ("googlemail.com",         GMAIL_PROFILE),
+    ("mail.me.com",            ICLOUD_PROFILE),   # imap.mail.me.com / smtp.mail.me.com
+    ("mac.com",                ICLOUD_PROFILE),   # legacy iCloud domain
+    ("outlook.com",            OUTLOOK_PROFILE),
+    ("outlook.office365.com",  OUTLOOK_PROFILE),
+    ("hotmail.com",            OUTLOOK_PROFILE),
+    ("live.com",               OUTLOOK_PROFILE),
 ]
 
 
