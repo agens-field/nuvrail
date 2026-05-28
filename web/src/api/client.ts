@@ -521,3 +521,22 @@ export async function fetchTokenInfo(): Promise<TokenInfo> {
 export async function rotateToken(): Promise<TokenRotateResult> {
   return apiFetch<TokenRotateResult>('/api/v1/account/token/rotate', { method: 'POST' })
 }
+
+// ---------------------------------------------------------------------------
+// GDPR data export (issue #27)
+// ---------------------------------------------------------------------------
+
+export async function downloadAccountData(): Promise<void> {
+  const token = getToken()
+  const headers: Record<string, string> = {}
+  if (token) headers['Authorization'] = `Bearer ${token}`
+  const res = await fetch(`${BASE}/api/v1/account/export`, { headers })
+  if (!res.ok) throw new Error(`Export failed: ${res.status}`)
+  const blob = await res.blob()
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = 'nuvrail-data-export.json'
+  a.click()
+  URL.revokeObjectURL(url)
+}

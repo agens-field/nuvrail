@@ -9,7 +9,7 @@
 import { useState } from 'react'
 import { useQuery, useMutation } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
-import { applyChangePassword, logoutUser, clearToken, setToken, fetchTokenInfo, rotateToken } from '../api/client'
+import { applyChangePassword, logoutUser, clearToken, setToken, fetchTokenInfo, rotateToken, downloadAccountData } from '../api/client'
 
 export default function AccountView() {
   const navigate = useNavigate()
@@ -24,6 +24,22 @@ export default function AccountView() {
 
   // Logout state
   const [logoutLoading, setLogoutLoading] = useState(false)
+
+  // Data export state
+  const [exportLoading, setExportLoading] = useState(false)
+  const [exportError, setExportError] = useState<string | null>(null)
+
+  async function handleExport() {
+    setExportLoading(true)
+    setExportError(null)
+    try {
+      await downloadAccountData()
+    } catch {
+      setExportError('Export failed. Please try again.')
+    } finally {
+      setExportLoading(false)
+    }
+  }
 
   // Token rotate state
   const [rotateConfirm, setRotateConfirm] = useState(false)
@@ -238,6 +254,24 @@ export default function AccountView() {
             </button>
           )
         )}
+      </section>
+
+      {/* ── Data export ─────────────────────────────────────────────── */}
+      <section className="bg-surface rounded-lg p-6 border border-edge space-y-3">
+        <h2 className="text-lg font-semibold text-fg">Download my data</h2>
+        <p className="text-sm text-fg-3">
+          Downloads a JSON file with your account info, agents, full operation
+          history, audit log, and auto-approval rules. Credential values are
+          never included.
+        </p>
+        {exportError && <p className="text-red-400 text-sm">{exportError}</p>}
+        <button
+          onClick={handleExport}
+          disabled={exportLoading}
+          className="bg-surface-hi hover:bg-edge disabled:opacity-50 text-fg font-medium py-2 px-4 rounded transition-colors border border-edge text-sm"
+        >
+          {exportLoading ? 'Preparing download…' : 'Download my data'}
+        </button>
       </section>
 
       {/* ── Log out ───────────────────────────────────────────────────── */}
