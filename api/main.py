@@ -30,7 +30,7 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 
 from api.limiter import limiter
-from api.routes import audit, auth, oauth2, operations, push, rules
+from api.routes import audit, auth, health, oauth2, operations, push, rules
 from api.routes import account
 from gateway.expiry import run_expiry_loop
 from gateway.scrubber import run_scrubber_loop
@@ -111,6 +111,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# /health is intentionally unprefixed — fly.io probes it at the root path.
+app.include_router(health.router)
 app.include_router(operations.router, prefix="/api/v1")
 app.include_router(audit.router, prefix="/api/v1")
 app.include_router(push.router, prefix="/api/v1")
