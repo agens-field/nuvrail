@@ -40,19 +40,22 @@ async def subscribe(
     db_path: Path = Depends(get_db_path),
     current_user: dict = Depends(get_current_user),
 ) -> PushSubscribeResponse:
-    """Register or update a browser push subscription."""
+    """Register or update a browser push subscription for the current user."""
     now = int(time.time())
     async with get_db(db_path) as db:
-        # Upsert: update keys if endpoint already registered
+        # Upsert: update keys if endpoint already registered. Also (re)claim
+        # ownership — an endpoint re-registered while logged in as another user
+        # belongs to that user now, so notifications never cross tenants.
         await db.execute(
             """
-            INSERT INTO push_subscriptions (endpoint, p256dh, auth, created_at)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO push_subscriptions (user_id, endpoint, p256dh, auth, created_at)
+            VALUES (?, ?, ?, ?, ?)
             ON CONFLICT(endpoint) DO UPDATE SET
-                p256dh = excluded.p256dh,
-                auth   = excluded.auth
+                user_id = excluded.user_id,
+                p256dh  = excluded.p256dh,
+                auth    = excluded.auth
             """,
-            (body.endpoint, body.p256dh, body.auth, now),
+            (current_user["id"], body.endpoint, body.p256dh, body.auth, now),
         )
         await db.commit()
     return PushSubscribeResponse(subscribed=True, endpoint=body.endpoint)
@@ -64,10 +67,10 @@ async def unsubscribe(
     db_path: Path = Depends(get_db_path),
     current_user: dict = Depends(get_current_user),
 ) -> None:
-    """Remove a push subscription."""
+    """Remove a push subscription owned by the current user."""
     async with get_db(db_path) as db:
         await db.execute(
-            "DELETE FROM push_subscriptions WHERE endpoint = ?",
-            (body.endpoint,),
+            "DELETE FROM push_subscriptions WHERE endpoint = ? AND user_id = ?",
+            (body.endpoint, current_user["id"]),
         )
         await db.commit()

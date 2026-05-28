@@ -181,6 +181,55 @@ async def test_result_returns_404_for_expired_state(
 
 
 @pytest.mark.asyncio(loop_scope="session")
+async def test_result_not_returned_to_other_user(client: httpx.AsyncClient) -> None:
+    """A user must not be able to read another user's OAuth2 result via its state.
+
+    Even if the high-entropy state value leaks (e.g. via URL/referrer), polling
+    /result as a different user returns 404 and does NOT consume the result, so
+    the legitimate owner can still retrieve their freshly minted agent token.
+    """
+    reg_a = await client.post(
+        "/api/v1/auth/register",
+        json={"email": "owner-a@example.com", "password": "hunter2pass!"},
+    )
+    assert reg_a.status_code == 201
+    token_a = reg_a.json()["token"]
+    uid_a = reg_a.json()["user_id"]
+
+    token_b = await _register_and_login(client, email="attacker-b@example.com")
+
+    state = "s_" + "x" * 60
+    oauth2_routes._results[state] = {
+        "user_id": uid_a,
+        "agent_username": "nuvrail_secret",
+        "agent_token": "super-secret-token",
+        "label": "gmail",
+        "upstream_user": "owner-a@gmail.com",
+    }
+
+    # Attacker (user B) polls with the leaked state → 404, result preserved.
+    resp_b = await client.get(
+        f"/api/v1/oauth2/google/result?state={state}",
+        headers={"Authorization": f"Bearer {token_b}"},
+    )
+    assert resp_b.status_code == 404
+    assert resp_b.json()["error"] == "oauth2_state_not_found"
+    assert state in oauth2_routes._results, "result must not be consumed by a non-owner"
+
+    # Legitimate owner (user A) polls → 200 with credentials, internal user_id stripped.
+    resp_a = await client.get(
+        f"/api/v1/oauth2/google/result?state={state}",
+        headers={"Authorization": f"Bearer {token_a}"},
+    )
+    assert resp_a.status_code == 200
+    body = resp_a.json()
+    assert body["agent_username"] == "nuvrail_secret"
+    assert body["agent_token"] == "super-secret-token"
+    assert "user_id" not in body, "internal user_id must not leak in the response"
+    assert state not in oauth2_routes._results, "owner read must consume the one-time result"
+
+
+@pytest.mark.asyncio(loop_scope="session")
 async def test_callback_with_invalid_state_redirects_with_error(
     client: httpx.AsyncClient,
 ) -> None:

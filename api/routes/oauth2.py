@@ -235,7 +235,7 @@ async def oauth2_google_callback(
 
     # User denied access or Google returned an error before we got a code.
     if error or not code:
-        _results[state] = {"error": error or "no_code"}
+        _results[state] = {"error": error or "no_code", "user_id": pending["user_id"]}
         return RedirectResponse(
             f"{frontend_callback}?state={urllib.parse.quote(state)}",
             status_code=302,
@@ -244,7 +244,7 @@ async def oauth2_google_callback(
     # Attempt code exchange + agent creation.
     creds = _get_oauth2_env()
     if creds is None:
-        _results[state] = {"error": "oauth2_not_configured"}
+        _results[state] = {"error": "oauth2_not_configured", "user_id": pending["user_id"]}
         return RedirectResponse(
             f"{frontend_callback}?state={urllib.parse.quote(state)}",
             status_code=302,
@@ -296,6 +296,7 @@ async def oauth2_google_callback(
             await db.commit()
 
         _results[state] = {
+            "user_id": pending["user_id"],
             "agent_username": agent_username,
             "agent_token": agent_token_plain,
             "label": pending["label"],
@@ -303,7 +304,7 @@ async def oauth2_google_callback(
         }
 
     except Exception as exc:
-        _results[state] = {"error": str(exc)}
+        _results[state] = {"error": str(exc), "user_id": pending["user_id"]}
 
     return RedirectResponse(
         f"{frontend_callback}?state={urllib.parse.quote(state)}",
@@ -319,14 +320,23 @@ async def oauth2_google_result(
     """Poll for OAuth2 flow result. One-time: cleared from memory on first read.
 
     Returns the agent credentials on success, or 404 if the state is unknown,
-    expired, or already consumed.
+    expired, already consumed, or owned by a different user.
+
+    The result carries the user_id of the account that initiated the flow.
+    A caller who is not that user gets a 404 (indistinguishable from an
+    unknown state) and the result is NOT consumed — so a leaked state value
+    cannot be used to steal another user's freshly minted agent token.
     """
-    if state not in _results:
+    result = _results.get(state)
+    if result is None or result.get("user_id") != current_user["id"]:
         return JSONResponse(
             status_code=404,
             content={"error": "oauth2_state_not_found"},
         )
-    result = _results.pop(state)
+    # Ownership confirmed — consume the one-time result and drop the internal
+    # user_id before returning it to the client.
+    _results.pop(state, None)
+    result = {k: v for k, v in result.items() if k != "user_id"}
     if "error" in result:
         return JSONResponse(status_code=400, content=result)
     return JSONResponse(result)

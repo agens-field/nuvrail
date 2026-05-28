@@ -15,6 +15,7 @@ Both get_db_path (routes) and get_auth_db_path (auth dependency) are
 overridden so all DB access hits the same isolated test DB.
 """
 from __future__ import annotations
+import logging
 from pathlib import Path
 
 import httpx
@@ -635,3 +636,49 @@ async def test_list_agents_includes_last_activity_at(
     assert agent["last_activity_at"] == now, (
         f"Expected {now}; got {agent['last_activity_at']}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Password reset token must not be logged in plaintext (security)
+# ---------------------------------------------------------------------------
+
+
+async def test_reset_request_does_not_log_token_by_default(
+    client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """By default the plaintext reset token / URL must never reach the logs."""
+    monkeypatch.delenv("NUVRAIL_RESET_TOKEN_LOG", raising=False)
+    await client.post(
+        "/api/v1/auth/register",
+        json={"email": "resetlog@example.com", "password": "hunter2pass!"},
+    )
+
+    caplog.set_level(logging.INFO, logger="api.routes.auth")
+    resp = await client.post(
+        "/api/v1/auth/reset-request", json={"email": "resetlog@example.com"}
+    )
+    assert resp.status_code == 200
+
+    messages = " ".join(r.getMessage() for r in caplog.records)
+    assert "/#/reset" not in messages, "reset URL must not be logged"
+    assert "token=" not in messages, "reset token must not be logged"
+
+
+async def test_reset_request_logs_url_only_when_opted_in(
+    client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """With the explicit dev opt-in, the full reset URL is logged (for local use)."""
+    monkeypatch.setenv("NUVRAIL_RESET_TOKEN_LOG", "1")
+    await client.post(
+        "/api/v1/auth/register",
+        json={"email": "resetlog2@example.com", "password": "hunter2pass!"},
+    )
+
+    caplog.set_level(logging.WARNING, logger="api.routes.auth")
+    resp = await client.post(
+        "/api/v1/auth/reset-request", json={"email": "resetlog2@example.com"}
+    )
+    assert resp.status_code == 200
+
+    messages = " ".join(r.getMessage() for r in caplog.records)
+    assert "/#/reset?token=" in messages

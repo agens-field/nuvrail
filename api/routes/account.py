@@ -253,8 +253,11 @@ async def delete_account(
                 [now, *agent_ids],
             )
 
-        # 3. Delete push subscriptions (push_subscriptions has no user_id FK —
-        #    Phase 0 table is global; Phase 1 will add user_id and scope here).
+        # 3. Delete this user's push subscriptions.
+        await db.execute(
+            "DELETE FROM push_subscriptions WHERE user_id = ?",
+            (user_id,),
+        )
 
         # 4. Null out encrypted credential columns in agent_credentials
         if agent_ids:
