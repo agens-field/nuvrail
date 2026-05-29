@@ -53,7 +53,6 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from api.auth import get_current_user
-from api.undo import UndoError, undo_operation
 from api.models import (
     ApproveResponse,
     BatchApproveRequest,
@@ -72,6 +71,7 @@ from gateway.audit import insert_audit_event
 from gateway.execution import ExecutionError, execute_operation
 from gateway.staging import get_operation, list_operations, update_operation_status
 from gateway.state_db import DB_PATH, get_db, insert_pending_reverts, restore_from_snapshot
+from gateway.undo import UndoError, undo_operation
 
 logger = logging.getLogger(__name__)
 

@@ -1,8 +1,10 @@
 """
-Undo logic for approved+executed operations.
+Undo of approved+executed operations — the inverse of gateway.execution.
 
-Reverses an executed IMAP operation within the undo window (default: 24h).
-Not all op_types are undoable — see UNDOABLE_OP_TYPES and UNDO_STRATEGY below.
+Reverses an executed IMAP operation within the undo window (default 24h).
+Lives next to the forward executor (gateway.execution) and shares its
+credential-resolution and JSON-field helpers, so the forward and inverse
+mailbox-mutating commands sit side by side in one layer.
 
 Data flow:
   POST /api/v1/operations/{id}/undo
@@ -12,9 +14,9 @@ Data flow:
        │   ├─ undo_expires_at must be > now
        │   └─ op_type must be in UNDOABLE_OP_TYPES
        │
-       ├─ look up agent_credentials for IMAP connection
+       ├─ resolve_imap_credentials() (shared with the forward executor)
        │
-       ├─ execute the inverse IMAP command (UNDO_STRATEGY map)
+       ├─ execute the inverse IMAP command
        │
        └─ mark operation status → 'reverted', insert audit_log event
 
@@ -44,10 +46,10 @@ from typing import Any
 
 import aioimaplib
 
-from gateway.credentials import decrypt_credential
 from gateway.audit import insert_audit_event
-from gateway.state_db import get_db
+from gateway.execution import decode_json_list, resolve_imap_credentials
 from gateway.staging import update_operation_status
+from gateway.state_db import get_db
 
 UNDO_WINDOW_HOURS = int(os.getenv("UNDO_WINDOW_HOURS", "24"))
 
@@ -100,42 +102,23 @@ async def undo_operation(operation_id: str, db_path: Path) -> dict[str, Any]:
             f"Undoable types: {', '.join(sorted(UNDOABLE_OP_TYPES))}."
         )
     if undo_expires_at and now > undo_expires_at:
-        window_hours = UNDO_WINDOW_HOURS
         raise UndoError(
             f"Operation {operation_id!r} undo window has expired "
-            f"(window: {window_hours}h, expired at {undo_expires_at})."
+            f"(window: {UNDO_WINDOW_HOURS}h, expired at {undo_expires_at})."
         )
 
-    # --- Load credentials ------------------------------------------------
-    agent_id = row.get("agent_id")
-    async with get_db(db_path) as db:
-        if agent_id:
-            async with db.execute(
-                "SELECT * FROM agent_credentials WHERE id = ?", (agent_id,)
-            ) as cur:
-                cred_row = await cur.fetchone()
-            cred = dict(cred_row) if cred_row else None
-        else:
-            cred = None
+    # --- Resolve credentials (shared with the forward executor) ----------
+    try:
+        creds = await resolve_imap_credentials(row, db_path)
+    except RuntimeError as exc:
+        raise UndoError(
+            f"Operation {operation_id!r} has no agent_id and no fallback "
+            "IMAP env vars are set."
+        ) from exc
 
-    if cred:
-        imap_host = cred["upstream_host"]
-        imap_port = int(cred["upstream_imap_port"])
-        imap_user = cred["upstream_user"]
-        raw_pass = cred.get("upstream_password")
-        imap_pass = decrypt_credential(raw_pass) if raw_pass else None
-    else:
-        imap_host = os.environ.get("NUVRAIL_TEST_IMAP_HOST", "")
-        imap_port = int(os.environ.get("NUVRAIL_TEST_IMAP_PORT", "993"))
-        imap_user = os.environ.get("NUVRAIL_TEST_IMAP_USER", "")
-        imap_pass = os.environ.get("NUVRAIL_TEST_IMAP_PASS", "")
-        if not imap_host:
-            raise UndoError(
-                f"Operation {operation_id!r} has no agent_id and no fallback "
-                "IMAP env vars are set."
-            )
-
-    if not imap_pass:
+    if not creds.password:
+        # OAuth2 agents (no stored password) and env fallback without a
+        # password cannot open the fresh password-auth connection undo needs.
         raise UndoError(
             "OAuth2 agents are not yet supported for undo — "
             "undo requires password auth to open a fresh IMAP connection."
@@ -144,18 +127,10 @@ async def undo_operation(operation_id: str, db_path: Path) -> dict[str, Any]:
     # --- Deserialize fields ----------------------------------------------
     folder_from = row.get("folder_from") or "INBOX"
     folder_to = row.get("folder_to") or ""
-    raw_ids = row.get("message_ids")
-    message_ids: list[str] = json.loads(raw_ids) if isinstance(raw_ids, str) else (raw_ids or [])
+    message_ids = decode_json_list(row.get("message_ids"))
     uid_set = ",".join(message_ids) if message_ids else "1"
-
-    raw_flags_add = row.get("flags_add")
-    flags_add: list[str] = (
-        json.loads(raw_flags_add) if isinstance(raw_flags_add, str) else (raw_flags_add or [])
-    )
-    raw_flags_remove = row.get("flags_remove")
-    flags_remove: list[str] = (
-        json.loads(raw_flags_remove) if isinstance(raw_flags_remove, str) else (raw_flags_remove or [])
-    )
+    flags_add = decode_json_list(row.get("flags_add"))
+    flags_remove = decode_json_list(row.get("flags_remove"))
 
     # --- Execute inverse -------------------------------------------------
     description = await _execute_undo_imap(
@@ -165,15 +140,16 @@ async def undo_operation(operation_id: str, db_path: Path) -> dict[str, Any]:
         folder_to=folder_to,
         flags_add=flags_add,
         flags_remove=flags_remove,
-        imap_host=imap_host,
-        imap_port=imap_port,
-        imap_user=imap_user,
-        imap_pass=imap_pass,
+        imap_host=creds.host,
+        imap_port=creds.port,
+        imap_user=creds.user,
+        imap_pass=creds.password,
         operation_id=operation_id,
     )
 
     # --- Mark reverted in DB ---------------------------------------------
     await update_operation_status(operation_id, "reverted", db_path=db_path)
+    agent_id = row.get("agent_id")
     async with get_db(db_path) as db:
         await insert_audit_event(
             db, timestamp=now, event='reverted', actor='human',

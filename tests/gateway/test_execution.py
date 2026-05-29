@@ -14,7 +14,11 @@ from unittest.mock import patch
 import pytest
 
 from gateway.credentials import encrypt_credential
-from gateway.execution import _execute_imap_upstream
+from gateway.execution import (
+    _execute_imap_upstream,
+    decode_json_list,
+    resolve_imap_credentials,
+)
 from gateway.staging import create_operation, get_operation
 from gateway.state_db import get_db, init_db
 
@@ -39,6 +43,48 @@ async def _seed_agent(db_path: Path) -> int:
         )
         await db.commit()
         return int(cur.lastrowid)
+
+
+# ---------------------------------------------------------------------------
+# Shared helpers: decode_json_list / resolve_imap_credentials
+# ---------------------------------------------------------------------------
+
+
+def test_decode_json_list_variants() -> None:
+    assert decode_json_list('["1","2"]') == ["1", "2"]   # JSON string
+    assert decode_json_list(["a"]) == ["a"]               # already a list
+    assert decode_json_list(None) == []                   # NULL column
+    assert decode_json_list("") == []                     # empty string is falsy
+
+
+async def test_resolve_imap_credentials_from_agent(db_path: Path) -> None:
+    """Agent row is used and the stored password is decrypted."""
+    agent_id = await _seed_agent(db_path)  # password "hunter2", no oauth2
+    row = {"agent_id": agent_id, "id": "op_x"}
+    creds = await resolve_imap_credentials(row, db_path)
+    assert creds.host == "imap.example.com"
+    assert creds.user == "u@example.com"
+    assert creds.password == "hunter2"
+    assert creds.oauth2_provider is None
+    assert creds.cred is not None
+
+
+async def test_resolve_imap_credentials_env_fallback(db_path: Path, monkeypatch) -> None:
+    """With no agent, the NUVRAIL_TEST_IMAP_* env vars are used."""
+    monkeypatch.setenv("NUVRAIL_TEST_IMAP_HOST", "fallback.example.com")
+    monkeypatch.setenv("NUVRAIL_TEST_IMAP_USER", "envuser@example.com")
+    monkeypatch.setenv("NUVRAIL_TEST_IMAP_PASS", "envpass")
+    creds = await resolve_imap_credentials({"agent_id": None, "id": "op_y"}, db_path)
+    assert creds.host == "fallback.example.com"
+    assert creds.user == "envuser@example.com"
+    assert creds.password == "envpass"
+    assert creds.cred is None
+
+
+async def test_resolve_imap_credentials_missing_raises(db_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("NUVRAIL_TEST_IMAP_HOST", raising=False)
+    with pytest.raises(RuntimeError, match="no agent_id and no fallback"):
+        await resolve_imap_credentials({"agent_id": None, "id": "op_z"}, db_path)
 
 
 class _FakeIMAP:
