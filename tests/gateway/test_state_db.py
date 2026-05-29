@@ -36,6 +36,63 @@ async def db_path(tmp_path: Path) -> Path:
 
 
 # ---------------------------------------------------------------------------
+# Connection PRAGMAs — WAL + busy_timeout for safe multi-process concurrency
+# ---------------------------------------------------------------------------
+
+
+async def test_get_db_applies_wal_and_busy_timeout(db_path: Path) -> None:
+    """Every get_db connection must be in WAL mode with a non-zero busy_timeout."""
+    from gateway.state_db import get_db
+
+    async with get_db(db_path) as db:
+        async with db.execute("PRAGMA journal_mode") as cur:
+            mode = (await cur.fetchone())[0]
+        async with db.execute("PRAGMA busy_timeout") as cur:
+            busy = (await cur.fetchone())[0]
+
+    assert str(mode).lower() == "wal", f"expected WAL, got {mode!r}"
+    assert busy >= 5000, f"expected busy_timeout >= 5000ms, got {busy}"
+
+
+async def test_init_db_sets_wal_persistently(db_path: Path) -> None:
+    """WAL is a property of the file: a raw connection (no pragmas) sees it too."""
+    import aiosqlite
+
+    async with aiosqlite.connect(db_path) as db:
+        async with db.execute("PRAGMA journal_mode") as cur:
+            mode = (await cur.fetchone())[0]
+    assert str(mode).lower() == "wal"
+
+
+async def test_concurrent_writers_do_not_lock(db_path: Path) -> None:
+    """Concurrent writers on separate connections must not raise 'database is locked'.
+
+    Under the old default (rollback journal, busy_timeout=0) interleaved
+    cross-connection writes routinely raised OperationalError. WAL +
+    busy_timeout makes the loser wait instead.
+    """
+    import asyncio
+
+    from gateway.state_db import get_db
+
+    async def _hammer(label: str, n: int) -> None:
+        for i in range(n):
+            async with get_db(db_path) as db:
+                await db.execute(
+                    "INSERT INTO folders (name) VALUES (?)", (f"{label}-{i}",)
+                )
+                await db.commit()
+
+    # Several writers racing on the same file.
+    await asyncio.gather(*[_hammer(f"w{w}", 20) for w in range(5)])
+
+    async with get_db(db_path) as db:
+        async with db.execute("SELECT COUNT(*) FROM folders") as cur:
+            count = (await cur.fetchone())[0]
+    assert count == 100
+
+
+# ---------------------------------------------------------------------------
 # Folder sync tests
 # ---------------------------------------------------------------------------
 
