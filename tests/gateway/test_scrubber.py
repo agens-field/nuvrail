@@ -67,11 +67,63 @@ async def _make_terminal_op(
 # ---------------------------------------------------------------------------
 
 
+async def _make_terminal_append_op(
+    db_path: Path,
+    status: str = "executed",
+    decided_at_offset: int = -8 * 86400,
+) -> str:
+    """Create a terminal APPEND op with a stored append_message for scrubbing tests."""
+    op_id = await create_operation(
+        op_type="append",
+        protocol="imap",
+        description="Test append op",
+        folder_to="Sent",
+        append_message="SGVsbG8gd29ybGQ=",  # base64 of "Hello world"
+        db_path=db_path,
+    )
+    now = int(time.time())
+    async with get_db(db_path) as db:
+        await db.execute(
+            "UPDATE staged_operations SET status = ?, decided_at = ? WHERE id = ?",
+            (status, now + decided_at_offset, op_id),
+        )
+        await db.commit()
+    return op_id
+
+
 async def test_find_returns_eligible_op(db_path: Path) -> None:
     """find_scrubable_operations returns terminal ops with old body_preview."""
     op_id = await _make_terminal_op(db_path)
     found = await find_scrubable_operations(db_path=db_path)
     assert any(r["id"] == op_id for r in found)
+
+
+async def test_scrub_nulls_append_message(db_path: Path) -> None:
+    """APPEND bodies (append_message) are scrubbed once terminal and past the window."""
+    op_id = await _make_terminal_append_op(db_path)
+
+    # Eligible even though smtp_envelope is NULL.
+    found = await find_scrubable_operations(db_path=db_path)
+    assert any(r["id"] == op_id for r in found)
+
+    scrubbed = await scrub_expired_body_previews(db_path=db_path)
+    assert scrubbed >= 1
+
+    async with get_db(db_path) as db:
+        async with db.execute(
+            "SELECT append_message, body_scrubbed_at FROM staged_operations WHERE id = ?",
+            (op_id,),
+        ) as cur:
+            row = await cur.fetchone()
+    assert row["append_message"] is None
+    assert row["body_scrubbed_at"] is not None
+
+
+async def test_recent_append_op_not_scrubbed(db_path: Path) -> None:
+    """A recently-decided APPEND op keeps its body until the window passes."""
+    op_id = await _make_terminal_append_op(db_path, decided_at_offset=-60)  # 1 min ago
+    found = await find_scrubable_operations(db_path=db_path)
+    assert all(r["id"] != op_id for r in found)
 
 
 async def test_find_excludes_recent_terminal(db_path: Path) -> None:

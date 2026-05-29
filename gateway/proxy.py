@@ -91,6 +91,11 @@ IMAP_AUTH_ABUSE_PROTECTOR = build_auth_abuse_protector("imap_proxy_login")
 
 _READ_CHUNK = 4096
 
+# Largest APPEND body we persist (base64) for later replay on approval.
+# Oversized messages are still consumed off the wire (to stay protocol-synced)
+# but staged without a body — they will not be replayed upstream.
+_MAX_APPEND_BYTES = int(os.environ.get("NUVRAIL_MAX_APPEND_BYTES", str(10 * 1024 * 1024)))
+
 # Matches the literal size at end of an IMAP line: {N} or {N+}
 _LITERAL_RE = re.compile(r"\{(\d+)\+?\}$")
 
@@ -370,11 +375,25 @@ async def _client_to_upstream(
             flags_match = _re.search(r"\(([^)]*)\)", raw)
             append_flags = flags_match.group(1).split() if flags_match else []
 
+            literal_data = b""
             try:
                 client_writer.write(b"+ Ready for literal data\r\n")
                 await client_writer.drain()
-                if literal_size > 0:
-                    await client_reader.readexactly(literal_size)
+                if 0 < literal_size <= _MAX_APPEND_BYTES:
+                    literal_data = await client_reader.readexactly(literal_size)
+                elif literal_size > _MAX_APPEND_BYTES:
+                    # Too large to persist — must still consume exactly the
+                    # literal off the wire to stay protocol-synced, but in
+                    # bounded chunks so a huge APPEND can't exhaust memory.
+                    remaining = literal_size
+                    while remaining > 0:
+                        chunk = await client_reader.readexactly(min(_READ_CHUNK, remaining))
+                        remaining -= len(chunk)
+                    logger.warning(
+                        "[%s] APPEND body %d bytes exceeds cap %d — staging without "
+                        "body (will not replay upstream)",
+                        peer, literal_size, _MAX_APPEND_BYTES,
+                    )
                 await client_reader.readline()  # consume trailing CRLF after literal
             except (asyncio.IncompleteReadError, ConnectionResetError, OSError):
                 break
@@ -392,6 +411,13 @@ async def _client_to_upstream(
                     )
                 else:
                     parsed_op = parse_append(tag, append_folder, append_flags, literal_size)
+                    # Persist the raw message (base64) so the APPEND can actually
+                    # be replayed upstream on approval. Oversized bodies were
+                    # already dropped (logged) during the literal read above.
+                    import base64 as _b64  # noqa: PLC0415
+                    _append_b64: Optional[str] = (
+                        _b64.b64encode(literal_data).decode("ascii") if literal_data else None
+                    )
                     _append_batch_id = await get_or_create_batch(
                         folder=append_folder, protocol="imap",
                         agent_id=session.get("agent_id"),
@@ -404,6 +430,7 @@ async def _client_to_upstream(
                         imap_command=parsed_op.imap_command,
                         folder_to=parsed_op.folder_to,
                         flags_add=parsed_op.flags_add,
+                        append_message=_append_b64,
                         batch_id=_append_batch_id,
                         db_path=db_path,
                     )

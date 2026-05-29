@@ -126,6 +126,7 @@ CREATE TABLE IF NOT EXISTS staged_operations (
     flags_add       TEXT,                   -- JSON array
     flags_remove    TEXT,                   -- JSON array
     snapshot        TEXT,                   -- JSON {uid: {flags, seq_num, folder_id}} pre-op state
+    append_message  TEXT,                   -- base64 of the raw RFC822 body for APPEND ops (NULL otherwise)
     is_urgent       INTEGER NOT NULL DEFAULT 0,  -- 1 for smtp_send and trash ops (always show at top)
     decided_at      INTEGER,
     decided_by      TEXT,
@@ -253,6 +254,12 @@ async def init_db(path: Path = DB_PATH) -> None:
         if "body_scrubbed_at" not in staged_cols:
             await db.execute(
                 "ALTER TABLE staged_operations ADD COLUMN body_scrubbed_at INTEGER"
+            )
+        # Migration: add append_message column — stores the base64 RFC822 body
+        # of an APPEND op so it can be replayed upstream on approval.
+        if "append_message" not in staged_cols:
+            await db.execute(
+                "ALTER TABLE staged_operations ADD COLUMN append_message TEXT"
             )
 
         new_columns = [
