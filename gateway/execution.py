@@ -26,9 +26,10 @@ import logging
 import os
 import re
 import time
+from dataclasses import dataclass
 from email.mime.text import MIMEText
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
     import email.message
@@ -53,6 +54,74 @@ class ExecutionError(Exception):
     pre-flight failures (e.g. missing credentials) it is raised before any
     status change, leaving the operation untouched.
     """
+
+
+# ---------------------------------------------------------------------------
+# Shared helpers — used by both forward execution and undo (gateway.undo)
+# ---------------------------------------------------------------------------
+
+
+def decode_json_list(value: object) -> list:
+    """Return a list from a staged_operations JSON column.
+
+    Columns like message_ids / flags_add / flags_remove are stored as a JSON
+    string but may already be a Python list (when passed in-process). Returns
+    [] for None or an empty/blank string. Centralised so the same coercion is
+    used everywhere.
+    """
+    if isinstance(value, str):
+        return json.loads(value) if value.strip() else []
+    return value or []
+
+
+@dataclass
+class ImapCredentials:
+    """Resolved upstream IMAP connection details for one operation."""
+
+    host: str
+    port: int
+    user: str
+    password: Optional[str]          # decrypted; None for OAuth2 agents
+    oauth2_provider: Optional[str]   # e.g. 'google'; None for password auth
+    cred: Optional[dict]             # the agent_credentials row, or None (env fallback)
+
+
+async def resolve_imap_credentials(row: dict, db_path: Path) -> ImapCredentials:
+    """Resolve the upstream IMAP credentials for a staged operation.
+
+    Uses the operation's agent_credentials row when present (decrypting the
+    stored password), otherwise falls back to the NUVRAIL_TEST_IMAP_* env vars
+    (for ops staged before agent_id tracking, and for integration tests).
+
+    Raises RuntimeError if neither an agent nor a fallback host is available.
+    """
+    from gateway.credentials import decrypt_credential  # noqa: PLC0415
+
+    cred = await get_agent_credential(row.get("agent_id"), db_path)
+    if cred:
+        raw_pass = cred.get("upstream_password")
+        return ImapCredentials(
+            host=cred["upstream_host"],
+            port=int(cred["upstream_imap_port"]),
+            user=cred["upstream_user"],
+            password=decrypt_credential(raw_pass) if raw_pass else None,
+            oauth2_provider=cred.get("oauth2_provider"),
+            cred=cred,
+        )
+
+    host = os.environ.get("NUVRAIL_TEST_IMAP_HOST", "")
+    if not host:
+        raise RuntimeError(
+            f"Operation {row.get('id')} has no agent_id and no fallback IMAP env vars set"
+        )
+    return ImapCredentials(
+        host=host,
+        port=int(os.environ.get("NUVRAIL_TEST_IMAP_PORT", "993")),
+        user=os.environ.get("NUVRAIL_TEST_IMAP_USER", ""),
+        password=os.environ.get("NUVRAIL_TEST_IMAP_PASS", ""),
+        oauth2_provider=None,
+        cred=None,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -310,8 +379,6 @@ async def _execute_imap_upstream(row: dict, db_path: Path) -> None:
     Raises RuntimeError on any upstream error so the caller can set
     operation status → 'failed'.
     """
-    from gateway.credentials import decrypt_credential  # noqa: PLC0415
-
     op_type = row.get("op_type", "")
 
     # Legacy/oversized APPEND with no stored body cannot be replayed — no-op
@@ -324,55 +391,25 @@ async def _execute_imap_upstream(row: dict, db_path: Path) -> None:
         )
         return
 
-    agent_id = row.get("agent_id")
-    cred = await get_agent_credential(agent_id, db_path)
-    if cred:
-        imap_host = cred["upstream_host"]
-        imap_port = int(cred["upstream_imap_port"])
-        imap_user = cred["upstream_user"]
-        raw_pass = cred.get("upstream_password")
-        imap_pass = decrypt_credential(raw_pass) if raw_pass else None
-        imap_oauth2_provider = cred.get("oauth2_provider")
-    else:
-        # Fallback for ops staged before agent_id was tracked
-        imap_host = os.environ.get("NUVRAIL_TEST_IMAP_HOST", "")
-        imap_port = int(os.environ.get("NUVRAIL_TEST_IMAP_PORT", "993"))
-        imap_user = os.environ.get("NUVRAIL_TEST_IMAP_USER", "")
-        imap_pass = os.environ.get("NUVRAIL_TEST_IMAP_PASS", "")
-        imap_oauth2_provider = None
-        if not imap_host:
-            raise RuntimeError(
-                f"Operation {row['id']} has no agent_id and no fallback env vars set"
-            )
+    creds = await resolve_imap_credentials(row, db_path)
 
     imap_command = row.get("imap_command") or ""
     folder_from = row.get("folder_from") or "INBOX"
-
-    # Deserialize JSON fields
-    raw_ids = row.get("message_ids")
-    message_ids: list[str] = json.loads(raw_ids) if isinstance(raw_ids, str) else (raw_ids or [])
-    uid_set = ",".join(message_ids) if message_ids else "1"
-
-    raw_flags_add = row.get("flags_add")
-    flags_add: list[str] = (
-        json.loads(raw_flags_add) if isinstance(raw_flags_add, str) else (raw_flags_add or [])
-    )
-    raw_flags_remove = row.get("flags_remove")
-    flags_remove: list[str] = (
-        json.loads(raw_flags_remove)
-        if isinstance(raw_flags_remove, str)
-        else (raw_flags_remove or [])
-    )
     folder_to = row.get("folder_to") or ""
 
-    client = aioimaplib.IMAP4_SSL(host=imap_host, port=imap_port)
+    message_ids = decode_json_list(row.get("message_ids"))
+    uid_set = ",".join(message_ids) if message_ids else "1"
+    flags_add = decode_json_list(row.get("flags_add"))
+    flags_remove = decode_json_list(row.get("flags_remove"))
+
+    client = aioimaplib.IMAP4_SSL(host=creds.host, port=creds.port)
     try:
         await client.wait_hello_from_server()
-        if imap_oauth2_provider:
+        if creds.oauth2_provider:
             # OAuth2 agent — use AUTHENTICATE XOAUTH2 instead of LOGIN.
             from gateway.oauth2_tokens import OAuth2Error, get_access_token  # noqa: PLC0415
             try:
-                _email, _access_token = await get_access_token(str(cred["id"]), db_path)
+                _email, _access_token = await get_access_token(str(creds.cred["id"]), db_path)
             except OAuth2Error as exc:
                 raise RuntimeError(f"IMAP OAuth2 token fetch failed: {exc}") from exc
             response = await client.xoauth2(_email, _access_token)
@@ -397,7 +434,7 @@ async def _execute_imap_upstream(row: dict, db_path: Path) -> None:
                 # Fallback: no capability line in response — fetch explicitly.
                 await client.capability()
         else:
-            status, data = await client.login(imap_user, imap_pass)
+            status, data = await client.login(creds.user, creds.password)
             if status != "OK":
                 raise RuntimeError(f"IMAP LOGIN failed: {data}")
 

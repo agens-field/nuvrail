@@ -281,7 +281,7 @@ async def test_agent_audit_includes_op_fields(client_a: httpx.AsyncClient, db_pa
 
 async def test_reverted_audit_row_includes_op_type(db_path: Path) -> None:
     """
-    When an operation is marked 'reverted' via api.undo, the audit_log row
+    When an operation is marked 'reverted' via gateway.undo, the audit_log row
     must carry op_type — it was missing before the fix in issue #5.
 
     This test inserts the audit row directly (bypassing the full IMAP undo
