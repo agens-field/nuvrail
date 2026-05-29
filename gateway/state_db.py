@@ -24,6 +24,38 @@ import aiosqlite
 _DATA_DIR = os.environ.get("NUVRAIL_DATA_DIR", str(Path.home() / ".nuvrail"))
 DB_PATH = Path(_DATA_DIR).expanduser() / "nuvrail.db"
 
+# How long a connection waits for a held write lock before giving up with
+# 'database is locked'. The gateway runs the IMAP proxy, the SMTP proxy, the
+# REST API, and two background loops as SEPARATE processes sharing this one
+# SQLite file, so concurrent writers are normal — they must wait, not error.
+_SQLITE_BUSY_TIMEOUT_MS = int(os.environ.get("NUVRAIL_SQLITE_BUSY_TIMEOUT_MS", "5000"))
+
+
+async def _apply_connection_pragmas(db: "aiosqlite.Connection") -> None:
+    """Apply concurrency/durability PRAGMAs to a freshly opened connection.
+
+    Applied on every connection (cheap, idempotent) so behaviour is identical
+    no matter which of the gateway's processes opened it:
+
+    - ``busy_timeout``: block up to N ms waiting for another process's write
+      lock instead of immediately raising ``database is locked``.
+    - ``journal_mode=WAL``: Write-Ahead Logging lets many readers run
+      concurrently with a single writer across processes — the default
+      rollback journal serialises all access and is the root cause of lock
+      errors under our multi-process layout. WAL is a persistent property of
+      the DB file; re-asserting it per connection is a no-op once set.
+    - ``synchronous=NORMAL``: the recommended, durable-enough setting under
+      WAL (a crash can lose only the last transaction, never corrupt the DB),
+      and noticeably faster than FULL.
+
+    ``foreign_keys`` is intentionally left at its OFF default: the schema
+    declares REFERENCES for documentation but the app never relied on
+    enforcement, and turning it on now could reject existing rows.
+    """
+    await db.execute(f"PRAGMA busy_timeout = {_SQLITE_BUSY_TIMEOUT_MS}")
+    await db.execute("PRAGMA journal_mode = WAL")
+    await db.execute("PRAGMA synchronous = NORMAL")
+
 # Mailbox mirror schema — implemented in sub-milestone 0.4 (left intact)
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS folders (
@@ -163,6 +195,10 @@ async def init_db(path: Path = DB_PATH) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     async with aiosqlite.connect(path) as db:
         db.row_factory = aiosqlite.Row
+        # Switch the DB file to WAL (persistent) and set per-connection pragmas
+        # before any schema work, so the very first process to touch the file
+        # establishes WAL for everyone.
+        await _apply_connection_pragmas(db)
         await db.executescript(SCHEMA)
         await db.executescript(_STAGING_SCHEMA)
 
@@ -347,9 +383,15 @@ async def init_db(path: Path = DB_PATH) -> None:
 
 @asynccontextmanager
 async def get_db(path: Path = DB_PATH) -> AsyncGenerator[aiosqlite.Connection, None]:
-    """Async context manager yielding an aiosqlite.Connection with row_factory set."""
+    """Async context manager yielding an aiosqlite.Connection.
+
+    Sets the row factory and applies the WAL / busy_timeout / synchronous
+    PRAGMAs required for safe concurrent access across the gateway's separate
+    processes (see _apply_connection_pragmas).
+    """
     async with aiosqlite.connect(path) as db:
         db.row_factory = aiosqlite.Row
+        await _apply_connection_pragmas(db)
         yield db
 
 
