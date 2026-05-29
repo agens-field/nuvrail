@@ -9,29 +9,10 @@ from __future__ import annotations
 from pathlib import Path
 
 import httpx
-import pytest
 
-from api.auth import get_auth_db_path
-from api.main import app
-from api.routes.operations import get_db_path
-from gateway.state_db import get_db, init_db
+from gateway.state_db import get_db
 
-
-@pytest.fixture()
-async def db_path(tmp_path: Path) -> Path:
-    path = tmp_path / "test_push_api.db"
-    await init_db(path)
-    return path
-
-
-@pytest.fixture()
-async def client(db_path: Path) -> httpx.AsyncClient:
-    app.dependency_overrides[get_db_path] = lambda: db_path
-    app.dependency_overrides[get_auth_db_path] = lambda: db_path
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
-        yield c
-    app.dependency_overrides.clear()
+# db_path and client fixtures are provided by tests/api/conftest.py.
 
 
 async def _register_login(client: httpx.AsyncClient, email: str) -> str:

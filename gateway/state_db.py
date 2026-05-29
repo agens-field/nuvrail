@@ -31,6 +31,18 @@ DB_PATH = Path(_DATA_DIR).expanduser() / "nuvrail.db"
 _SQLITE_BUSY_TIMEOUT_MS = int(os.environ.get("NUVRAIL_SQLITE_BUSY_TIMEOUT_MS", "5000"))
 
 
+def decode_json_list(value: object) -> list:
+    """Return a list from a JSON-array column (message_ids, flags, …).
+
+    Columns are stored as a JSON string but may already be a Python list when
+    passed in-process. Returns [] for None or an empty/blank string. Centralised
+    so every reader coerces these columns the same way.
+    """
+    if isinstance(value, str):
+        return json.loads(value) if value.strip() else []
+    return value or []
+
+
 async def _apply_connection_pragmas(db: "aiosqlite.Connection") -> None:
     """Apply concurrency/durability PRAGMAs to a freshly opened connection.
 
@@ -821,8 +833,7 @@ async def snapshot_messages(
     snapshot: dict = {}
     for row in rows:
         uid_str = str(row["uid"])
-        flags_raw = row.get("flags", "[]")
-        flags = json.loads(flags_raw) if isinstance(flags_raw, str) else (flags_raw or [])
+        flags = decode_json_list(row.get("flags", "[]"))
         snapshot[uid_str] = {
             "flags": flags,
             "seq_num": row.get("sequence_num"),
@@ -862,8 +873,7 @@ async def apply_optimistic_flag_update(
     async with get_db(db_path) as db:
         for row in rows:
             uid = row["uid"]
-            flags_raw = row.get("flags", "[]")
-            current = set(json.loads(flags_raw) if isinstance(flags_raw, str) else (flags_raw or []))
+            current = set(decode_json_list(row.get("flags", "[]")))
             current.update(flags_add)
             current.difference_update(flags_remove)
             new_flags = json.dumps(sorted(current))

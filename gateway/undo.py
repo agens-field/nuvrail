@@ -47,9 +47,9 @@ from typing import Any
 import aioimaplib
 
 from gateway.audit import record_audit_event
-from gateway.execution import decode_json_list, resolve_imap_credentials
+from gateway.execution import resolve_imap_credentials
 from gateway.staging import update_operation_status
-from gateway.state_db import get_db
+from gateway.state_db import decode_json_list, get_db
 
 UNDO_WINDOW_HOURS = int(os.getenv("UNDO_WINDOW_HOURS", "24"))
 
