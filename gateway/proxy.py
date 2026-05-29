@@ -44,6 +44,7 @@ from typing import Optional
 
 from dotenv import load_dotenv
 
+from gateway.agent_auth import decode_sasl_plain, verify_agent_login
 from gateway.command_router import classify
 from gateway.imap_parser import ParsedCommand, parse_line
 from gateway.imap_response_parser import (
@@ -69,7 +70,6 @@ from gateway.staging import create_operation
 from gateway.state_db import (
     DB_PATH,
     apply_optimistic_flag_update,
-    get_db,
     get_message,
     get_pending_flag_changes_for_uid,
     get_pending_move_uids_for_folder,
@@ -303,31 +303,6 @@ async def _sync_upstream_line(
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("[%s] Failed to sync FETCH line: %s", peer, exc)
-
-
-async def _verify_agent_credential(
-    agent_user: str, agent_pass: str, db_path: Path
-) -> Optional[dict]:
-    """Verify agent username + password against agent_credentials table.
-
-    Returns the credential row if valid and not revoked, None otherwise.
-    bcrypt verification uses rounds=10 (faster than human passwords — verified
-    per-connection on every IMAP LOGIN).
-    """
-    async with get_db(db_path) as db:
-        async with db.execute(
-            """SELECT * FROM agent_credentials
-               WHERE agent_username = ? AND revoked_at IS NULL""",
-            (agent_user,),
-        ) as cur:
-            row = await cur.fetchone()
-    if row is None:
-        return None
-    from api.auth import verify_password  # noqa: PLC0415
-
-    if not verify_password(agent_pass, row["hashed_token"]):
-        return None
-    return dict(row)
 
 
 async def _client_to_upstream(
@@ -1214,14 +1189,7 @@ async def handle_client(
                     client_writer.close()
                     return
 
-            import base64 as _b64  # noqa: PLC0415
-            try:
-                decoded = _b64.b64decode(b64_payload)
-                auth_parts = decoded.split(b"\x00")
-                agent_user = auth_parts[1].decode("utf-8", errors="replace") if len(auth_parts) >= 3 else ""
-                agent_pass = auth_parts[2].decode("utf-8", errors="replace") if len(auth_parts) >= 3 else ""
-            except Exception:
-                agent_user, agent_pass = "", ""
+            agent_user, agent_pass = decode_sasl_plain(b64_payload) or ("", "")
 
         else:
             # LOGIN command
@@ -1250,7 +1218,7 @@ async def handle_client(
             client_writer.close()
             return
 
-        credential = await _verify_agent_credential(agent_user, agent_pass, _db_path)
+        credential = await verify_agent_login(agent_user, agent_pass, _db_path)
         if credential is None:
             failure = await IMAP_AUTH_ABUSE_PROTECTOR.record_failure(
                 ip=str(peer[0]), account=agent_user or "<unknown>"

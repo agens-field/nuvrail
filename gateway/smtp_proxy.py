@@ -62,11 +62,11 @@ import logging
 import os
 import re
 import ssl
-from pathlib import Path
 from typing import Optional
 
 from dotenv import load_dotenv
 
+from gateway.agent_auth import decode_sasl_plain, verify_agent_login
 from gateway.credentials import decrypt_credential
 from gateway.security_controls import build_auth_abuse_protector
 from gateway.staging import create_operation
@@ -81,39 +81,6 @@ SMTP_AUTH_ABUSE_PROTECTOR = build_auth_abuse_protector("smtp_proxy_auth")
 # Regex helpers for envelope extraction
 _MAIL_FROM_RE = re.compile(r"MAIL FROM:\s*<([^>]*)>", re.IGNORECASE)
 _RCPT_TO_RE = re.compile(r"RCPT TO:\s*<([^>]*)>", re.IGNORECASE)
-
-
-# ---------------------------------------------------------------------------
-# Agent credential verification
-# ---------------------------------------------------------------------------
-
-
-async def _verify_smtp_agent_credential(
-    agent_user: str, agent_pass: str, db_path: "Optional[Path]" = None
-) -> "Optional[dict]":
-    """Verify SMTP agent username + password against agent_credentials table.
-
-    Returns the credential row if valid and not revoked, None otherwise.
-    db_path defaults to the current module-level DB_PATH (read at call time
-    so integration tests can patch gateway.state_db.DB_PATH).
-    """
-    import gateway.state_db as _state_db_mod  # noqa: PLC0415
-
-    _db = db_path if db_path is not None else _state_db_mod.DB_PATH
-    async with get_db(_db) as db:
-        async with db.execute(
-            """SELECT * FROM agent_credentials
-               WHERE agent_username = ? AND revoked_at IS NULL""",
-            (agent_user,),
-        ) as cur:
-            row = await cur.fetchone()
-    if row is None:
-        return None
-    from api.auth import verify_password  # noqa: PLC0415
-
-    if not verify_password(agent_pass, row["hashed_token"]):
-        return None
-    return dict(row)  # type: ignore[return-value]
 
 
 # ---------------------------------------------------------------------------
@@ -336,6 +303,12 @@ async def handle_smtp_client(
     peer_str = f"{peer[0]}:{peer[1]}"
     logger.info("[%s] SMTP client connected", peer_str)
 
+    # Resolve the DB path once at connection start. Read from the module
+    # attribute (not the import-time DB_PATH) so integration tests that patch
+    # gateway.state_db.DB_PATH before connecting are honoured.
+    import gateway.state_db as _state_db_mod  # noqa: PLC0415
+    _db_path = _state_db_mod.DB_PATH
+
     # --- Step 1: Send synthetic greeting — no upstream connection yet --------
     try:
         client_writer.write(b"220 Nuvrail SMTP proxy ready\r\n")
@@ -390,14 +363,7 @@ async def handle_smtp_client(
                 cred: Optional[dict] = None
 
                 if mech == "PLAIN" and len(parts) >= 3:
-                    import base64 as _b64  # noqa: PLC0415
-                    try:
-                        decoded = _b64.b64decode(parts[2])
-                        auth_parts = decoded.split(b"\x00")
-                        agent_user = auth_parts[1].decode("utf-8", errors="replace") if len(auth_parts) >= 3 else ""
-                        agent_pass_plain = auth_parts[2].decode("utf-8", errors="replace") if len(auth_parts) >= 3 else ""
-                    except Exception:
-                        agent_user, agent_pass_plain = "", ""
+                    agent_user, agent_pass_plain = decode_sasl_plain(parts[2]) or ("", "")
                     decision = await SMTP_AUTH_ABUSE_PROTECTOR.start_attempt(
                         ip=str(peer[0]), account=agent_user or "<unknown>"
                     )
@@ -414,7 +380,7 @@ async def handle_smtp_client(
                             decision.retry_after_seconds,
                         )
                         break
-                    cred = await _verify_smtp_agent_credential(agent_user, agent_pass_plain)
+                    cred = await verify_agent_login(agent_user, agent_pass_plain, _db_path)
                     if cred:
                         await SMTP_AUTH_ABUSE_PROTECTOR.record_success(
                             ip=str(peer[0]), account=agent_user or "<unknown>"
@@ -438,14 +404,7 @@ async def handle_smtp_client(
                     client_writer.write(b"334 \r\n")
                     await client_writer.drain()
                     cred_line = await client_reader.readline()
-                    import base64 as _b64c  # noqa: PLC0415
-                    try:
-                        decoded = _b64c.b64decode(cred_line.strip())
-                        auth_parts = decoded.split(b"\x00")
-                        agent_user = auth_parts[1].decode("utf-8", errors="replace") if len(auth_parts) >= 3 else ""
-                        agent_pass_plain = auth_parts[2].decode("utf-8", errors="replace") if len(auth_parts) >= 3 else ""
-                    except Exception:
-                        agent_user, agent_pass_plain = "", ""
+                    agent_user, agent_pass_plain = decode_sasl_plain(cred_line.strip()) or ("", "")
                     decision = await SMTP_AUTH_ABUSE_PROTECTOR.start_attempt(
                         ip=str(peer[0]), account=agent_user or "<unknown>"
                     )
@@ -462,7 +421,7 @@ async def handle_smtp_client(
                             decision.retry_after_seconds,
                         )
                         break
-                    cred = await _verify_smtp_agent_credential(agent_user, agent_pass_plain)
+                    cred = await verify_agent_login(agent_user, agent_pass_plain, _db_path)
                     if cred:
                         await SMTP_AUTH_ABUSE_PROTECTOR.record_success(
                             ip=str(peer[0]), account=agent_user or "<unknown>"
@@ -502,7 +461,7 @@ async def handle_smtp_client(
                             decision.retry_after_seconds,
                         )
                         break
-                    cred = await _verify_smtp_agent_credential(agent_user, agent_pass_plain)
+                    cred = await verify_agent_login(agent_user, agent_pass_plain, _db_path)
                     if cred:
                         await SMTP_AUTH_ABUSE_PROTECTOR.record_success(
                             ip=str(peer[0]), account=agent_user or "<unknown>"
