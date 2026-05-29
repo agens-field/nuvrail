@@ -39,7 +39,7 @@ from aioimaplib import quoted as imap_quoted
 import aiosmtplib
 
 from gateway.agent_auth import get_agent_credential
-from gateway.audit import insert_audit_event
+from gateway.audit import record_audit_event
 from gateway.staging import get_operation, update_operation_status
 from gateway.state_db import get_db
 
@@ -543,13 +543,11 @@ async def _record_execution_failure(
 ) -> None:
     """Mark an operation failed and write an execution_failed audit row."""
     await update_operation_status(op_id, "failed", error=str(exc), db_path=db_path)
-    async with get_db(db_path) as db:
-        await insert_audit_event(
-            db, timestamp=int(time.time()), event='execution_failed', actor='system',
-            operation_id=op_id, agent_id=row.get('agent_id'), op_type=row.get('op_type'),
-            detail=json.dumps({'error': str(exc)}),
-        )
-        await db.commit()
+    await record_audit_event(
+        db_path, timestamp=int(time.time()), event='execution_failed', actor='system',
+        operation_id=op_id, agent_id=row.get('agent_id'), op_type=row.get('op_type'),
+        detail=json.dumps({'error': str(exc)}),
+    )
 
 
 async def execute_operation(
@@ -716,12 +714,10 @@ async def execute_operation(
 
     # Mark operation as executed and insert audit log
     await update_operation_status(op_id, "executed", db_path=db_path)
-    async with get_db(db_path) as db:
-        await insert_audit_event(
-            db, timestamp=int(time.time()), event='executed', actor=actor,
-            operation_id=op_id, agent_id=row.get('agent_id'), op_type=row.get('op_type'),
-        )
-        await db.commit()
+    await record_audit_event(
+        db_path, timestamp=int(time.time()), event='executed', actor=actor,
+        operation_id=op_id, agent_id=row.get('agent_id'), op_type=row.get('op_type'),
+    )
 
     updated = await get_operation(op_id, db_path=db_path)
     return {"executed_at": updated.get("executed_at") if updated else None}

@@ -154,6 +154,43 @@ async def insert_audit_event(
         # Caller commits.
 
 
+async def record_audit_event(
+    db_path: Path,
+    *,
+    timestamp: int,
+    event: str,
+    actor: Optional[str] = None,
+    operation_id: Optional[str] = None,
+    agent_id: Optional[str] = None,
+    op_type: Optional[str] = None,
+    detail: Optional[str] = None,
+    user_id: Optional[int] = None,
+) -> None:
+    """Open a connection, append one audit_log row, and commit.
+
+    Convenience wrapper around insert_audit_event for the common case where the
+    audit write stands alone (the only write in its transaction). When the
+    audit must commit atomically with other writes — e.g. inserting the staged
+    operation, or marking an account deleted — use insert_audit_event(db, …)
+    inside that existing transaction instead.
+    """
+    from gateway.state_db import get_db  # noqa: PLC0415 — avoid import cycle
+
+    async with get_db(db_path) as db:
+        await insert_audit_event(
+            db,
+            timestamp=timestamp,
+            event=event,
+            actor=actor,
+            operation_id=operation_id,
+            agent_id=agent_id,
+            op_type=op_type,
+            detail=detail,
+            user_id=user_id,
+        )
+        await db.commit()
+
+
 async def verify_audit_chain(db_path: Path) -> tuple[bool, list[str]]:
     """Walk all hashed audit_log rows and verify the chain integrity.
 

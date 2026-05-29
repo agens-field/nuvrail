@@ -29,9 +29,10 @@ from gateway.audit import (
     GENESIS_HASH,
     _compute_entry_hash,
     insert_audit_event,
+    record_audit_event,
     verify_audit_chain,
 )
-from gateway.state_db import init_db
+from gateway.state_db import get_db, init_db
 
 
 # ---------------------------------------------------------------------------
@@ -269,3 +270,36 @@ async def test_existing_rows_without_hash_skipped(db_conn, db_path):
     ) as cur:
         row = await cur.fetchone()
     assert row["cnt"] == 2
+
+
+# ---------------------------------------------------------------------------
+# record_audit_event — standalone convenience wrapper
+# ---------------------------------------------------------------------------
+
+
+async def test_record_audit_event_persists_and_commits(db_path: Path) -> None:
+    """record_audit_event opens its own connection, writes a row, and commits."""
+    await record_audit_event(
+        db_path, timestamp=7000, event="executed", actor="human",
+        operation_id="op_abc", op_type="move",
+    )
+    # Visible from a fresh connection → it committed.
+    async with get_db(db_path) as db:
+        async with db.execute(
+            "SELECT event, actor, operation_id, op_type, entry_hash "
+            "FROM audit_log WHERE operation_id = 'op_abc'"
+        ) as cur:
+            row = await cur.fetchone()
+    assert row is not None
+    assert row["event"] == "executed"
+    assert row["actor"] == "human"
+    assert row["op_type"] == "move"
+    assert row["entry_hash"] is not None  # hash chaining still applied
+
+
+async def test_record_audit_event_chains_with_insert(db_path: Path) -> None:
+    """Rows written via record_audit_event chain cleanly with insert_audit_event."""
+    await record_audit_event(db_path, timestamp=7100, event="staged", actor="ai_agent")
+    await record_audit_event(db_path, timestamp=7200, event="executed", actor="human")
+    ok, errors = await verify_audit_chain(db_path)
+    assert ok is True, f"Chain should verify; errors: {errors}"

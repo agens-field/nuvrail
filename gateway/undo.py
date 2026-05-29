@@ -46,7 +46,7 @@ from typing import Any
 
 import aioimaplib
 
-from gateway.audit import insert_audit_event
+from gateway.audit import record_audit_event
 from gateway.execution import decode_json_list, resolve_imap_credentials
 from gateway.staging import update_operation_status
 from gateway.state_db import get_db
@@ -150,15 +150,13 @@ async def undo_operation(operation_id: str, db_path: Path) -> dict[str, Any]:
     # --- Mark reverted in DB ---------------------------------------------
     await update_operation_status(operation_id, "reverted", db_path=db_path)
     agent_id = row.get("agent_id")
-    async with get_db(db_path) as db:
-        await insert_audit_event(
-            db, timestamp=now, event='reverted', actor='human',
-            operation_id=operation_id,
-            agent_id=str(agent_id) if agent_id else None,
-            op_type=op_type,
-            detail=json.dumps({'description': description}),
-        )
-        await db.commit()
+    await record_audit_event(
+        db_path, timestamp=now, event='reverted', actor='human',
+        operation_id=operation_id,
+        agent_id=str(agent_id) if agent_id else None,
+        op_type=op_type,
+        detail=json.dumps({'description': description}),
+    )
 
     return {
         "operation_id": operation_id,

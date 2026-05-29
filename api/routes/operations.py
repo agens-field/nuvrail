@@ -67,10 +67,10 @@ from api.models import (
     RejectResponse,
     UndoResponse,
 )
-from gateway.audit import insert_audit_event
+from gateway.audit import record_audit_event
 from gateway.execution import ExecutionError, execute_operation
 from gateway.staging import get_operation, list_operations, update_operation_status
-from gateway.state_db import DB_PATH, get_db, insert_pending_reverts, restore_from_snapshot
+from gateway.state_db import DB_PATH, insert_pending_reverts, restore_from_snapshot
 from gateway.undo import UndoError, undo_operation
 
 logger = logging.getLogger(__name__)
@@ -254,12 +254,10 @@ async def _do_reject(op_id: str, row: dict, db_path: Path) -> RejectResponse:  #
         RejectResponse on success.
     """
     await update_operation_status(op_id, "rejected", db_path=db_path)
-    async with get_db(db_path) as db:
-        await insert_audit_event(
-            db, timestamp=int(time.time()), event='rejected', actor='human',
-            operation_id=op_id, agent_id=row.get('agent_id'), op_type=row.get('op_type'),
-        )
-        await db.commit()
+    await record_audit_event(
+        db_path, timestamp=int(time.time()), event='rejected', actor='human',
+        operation_id=op_id, agent_id=row.get('agent_id'), op_type=row.get('op_type'),
+    )
 
     # Restore local state DB from snapshot and queue unsolicited FETCH responses.
     # Non-fatal: if revert fails (e.g. no snapshot), rejection still succeeds.

@@ -21,7 +21,7 @@ from typing import Optional
 
 import asyncio
 
-from gateway.audit import insert_audit_event
+from gateway.audit import insert_audit_event, record_audit_event
 from gateway.rules import evaluate_rules, get_matching_rule
 from gateway.state_db import DB_PATH, get_db
 from gateway.state_db import insert_pending_reverts, restore_from_snapshot
@@ -101,12 +101,10 @@ async def _apply_auto_rule_decision(
 
     if decision_status == "rejected":
         await update_operation_status(op_id, "rejected", decided_by="auto_rule", db_path=db_path)
-        async with get_db(db_path) as db:
-            await insert_audit_event(
-                db, timestamp=now, event="rejected", actor="auto_rule",
-                operation_id=op_id, agent_id=agent_id, op_type=op_type, detail=detail,
-            )
-            await db.commit()
+        await record_audit_event(
+            db_path, timestamp=now, event="rejected", actor="auto_rule",
+            operation_id=op_id, agent_id=agent_id, op_type=op_type, detail=detail,
+        )
         # Roll back optimistic local state immediately.
         try:
             reverts = await restore_from_snapshot(op_id, db_path=db_path)
@@ -123,12 +121,10 @@ async def _apply_auto_rule_decision(
     # Record the auto-rule decision first (audit + rule-hit attribution), then
     # execute upstream. We do NOT set an intermediate 'approved' status — the
     # executor transitions the op straight to 'executed' or 'failed'.
-    async with get_db(db_path) as db:
-        await insert_audit_event(
-            db, timestamp=now, event="approved", actor="auto_rule",
-            operation_id=op_id, agent_id=agent_id, op_type=op_type, detail=detail,
-        )
-        await db.commit()
+    await record_audit_event(
+        db_path, timestamp=now, event="approved", actor="auto_rule",
+        operation_id=op_id, agent_id=agent_id, op_type=op_type, detail=detail,
+    )
 
     row = await get_operation(op_id, db_path=db_path)
     if row is None:
