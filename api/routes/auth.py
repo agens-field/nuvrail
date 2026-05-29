@@ -520,8 +520,14 @@ async def reset_request(
     the DB, and returns 200 regardless of whether the email is registered
     (no account enumeration).
 
-    Phase 2a: logs the reset URL to the server log rather than emailing it.
-    Set NUVRAIL_RESET_EMAIL_FROM to enable MXrouting email delivery (Phase 2b).
+    Token delivery: the plaintext reset token is NEVER written to the server
+    log by default — logs are frequently shipped to third parties and a logged
+    token is a full account-takeover primitive for anyone with log access
+    (valid for the 1h TTL). Only the SHA-256 hash is persisted.
+
+    For local development (no email delivery yet), set NUVRAIL_RESET_TOKEN_LOG=1
+    to opt in to logging the full reset URL. This must never be enabled in
+    production. Email delivery (Phase 2b) will replace the log entirely.
     """
     import hashlib as _hashlib
     import logging as _logging
@@ -549,9 +555,18 @@ async def reset_request(
         )
         await db.commit()
 
-    host = os.environ.get("NUVRAIL_HOST_URL", "https://mail.nuvrail.com")
-    reset_url = f"{host}/#/reset?token={token_plain}"
-    _log.info("[reset-request] Reset URL for user %s: %s", body.email, reset_url)
+    if os.environ.get("NUVRAIL_RESET_TOKEN_LOG", "").strip().lower() in ("1", "true", "yes"):
+        # Dev-only opt-in: surface the full reset URL for local testing.
+        host = os.environ.get("NUVRAIL_HOST_URL", "https://mail.nuvrail.com")
+        reset_url = f"{host}/#/reset?token={token_plain}"
+        _log.warning(
+            "[reset-request] NUVRAIL_RESET_TOKEN_LOG is enabled — logging reset "
+            "URL for user %s: %s (do NOT enable in production)",
+            body.email, reset_url,
+        )
+    else:
+        # Production default: record that a reset was requested without the token.
+        _log.info("[reset-request] Password reset requested for user %s", body.email)
 
     return ResetRequestResponse(ok=True)
 

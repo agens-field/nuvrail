@@ -54,6 +54,7 @@ CREATE TABLE IF NOT EXISTS messages (
 
 CREATE TABLE IF NOT EXISTS push_subscriptions (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id    INTEGER REFERENCES users(id),  -- owning user; notifications go only to their own subscriptions
     endpoint   TEXT NOT NULL UNIQUE,
     p256dh     TEXT NOT NULL,
     auth       TEXT NOT NULL,
@@ -281,6 +282,22 @@ async def init_db(path: Path = DB_PATH) -> None:
         await db.execute(
             "CREATE INDEX IF NOT EXISTS idx_auto_rules_user_id"
             " ON auto_approval_rules(user_id)"
+        )
+
+        # Migration: add user_id to push_subscriptions so notifications are
+        # tenant-scoped. Subscriptions predating this column have NULL user_id
+        # and receive nothing (fail closed) — a notification for one user's
+        # operation must never be pushed to another user's device. The browser
+        # re-subscribes on next load, repopulating user_id.
+        async with db.execute("PRAGMA table_info(push_subscriptions)") as cur:
+            push_cols = {row["name"] for row in await cur.fetchall()}
+        if "user_id" not in push_cols:
+            await db.execute(
+                "ALTER TABLE push_subscriptions ADD COLUMN user_id INTEGER"
+            )
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_push_subs_user_id"
+            " ON push_subscriptions(user_id)"
         )
 
         # Migration: drop NOT NULL from upstream_password to support OAuth2 agents.

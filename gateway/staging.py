@@ -206,7 +206,10 @@ async def create_operation(
         try:
             from gateway.push import notify_staged as _notify
             asyncio.create_task(
-                _notify(op_id, description, is_urgent=bool(is_urgent), db_path=db_path),
+                _notify(
+                    op_id, description, is_urgent=bool(is_urgent),
+                    db_path=db_path, user_id=rule_user_id,
+                ),
                 name=f"push-notify-{op_id}",
             )
         except Exception as _exc:

@@ -81,11 +81,20 @@ def get_vapid_public_key() -> str:
         raise
 
 
-async def _get_subscriptions(db_path: Path = DB_PATH) -> list[dict]:
-    """Fetch all push subscriptions from the DB."""
+async def _get_subscriptions(
+    user_id: Optional[int], db_path: Path = DB_PATH
+) -> list[dict]:
+    """Fetch a user's push subscriptions from the DB.
+
+    Returns [] when user_id is None (fail closed) — a notification must never
+    be sent to subscriptions that can't be attributed to the owning user.
+    """
+    if user_id is None:
+        return []
     async with get_db(db_path) as db:
         async with db.execute(
-            "SELECT endpoint, p256dh, auth FROM push_subscriptions"
+            "SELECT endpoint, p256dh, auth FROM push_subscriptions WHERE user_id = ?",
+            (user_id,),
         ) as cur:
             rows = await cur.fetchall()
     return [dict(r) for r in rows]
@@ -96,18 +105,21 @@ async def notify_staged(
     description: str,
     is_urgent: bool = False,
     db_path: Path = DB_PATH,
+    user_id: Optional[int] = None,
 ) -> None:
     """
-    Send a Web Push notification to all registered subscriptions.
+    Send a Web Push notification to the owning user's subscriptions only.
 
     Non-fatal: any errors are logged and swallowed so staging is never blocked.
-    Runs fire-and-forget from create_operation().
+    Runs fire-and-forget from create_operation(). With user_id=None (ownerless
+    operation) no notification is sent — operation descriptions can contain
+    sender/subject metadata and must never be pushed to another tenant.
     """
     try:
         _ensure_vapid_keys()
-        subscriptions = await _get_subscriptions(db_path=db_path)
+        subscriptions = await _get_subscriptions(user_id, db_path=db_path)
         if not subscriptions:
-            logger.debug("[push] No subscriptions registered, skipping notify")
+            logger.debug("[push] No subscriptions for user_id=%s, skipping notify", user_id)
             return
 
         payload = json.dumps({
