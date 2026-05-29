@@ -28,7 +28,7 @@ import re
 import time
 from email.mime.text import MIMEText
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     import email.message
@@ -37,6 +37,7 @@ import aioimaplib
 from aioimaplib import quoted as imap_quoted
 import aiosmtplib
 
+from gateway.agent_auth import get_agent_credential
 from gateway.audit import insert_audit_event
 from gateway.staging import get_operation, update_operation_status
 from gateway.state_db import get_db
@@ -52,18 +53,6 @@ class ExecutionError(Exception):
     pre-flight failures (e.g. missing credentials) it is raised before any
     status change, leaving the operation untouched.
     """
-
-
-async def _get_agent_credential(agent_id: Optional[int], db_path: Path) -> Optional[dict]:
-    """Look up agent_credentials row by id. Returns None if not found."""
-    if agent_id is None:
-        return None
-    async with get_db(db_path) as db:
-        async with db.execute(
-            "SELECT * FROM agent_credentials WHERE id = ?", (agent_id,)
-        ) as cur:
-            row = await cur.fetchone()
-    return dict(row) if row else None
 
 
 # ---------------------------------------------------------------------------
@@ -336,7 +325,7 @@ async def _execute_imap_upstream(row: dict, db_path: Path) -> None:
         return
 
     agent_id = row.get("agent_id")
-    cred = await _get_agent_credential(agent_id, db_path)
+    cred = await get_agent_credential(agent_id, db_path)
     if cred:
         imap_host = cred["upstream_host"]
         imap_port = int(cred["upstream_imap_port"])
@@ -562,7 +551,7 @@ async def execute_operation(
 
         from gateway.credentials import decrypt_credential  # noqa: PLC0415
         agent_id = row.get("agent_id")
-        cred = await _get_agent_credential(agent_id, db_path)
+        cred = await get_agent_credential(agent_id, db_path)
         if cred:
             smtp_host = cred["upstream_smtp_host"] or cred["upstream_host"]
             smtp_port = int(cred["upstream_smtp_port"])
