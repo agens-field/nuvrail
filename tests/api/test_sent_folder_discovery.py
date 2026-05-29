@@ -1,5 +1,5 @@
 """
-Tests for Sent-folder discovery helpers in api/routes/operations.py.
+Tests for Sent-folder discovery helpers in gateway/execution.py.
 
 Covers:
   _parse_list_line()      — LIST response line parser
@@ -12,7 +12,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from api.routes.operations import _discover_sent_folder, _parse_list_line
+from gateway.execution import _discover_sent_folder, _parse_list_line
 
 
 # ---------------------------------------------------------------------------

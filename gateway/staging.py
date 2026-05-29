@@ -74,12 +74,22 @@ async def _apply_auto_rule_decision(
     agent_id: Optional[int] = None,
     op_type: Optional[str] = None,
 ) -> None:
-    """Apply a matched auto-rule decision and write audit trail."""
-    status = _decision_to_status(action)
-    if status is None:
-        return
+    """Apply a matched auto-rule decision.
 
-    await update_operation_status(op_id, status, decided_by="auto_rule", db_path=db_path)
+    Always records the auto-rule decision in the audit log (event 'approved' or
+    'rejected', actor 'auto_rule', carrying the rule id — this is what the rule
+    `hits` count is derived from).
+
+    - reject: mark the operation 'rejected' and roll back optimistic local state.
+    - approve: execute the operation upstream via the shared executor — the SAME
+      code path a human approval uses — so an auto-approved operation actually
+      happens instead of being silently left in a non-executed state. The
+      executor sets the final status ('executed' on success, 'failed' on
+      upstream error) and writes its own audit row.
+    """
+    decision_status = _decision_to_status(action)
+    if decision_status is None:
+        return
 
     now = int(time.time())
     detail = json.dumps(
@@ -88,15 +98,16 @@ async def _apply_auto_rule_decision(
             "rule_description": rule.get("description"),
         }
     )
-    async with get_db(db_path) as db:
-        await insert_audit_event(
-            db, timestamp=now, event=status, actor='auto_rule',
-            operation_id=op_id, agent_id=agent_id, op_type=op_type, detail=detail,
-        )
-        await db.commit()
 
-    # Rejected operations must roll back optimistic local state immediately.
-    if status == "rejected":
+    if decision_status == "rejected":
+        await update_operation_status(op_id, "rejected", decided_by="auto_rule", db_path=db_path)
+        async with get_db(db_path) as db:
+            await insert_audit_event(
+                db, timestamp=now, event="rejected", actor="auto_rule",
+                operation_id=op_id, agent_id=agent_id, op_type=op_type, detail=detail,
+            )
+            await db.commit()
+        # Roll back optimistic local state immediately.
         try:
             reverts = await restore_from_snapshot(op_id, db_path=db_path)
             await insert_pending_reverts(op_id, reverts, db_path=db_path)
@@ -106,6 +117,36 @@ async def _apply_auto_rule_decision(
                 op_id,
                 exc,
             )
+        return
+
+    # action == "approve"
+    # Record the auto-rule decision first (audit + rule-hit attribution), then
+    # execute upstream. We do NOT set an intermediate 'approved' status — the
+    # executor transitions the op straight to 'executed' or 'failed'.
+    async with get_db(db_path) as db:
+        await insert_audit_event(
+            db, timestamp=now, event="approved", actor="auto_rule",
+            operation_id=op_id, agent_id=agent_id, op_type=op_type, detail=detail,
+        )
+        await db.commit()
+
+    row = await get_operation(op_id, db_path=db_path)
+    if row is None:
+        return
+    # Imported lazily to avoid a circular import (gateway.execution imports
+    # gateway.staging for get_operation/update_operation_status).
+    from gateway.execution import ExecutionError, execute_operation  # noqa: PLC0415
+    try:
+        await execute_operation(op_id, row, db_path, actor="auto_rule")
+    except ExecutionError as exc:
+        # Relay/replay failures leave the op marked 'failed' (the executor did
+        # that) with an execution_failed audit row. Pre-flight failures (e.g.
+        # missing credentials) leave it 'pending' for manual review. Either way
+        # staging itself still succeeds.
+        _logger.warning(
+            "[auto_rule] Upstream execution failed for op %s (rule %s): %s",
+            op_id, rule.get("id"), exc,
+        )
 
 
 async def create_operation(

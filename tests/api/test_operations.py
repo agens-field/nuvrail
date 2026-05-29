@@ -508,10 +508,18 @@ async def test_reject_without_snapshot_does_not_raise(
     assert resp.json()["status"] == "rejected"
 
 
-async def test_auto_approved_operation_not_listed_as_pending(
+async def test_auto_approved_operation_executes_and_not_listed_as_pending(
     client: httpx.AsyncClient, db_path: Path
 ) -> None:
-    """Auto-approved operations should not appear in pending list."""
+    """Auto-approved operations execute upstream and leave the pending queue.
+
+    The shared executor is mocked (no real upstream) but must be invoked as the
+    auto_rule actor and drive the op to 'executed'.
+    """
+    from unittest.mock import AsyncMock, patch
+
+    from gateway.staging import update_operation_status
+
     async with get_db(db_path) as db:
         await db.execute(
             """
@@ -522,17 +530,28 @@ async def test_auto_approved_operation_not_listed_as_pending(
         )
         await db.commit()
 
-    op_id = await _create_op(
-        op_type="mark_read",
-        protocol="imap",
-        description="Mark as read",
-        smtp_envelope={"from": "daily@substack.com"},
-        db_path=db_path,
-    )
+    async def _fake_execute(op_id, row, dbp, *, actor="human"):
+        await update_operation_status(op_id, "executed", decided_by=actor, db_path=dbp)
+        return {"executed_at": 1234567890}
+
+    with patch(
+        "gateway.execution.execute_operation",
+        new=AsyncMock(side_effect=_fake_execute),
+    ) as mock_exec:
+        op_id = await _create_op(
+            op_type="mark_read",
+            protocol="imap",
+            description="Mark as read",
+            smtp_envelope={"from": "daily@substack.com"},
+            db_path=db_path,
+        )
+
+    mock_exec.assert_awaited_once()
+    assert mock_exec.call_args.kwargs.get("actor") == "auto_rule"
 
     detail = await client.get(f"/api/v1/operations/{op_id}")
     assert detail.status_code == 200
-    assert detail.json()["status"] == "approved"
+    assert detail.json()["status"] == "executed"
 
     pending = await client.get("/api/v1/operations?status=pending")
     assert pending.status_code == 200
@@ -545,7 +564,6 @@ async def test_auto_approved_operation_not_listed_as_pending(
             (op_id,),
         ) as cur:
             logs = await cur.fetchall()
-    assert len(logs) == 2
     assert logs[0]["event"] == "staged"
     assert logs[1]["event"] == "approved"
     assert logs[1]["actor"] == "auto_rule"
