@@ -325,10 +325,13 @@ async def _execute_imap_upstream(row: dict, db_path: Path) -> None:
 
     op_type = row.get("op_type", "")
 
-    # APPEND: body not stored — skip upstream execution entirely (no credentials needed)
-    if op_type == "append":
+    # Legacy/oversized APPEND with no stored body cannot be replayed — no-op
+    # (and no credentials/connection needed). APPENDs WITH a stored body fall
+    # through to the normal auth + dispatch path below.
+    if op_type == "append" and not row.get("append_message"):
         logger.info(
-            "[imap_execute] Skipping APPEND op %s — body not stored in staging DB", row["id"]
+            "[imap_execute] APPEND op %s has no stored body — skipping (legacy/oversized)",
+            row["id"],
         )
         return
 
@@ -463,6 +466,34 @@ async def _execute_imap_upstream(row: dict, db_path: Path) -> None:
             status, data = await client.rename(imap_quoted(folder_from), imap_quoted(folder_to))
             if status != "OK":
                 raise RuntimeError(f"IMAP RENAME failed: {data}")
+
+        elif op_type == "append":
+            # Replay the stored message into the target folder. The raw RFC822
+            # bytes were captured by the proxy and base64-encoded into
+            # append_message; flags_add carries the original APPEND flags.
+            import base64 as _b64  # noqa: PLC0415
+            raw_b64 = row.get("append_message")
+            if not raw_b64:
+                # The legacy guard at the top should have returned already.
+                raise RuntimeError(f"APPEND op {row['id']} has no stored message body")
+            try:
+                msg_bytes = _b64.b64decode(raw_b64)
+            except Exception as exc:
+                raise RuntimeError(
+                    f"APPEND op {row['id']}: cannot decode stored body: {exc}"
+                ) from exc
+            target_folder = folder_to or "INBOX"
+            flag_str = f"({' '.join(flags_add)})" if flags_add else None
+            if flag_str:
+                status, data = await client.append(
+                    msg_bytes, mailbox=imap_quoted(target_folder), flags=flag_str
+                )
+            else:
+                status, data = await client.append(
+                    msg_bytes, mailbox=imap_quoted(target_folder)
+                )
+            if status != "OK":
+                raise RuntimeError(f"IMAP APPEND to {target_folder!r} failed: {data}")
 
         else:
             # Unknown/unsupported op type — log and treat as no-op

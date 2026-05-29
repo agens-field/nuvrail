@@ -67,10 +67,10 @@ async def find_scrubable_operations(db_path: Path = DB_PATH) -> list[dict]:
     async with get_db(db_path) as db:
         async with db.execute(
             f"""
-            SELECT id, smtp_envelope, agent_id, op_type
+            SELECT id, smtp_envelope, append_message, agent_id, op_type
             FROM staged_operations
             WHERE status IN ({placeholders})
-              AND smtp_envelope IS NOT NULL
+              AND (smtp_envelope IS NOT NULL OR append_message IS NOT NULL)
               AND body_scrubbed_at IS NULL
               AND COALESCE(decided_at, created_at) <= ?
             ORDER BY COALESCE(decided_at, created_at) ASC
@@ -83,27 +83,35 @@ async def find_scrubable_operations(db_path: Path = DB_PATH) -> list[dict]:
 
 
 async def _scrub_one(op: dict, db_path: Path) -> None:
-    """Scrub body_preview from one operation's smtp_envelope and log the event."""
+    """Scrub retained message content from one operation and log the event.
+
+    Nulls ``smtp_envelope.body``/``body_preview`` (SMTP sends) and the
+    ``append_message`` column (IMAP APPEND bodies), whichever is present.
+    """
     op_id: str = op["id"]
     now = int(time.time())
 
-    # Parse and scrub the envelope.
-    try:
-        envelope = json.loads(op["smtp_envelope"])
-    except (json.JSONDecodeError, TypeError):
-        # Unparseable envelope — null it entirely so it can't leak anything.
+    # Parse and scrub the SMTP envelope if present.
+    envelope_raw = op.get("smtp_envelope")
+    if envelope_raw is None:
         scrubbed_envelope = None
-        logger.warning("[scrubber] op=%s: smtp_envelope unparseable, nulling entirely", op_id)
     else:
-        envelope["body_preview"] = None
-        envelope["body"] = None        # full RFC 2822 body added after issue was filed
-        scrubbed_envelope = json.dumps(envelope)
+        try:
+            envelope = json.loads(envelope_raw)
+        except (json.JSONDecodeError, TypeError):
+            # Unparseable envelope — null it entirely so it can't leak anything.
+            scrubbed_envelope = None
+            logger.warning("[scrubber] op=%s: smtp_envelope unparseable, nulling entirely", op_id)
+        else:
+            envelope["body_preview"] = None
+            envelope["body"] = None        # full RFC 2822 body added after issue was filed
+            scrubbed_envelope = json.dumps(envelope)
 
     async with get_db(db_path) as db:
         await db.execute(
             """
             UPDATE staged_operations
-            SET smtp_envelope = ?, body_scrubbed_at = ?
+            SET smtp_envelope = ?, append_message = NULL, body_scrubbed_at = ?
             WHERE id = ?
             """,
             (scrubbed_envelope, now, op_id),
