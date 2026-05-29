@@ -22,41 +22,10 @@ import httpx
 import pytest
 
 from api.routes import auth as auth_routes
-from api.auth import get_auth_db_path
-from api.main import app
-from api.routes.operations import get_db_path
 from gateway.state_db import get_db
 from gateway.security_controls import AuthAbuseProtector
-from gateway.state_db import init_db
 
-
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
-
-
-@pytest.fixture()
-async def db_path(tmp_path: Path) -> Path:
-    """Initialise an isolated test DB and return its path."""
-    path = tmp_path / "test_auth.db"
-    await init_db(path)
-    return path
-
-
-@pytest.fixture()
-async def client(db_path: Path) -> httpx.AsyncClient:
-    """Return an AsyncClient wired to the app with the test DB injected.
-
-    Both get_db_path (used by operation/audit/auth routes) and
-    get_auth_db_path (used by get_current_user) are overridden so all
-    DB access hits the same isolated test DB.
-    """
-    app.dependency_overrides[get_db_path] = lambda: db_path
-    app.dependency_overrides[get_auth_db_path] = lambda: db_path
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
-        yield c
-    app.dependency_overrides.clear()
+# db_path and client fixtures are provided by tests/api/conftest.py.
 
 
 # ---------------------------------------------------------------------------

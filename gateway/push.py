@@ -66,15 +66,18 @@ def get_vapid_public_key() -> str:
         return _vapid_public_key_b64
     _ensure_vapid_keys()
     try:
+        import base64
+
+        from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
         from py_vapid import Vapid
+
         v = Vapid.from_file(_VAPID_PRIVATE_PEM)
         # applicationServerKey format expected by browser: base64url-encoded raw public key
-        _vapid_public_key_b64 = v.public_key.public_bytes(
-            encoding=__import__("cryptography.hazmat.primitives.serialization", fromlist=["Encoding"]).Encoding.X962,
-            format=__import__("cryptography.hazmat.primitives.serialization", fromlist=["PublicFormat"]).PublicFormat.UncompressedPoint,
+        raw_point = v.public_key.public_bytes(
+            encoding=Encoding.X962,
+            format=PublicFormat.UncompressedPoint,
         )
-        import base64
-        _vapid_public_key_b64 = base64.urlsafe_b64encode(_vapid_public_key_b64).rstrip(b"=").decode()
+        _vapid_public_key_b64 = base64.urlsafe_b64encode(raw_point).rstrip(b"=").decode()
         return _vapid_public_key_b64
     except Exception as exc:
         logger.error("[push] Failed to load VAPID public key: %s", exc)

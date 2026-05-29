@@ -41,7 +41,7 @@ import aiosmtplib
 from gateway.agent_auth import get_agent_credential
 from gateway.audit import record_audit_event
 from gateway.staging import get_operation, update_operation_status
-from gateway.state_db import get_db
+from gateway.state_db import decode_json_list, get_db
 
 logger = logging.getLogger(__name__)
 
@@ -59,19 +59,6 @@ class ExecutionError(Exception):
 # ---------------------------------------------------------------------------
 # Shared helpers — used by both forward execution and undo (gateway.undo)
 # ---------------------------------------------------------------------------
-
-
-def decode_json_list(value: object) -> list:
-    """Return a list from a staged_operations JSON column.
-
-    Columns like message_ids / flags_add / flags_remove are stored as a JSON
-    string but may already be a Python list (when passed in-process). Returns
-    [] for None or an empty/blank string. Centralised so the same coercion is
-    used everywhere.
-    """
-    if isinstance(value, str):
-        return json.loads(value) if value.strip() else []
-    return value or []
 
 
 @dataclass
@@ -477,8 +464,14 @@ async def _execute_imap_upstream(row: dict, db_path: Path) -> None:
                 raise RuntimeError(f"IMAP UID COPY failed: {data}")
 
         elif op_type == "create":
-            # folder_to holds the new folder name for CREATE
-            folder_name = folder_to or imap_command.split()[-1] if imap_command else ""
+            # folder_to holds the new folder name for CREATE; fall back to the
+            # last token of the raw command if folder_to wasn't recorded.
+            if folder_to:
+                folder_name = folder_to
+            elif imap_command:
+                folder_name = imap_command.split()[-1]
+            else:
+                folder_name = ""
             if not folder_name:
                 raise RuntimeError(f"CREATE op {row['id']} missing folder name")
             status, data = await client.create(imap_quoted(folder_name))

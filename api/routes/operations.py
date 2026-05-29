@@ -70,7 +70,7 @@ from api.models import (
 from gateway.audit import record_audit_event
 from gateway.execution import ExecutionError, execute_operation
 from gateway.staging import get_operation, list_operations, update_operation_status
-from gateway.state_db import DB_PATH, insert_pending_reverts, restore_from_snapshot
+from gateway.state_db import DB_PATH, decode_json_list, insert_pending_reverts, restore_from_snapshot
 from gateway.undo import UndoError, undo_operation
 
 logger = logging.getLogger(__name__)
@@ -140,7 +140,7 @@ async def _fetch_message_previews(
     if not raw_ids:
         return []
     try:
-        uid_list = json.loads(raw_ids) if isinstance(raw_ids, str) else raw_ids
+        uid_list = decode_json_list(raw_ids)
     except Exception:
         return []
     if not uid_list:

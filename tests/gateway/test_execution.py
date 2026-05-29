@@ -14,13 +14,9 @@ from unittest.mock import patch
 import pytest
 
 from gateway.credentials import encrypt_credential
-from gateway.execution import (
-    _execute_imap_upstream,
-    decode_json_list,
-    resolve_imap_credentials,
-)
+from gateway.execution import _execute_imap_upstream, resolve_imap_credentials
 from gateway.staging import create_operation, get_operation
-from gateway.state_db import get_db, init_db
+from gateway.state_db import decode_json_list, get_db, init_db
 
 
 @pytest.fixture()
