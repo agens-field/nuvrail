@@ -7,7 +7,7 @@ import re
 from pathlib import Path
 
 import pytest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from gateway.staging import (
     create_operation,
@@ -219,8 +219,14 @@ async def test_create_operation_without_snapshot_stores_null(db_path: Path) -> N
     assert row["snapshot"] is None
 
 
-async def test_create_operation_auto_approved_by_rule(db_path: Path) -> None:
-    """Matching auto-approval rule updates op status to approved on stage."""
+async def test_create_operation_auto_approved_executes_upstream(db_path: Path) -> None:
+    """A matching approve-rule must EXECUTE the operation upstream, not just mark it.
+
+    Regression test: auto-approved operations used to be set to status
+    'approved' and then never executed. They must now run through the same
+    executor a human approval uses (gateway.execution.execute_operation),
+    attributed to actor 'auto_rule'.
+    """
     agent_id = await _seed_agent(db_path, user_id=1)
     async with get_db(db_path) as db:
         await db.execute(
@@ -232,34 +238,85 @@ async def test_create_operation_auto_approved_by_rule(db_path: Path) -> None:
         )
         await db.commit()
 
-    op_id = await create_operation(
-        op_type="mark_read",
-        protocol="imap",
-        description="Mark as read",
-        agent_id=agent_id,
-        smtp_envelope={"from": "digest@substack.com"},
-        db_path=db_path,
-    )
+    async def _fake_execute(op_id, row, db_path, *, actor="human"):
+        # Mimic the real executor's success side effect without touching upstream.
+        await update_operation_status(op_id, "executed", decided_by=actor, db_path=db_path)
+        return {"executed_at": 1234567890}
+
+    with patch(
+        "gateway.execution.execute_operation",
+        new=AsyncMock(side_effect=_fake_execute),
+    ) as mock_exec:
+        op_id = await create_operation(
+            op_type="mark_read",
+            protocol="imap",
+            description="Mark as read",
+            agent_id=agent_id,
+            smtp_envelope={"from": "digest@substack.com"},
+            db_path=db_path,
+        )
+
+    # The executor must have been invoked exactly once, as the auto_rule actor.
+    mock_exec.assert_awaited_once()
+    _, kwargs = mock_exec.call_args
+    assert kwargs.get("actor") == "auto_rule"
+    assert mock_exec.call_args.args[0] == op_id
+
+    # And the operation must reach the executed terminal state (not 'approved').
     row = await get_operation(op_id, db_path=db_path)
     assert row is not None
-    assert row["status"] == "approved"
-    assert row["decided_by"] == "auto_rule"
+    assert row["status"] == "executed"
 
+    # Audit trail: staged, then the auto_rule 'approved' decision (carries the
+    # rule id for hit counting and op_type).
     async with get_db(db_path) as db:
         async with db.execute(
             "SELECT event, actor, op_type, detail FROM audit_log WHERE operation_id = ? ORDER BY id ASC",
             (op_id,),
         ) as cur:
             logs = await cur.fetchall()
-    assert len(logs) == 2
     assert logs[0]["event"] == "staged"
     assert logs[1]["event"] == "approved"
     assert logs[1]["actor"] == "auto_rule"
     assert "Substack mark-read" in (logs[1]["detail"] or "")
-    # op_type must be populated in the auto-rule audit row (was NULL before fix)
     assert logs[1]["op_type"] == "mark_read", (
         f"auto_rule audit row must carry op_type; got: {logs[1]['op_type']!r}"
     )
+
+
+async def test_create_operation_auto_approve_execution_failure_is_non_fatal(db_path: Path) -> None:
+    """If upstream execution of an auto-approved op fails, staging still succeeds.
+
+    The executor marks the op 'failed' itself; create_operation must not raise.
+    """
+    from gateway.execution import ExecutionError
+
+    agent_id = await _seed_agent(db_path, user_id=1)
+    async with get_db(db_path) as db:
+        await db.execute(
+            """
+            INSERT INTO auto_approval_rules
+                (user_id, enabled, priority, op_type, sender_pattern, folder_from, action, description, created_at)
+            VALUES (1, 1, 10, 'mark_read', '*@substack.com', NULL, 'approve', 'Substack mark-read', 0)
+            """
+        )
+        await db.commit()
+
+    with patch(
+        "gateway.execution.execute_operation",
+        new=AsyncMock(side_effect=ExecutionError("upstream boom")),
+    ):
+        # Must not raise despite the executor failing.
+        op_id = await create_operation(
+            op_type="mark_read",
+            protocol="imap",
+            description="Mark as read",
+            agent_id=agent_id,
+            smtp_envelope={"from": "digest@substack.com"},
+            db_path=db_path,
+        )
+
+    assert OP_ID_PATTERN.match(op_id)
 
 
 async def test_create_operation_auto_rejected_by_rule_restores_snapshot(db_path: Path) -> None:
@@ -338,7 +395,9 @@ async def test_create_operation_skips_push_for_auto_approved(db_path: Path) -> N
         )
         await db.commit()
 
-    with patch("gateway.push.notify_staged") as notify_mock, patch("asyncio.create_task") as task_mock:
+    with patch("gateway.push.notify_staged") as notify_mock, \
+         patch("asyncio.create_task") as task_mock, \
+         patch("gateway.execution.execute_operation", new=AsyncMock(return_value={"executed_at": 1})):
         await create_operation(
             op_type="mark_read",
             protocol="imap",
