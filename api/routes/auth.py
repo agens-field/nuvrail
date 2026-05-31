@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import imaplib
+import logging
 import os
 import secrets
 import socket
@@ -36,7 +37,7 @@ from api.auth import (
     hash_token_for_storage,
     verify_password,
 )
-from gateway.credentials import encrypt_credential
+from gateway.credentials import delete_credential, store_credential
 from gateway.security_controls import build_auth_abuse_protector
 from api.models import (
     AgentCreateRequest,
@@ -56,6 +57,8 @@ from api.models import (
 )
 from api.routes.operations import get_db_path
 from gateway.state_db import get_db
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 LOGIN_ABUSE_PROTECTOR = build_auth_abuse_protector("api_login")
@@ -364,39 +367,66 @@ async def create_agent(
     hashed = hash_agent_token(agent_token_plain)
     label = body.label or "default"
 
-    async with get_db(db_path) as db:
-        cur = await db.execute(
-            """
-            INSERT INTO agent_credentials
-                (user_id, label, agent_username, hashed_token,
-                 upstream_host, upstream_smtp_host,
-                 upstream_imap_port, upstream_smtp_port,
-                 upstream_user, upstream_password,
-                 oauth2_provider, oauth2_client_id,
-                 oauth2_client_secret, oauth2_refresh_token,
-                 created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                current_user["id"],
-                label,
-                agent_username,
-                hashed,
-                body.upstream_host,
-                body.upstream_smtp_host,  # NULL if not provided; proxy falls back to upstream_host
-                body.upstream_imap_port,
-                body.upstream_smtp_port,
-                body.upstream_user,
-                encrypt_credential(body.upstream_password) if body.upstream_password else None,
-                body.oauth2_provider,
-                body.oauth2_client_id,
-                encrypt_credential(body.oauth2_client_secret) if body.oauth2_client_secret else None,
-                encrypt_credential(body.oauth2_refresh_token) if body.oauth2_refresh_token else None,
-                now,
-            ),
-        )
-        await db.commit()
-        cred_id = cur.lastrowid
+    # Persist secrets to the configured backend BEFORE opening the DB, so we
+    # never hold the SQLite connection open across remote secret-manager calls.
+    uid = current_user["id"]
+    stored_password = (
+        await store_credential(body.upstream_password, field="upstream_password", owner_user_id=uid)
+        if body.upstream_password else None
+    )
+    stored_client_secret = (
+        await store_credential(body.oauth2_client_secret, field="oauth2_client_secret", owner_user_id=uid)
+        if body.oauth2_client_secret else None
+    )
+    stored_refresh_token = (
+        await store_credential(body.oauth2_refresh_token, field="oauth2_refresh_token", owner_user_id=uid)
+        if body.oauth2_refresh_token else None
+    )
+    created_refs = [r for r in (stored_password, stored_client_secret, stored_refresh_token) if r]
+
+    try:
+        async with get_db(db_path) as db:
+            cur = await db.execute(
+                """
+                INSERT INTO agent_credentials
+                    (user_id, label, agent_username, hashed_token,
+                     upstream_host, upstream_smtp_host,
+                     upstream_imap_port, upstream_smtp_port,
+                     upstream_user, upstream_password,
+                     oauth2_provider, oauth2_client_id,
+                     oauth2_client_secret, oauth2_refresh_token,
+                     created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    uid,
+                    label,
+                    agent_username,
+                    hashed,
+                    body.upstream_host,
+                    body.upstream_smtp_host,  # NULL if not provided; proxy falls back to upstream_host
+                    body.upstream_imap_port,
+                    body.upstream_smtp_port,
+                    body.upstream_user,
+                    stored_password,
+                    body.oauth2_provider,
+                    body.oauth2_client_id,
+                    stored_client_secret,
+                    stored_refresh_token,
+                    now,
+                ),
+            )
+            await db.commit()
+            cred_id = cur.lastrowid
+    except Exception:
+        # DB write failed after secrets were created externally — clean up the
+        # orphans so they don't linger in the secret manager.
+        for ref in created_refs:
+            try:
+                await delete_credential(ref)
+            except Exception:  # noqa: BLE001
+                logger.warning("[agents] Failed to clean up orphaned secret after insert error")
+        raise
 
     return AgentCreateResponse(
         id=cred_id,  # type: ignore[arg-type]

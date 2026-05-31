@@ -67,7 +67,7 @@ from typing import Optional
 from dotenv import load_dotenv
 
 from gateway.agent_auth import decode_sasl_plain, verify_agent_login
-from gateway.credentials import decrypt_credential
+from gateway.credentials import fetch_credential
 from gateway.security_controls import build_auth_abuse_protector
 from gateway.staging import create_operation
 from gateway.state_db import get_db
@@ -540,7 +540,7 @@ async def handle_smtp_client(
                         break
                 else:
                     import base64 as _b64u  # noqa: PLC0415
-                    up_pass = decrypt_credential(cred["upstream_password"])
+                    up_pass = await fetch_credential(cred["upstream_password"])
                     rewritten_b64 = _b64u.b64encode(
                         f"\x00{up_user}\x00{up_pass}".encode()
                     ).decode()

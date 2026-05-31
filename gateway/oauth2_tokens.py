@@ -1,8 +1,13 @@
 """
 OAuth2 token manager for upstream XOAUTH2 authentication.
 
-Handles: refresh token → access token exchange, in-DB caching,
+Handles: refresh token → access token exchange, in-memory caching,
 expiry-aware lookup (refresh if expires_at - now < 120s).
+
+Access tokens are cached in a process-local dict (never persisted) so a
+secret-manager backend isn't churned with a new secret version every hour.
+The long-lived refresh token / client secret are resolved on demand via
+gateway.credentials.fetch_credential (which may hit AWS/GCP secret managers).
 
 Supported providers:
   - google: token endpoint https://oauth2.googleapis.com/token
@@ -24,14 +29,14 @@ Data flow:
        │     oauth2_access_token_expires_at)
        │
        ├─ if cached access token is valid (expires_at - now > 120s)
-       │    └─ build XOAUTH2 string from cache → return
+       │    └─ build XOAUTH2 string from in-memory cache → return
        │
        └─ else: call _refresh_google_token()
                  │
                  ├─ POST https://oauth2.googleapis.com/token
                  │    grant_type=refresh_token
                  │
-                 └─ store (access_token_enc, expires_at) in DB
+                 └─ store (access_token, expires_at) in process-local cache
                       └─ build XOAUTH2 string → return
 """
 from __future__ import annotations
@@ -42,7 +47,7 @@ import json
 import time
 from pathlib import Path
 
-from gateway.credentials import decrypt_credential, encrypt_credential
+from gateway.credentials import fetch_credential
 from gateway.state_db import get_db
 
 _GOOGLE_TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token"
@@ -50,9 +55,36 @@ _GOOGLE_TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token"
 # Refresh the cached token if it expires within this many seconds.
 _EXPIRY_BUFFER_SECONDS = 120
 
+# Process-local cache of short-lived access tokens, keyed by agent id.
+#   agent_id -> (email, access_token, expires_at_epoch_seconds)
+# Access tokens are derived from the refresh token and live ~1h, so we keep
+# them in memory only — never persisted — to avoid churning the secret store
+# (or the DB) on every refresh. Worst case, each process refreshes once per
+# hour per active agent.
+_access_token_cache: dict[str, tuple[str, str, float]] = {}
+
+# Per-agent locks so concurrent connections for the same agent trigger at most
+# one refresh (single-flight) instead of a thundering herd.
+_refresh_locks: dict[str, asyncio.Lock] = {}
+_locks_guard = asyncio.Lock()
+
 
 class OAuth2Error(Exception):
     """Raised on OAuth2 token exchange failures."""
+
+
+async def _refresh_lock_for(agent_id: str) -> asyncio.Lock:
+    async with _locks_guard:
+        lock = _refresh_locks.get(agent_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            _refresh_locks[agent_id] = lock
+        return lock
+
+
+def clear_access_token_cache() -> None:
+    """Drop all cached access tokens. For tests and forced re-auth."""
+    _access_token_cache.clear()
 
 
 async def get_access_token(agent_id: str, db_path: Path) -> tuple[str, str]:
@@ -69,76 +101,70 @@ async def get_access_token(agent_id: str, db_path: Path) -> tuple[str, str]:
     Callers with library support for XOAUTH2 (e.g. aiosmtplib.auth_xoauth2)
     should call this directly to avoid double-encoding.
     """
-    async with get_db(db_path) as db:
-        async with db.execute(
-            """
-            SELECT upstream_user,
-                   oauth2_provider,
-                   oauth2_refresh_token,
-                   oauth2_client_id,
-                   oauth2_client_secret,
-                   oauth2_access_token,
-                   oauth2_access_token_expires_at
-            FROM agent_credentials
-            WHERE id = ?
-            """,
-            (agent_id,),
-        ) as cur:
-            row = await cur.fetchone()
+    # Fast path: serve a still-fresh access token from the in-memory cache.
+    cached = _access_token_cache.get(agent_id)
+    if cached is not None and (cached[2] - time.time()) > _EXPIRY_BUFFER_SECONDS:
+        return cached[0], cached[1]
 
-    if row is None:
-        raise OAuth2Error(f"Agent credential {agent_id!r} not found")
+    # Slow path: refresh, guarded per-agent so concurrent callers refresh once.
+    lock = await _refresh_lock_for(agent_id)
+    async with lock:
+        # Re-check under the lock — another caller may have just refreshed.
+        cached = _access_token_cache.get(agent_id)
+        if cached is not None and (cached[2] - time.time()) > _EXPIRY_BUFFER_SECONDS:
+            return cached[0], cached[1]
 
-    row = dict(row)
-    provider = row.get("oauth2_provider")
-    if not provider:
-        raise OAuth2Error(f"Agent {agent_id!r} has no oauth2_provider configured")
+        async with get_db(db_path) as db:
+            async with db.execute(
+                """
+                SELECT upstream_user,
+                       oauth2_provider,
+                       oauth2_refresh_token,
+                       oauth2_client_id,
+                       oauth2_client_secret
+                FROM agent_credentials
+                WHERE id = ?
+                """,
+                (agent_id,),
+            ) as cur:
+                row = await cur.fetchone()
 
-    email = row["upstream_user"]
-    cached_token_enc = row.get("oauth2_access_token")
-    expires_at = row.get("oauth2_access_token_expires_at") or 0
+        if row is None:
+            raise OAuth2Error(f"Agent credential {agent_id!r} not found")
 
-    # Use cached token if still fresh enough.
-    if cached_token_enc and (expires_at - time.time()) > _EXPIRY_BUFFER_SECONDS:
-        access_token = decrypt_credential(cached_token_enc)
+        row = dict(row)
+        provider = row.get("oauth2_provider")
+        if not provider:
+            raise OAuth2Error(f"Agent {agent_id!r} has no oauth2_provider configured")
+
+        email = row["upstream_user"]
+        refresh_token_enc = row.get("oauth2_refresh_token")
+        client_id = row.get("oauth2_client_id")
+        client_secret_enc = row.get("oauth2_client_secret")
+
+        if not refresh_token_enc:
+            raise OAuth2Error(f"Agent {agent_id!r}: oauth2_refresh_token not configured")
+        if not client_id:
+            raise OAuth2Error(f"Agent {agent_id!r}: oauth2_client_id not configured")
+        if not client_secret_enc:
+            raise OAuth2Error(f"Agent {agent_id!r}: oauth2_client_secret not configured")
+
+        # Resolve the long-lived secrets from the configured backend (Secrets
+        # Manager / GCP Secret Manager / local AES). These resolutions are
+        # themselves cached by the secret store's short-TTL layer.
+        refresh_token = await fetch_credential(refresh_token_enc)
+        client_secret = await fetch_credential(client_secret_enc)
+
+        if provider == "google":
+            access_token, new_expires_at = await _refresh_google_token(
+                client_id, client_secret, refresh_token
+            )
+        else:
+            raise OAuth2Error(f"Unsupported oauth2_provider: {provider!r}")
+
+        # Cache the new access token in memory only — never persisted.
+        _access_token_cache[agent_id] = (email, access_token, float(new_expires_at))
         return email, access_token
-
-    # Need to refresh.
-    refresh_token_enc = row.get("oauth2_refresh_token")
-    client_id = row.get("oauth2_client_id")
-    client_secret_enc = row.get("oauth2_client_secret")
-
-    if not refresh_token_enc:
-        raise OAuth2Error(f"Agent {agent_id!r}: oauth2_refresh_token not configured")
-    if not client_id:
-        raise OAuth2Error(f"Agent {agent_id!r}: oauth2_client_id not configured")
-    if not client_secret_enc:
-        raise OAuth2Error(f"Agent {agent_id!r}: oauth2_client_secret not configured")
-
-    refresh_token = decrypt_credential(refresh_token_enc)
-    client_secret = decrypt_credential(client_secret_enc)
-
-    if provider == "google":
-        access_token, new_expires_at = await _refresh_google_token(
-            client_id, client_secret, refresh_token
-        )
-    else:
-        raise OAuth2Error(f"Unsupported oauth2_provider: {provider!r}")
-
-    # Cache the new access token (encrypted).
-    async with get_db(db_path) as db:
-        await db.execute(
-            """
-            UPDATE agent_credentials
-               SET oauth2_access_token = ?,
-                   oauth2_access_token_expires_at = ?
-             WHERE id = ?
-            """,
-            (encrypt_credential(access_token), new_expires_at, agent_id),
-        )
-        await db.commit()
-
-    return email, access_token
 
 
 async def get_xoauth2_string(agent_id: str, db_path: Path) -> str:

@@ -63,7 +63,7 @@ from gateway.provider_profiles import (
     detect_provider,
     should_suppress_append,
 )
-from gateway.credentials import decrypt_credential
+from gateway.credentials import fetch_credential
 from gateway.security_controls import build_auth_abuse_protector
 from gateway.batching import get_or_create_batch
 from gateway.staging import create_operation
@@ -1259,7 +1259,7 @@ async def handle_client(
             login_line_bytes = None  # determined after upstream connection (needs DB path)
             _use_xoauth2 = True
         else:
-            upstream_password = decrypt_credential(credential["upstream_password"])
+            upstream_password = await fetch_credential(credential["upstream_password"])
             login_line_bytes = (
                 f"{login_tag} LOGIN {upstream_user} {upstream_password}\r\n".encode()
             )

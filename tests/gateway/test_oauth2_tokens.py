@@ -21,8 +21,10 @@ import pytest
 from gateway.credentials import encrypt_credential
 from gateway.oauth2_tokens import (
     OAuth2Error,
+    _access_token_cache,
     _build_xoauth2_string,
     _refresh_google_token,
+    clear_access_token_cache,
     get_xoauth2_string,
 )
 from gateway.state_db import get_db, init_db
@@ -31,6 +33,14 @@ from gateway.state_db import get_db, init_db
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _clear_token_cache():
+    """The access-token cache is process-global; reset it around each test."""
+    clear_access_token_cache()
+    yield
+    clear_access_token_cache()
 
 
 @pytest.fixture()
@@ -146,13 +156,20 @@ async def test_get_xoauth2_string_no_refresh_token(db_path: Path) -> None:
 
 
 async def test_get_xoauth2_string_cache_hit(db_path: Path) -> None:
-    """Returns cached token without calling refresh when not expired."""
-    future_expiry = int(time.time()) + 3600  # 1 hour from now
+    """Returns the in-memory cached token without calling refresh when fresh."""
+    future_expiry = float(int(time.time()) + 3600)  # 1 hour from now
     agent_id = await _insert_agent(
         db_path,
         oauth2_provider="google",
-        oauth2_access_token_plain="cached_access_token",
-        oauth2_access_token_expires_at=future_expiry,
+        oauth2_refresh_token_plain="refresh_tok",
+        oauth2_client_id="client_id",
+        oauth2_client_secret_plain="secret",
+    )
+    # Seed the process-local cache as if a previous refresh had populated it.
+    _access_token_cache[str(agent_id)] = (
+        "user@example.com",
+        "cached_access_token",
+        future_expiry,
     )
 
     with patch("gateway.oauth2_tokens._refresh_google_token") as mock_refresh:
@@ -169,16 +186,13 @@ async def test_get_xoauth2_string_cache_hit(db_path: Path) -> None:
 
 
 async def test_get_xoauth2_string_cache_miss_refreshes(db_path: Path) -> None:
-    """Calls refresh and stores new token when cache is expired."""
-    past_expiry = int(time.time()) - 10  # already expired
+    """Calls refresh and caches the new token in memory when none is cached."""
     agent_id = await _insert_agent(
         db_path,
         oauth2_provider="google",
         oauth2_refresh_token_plain="refresh_tok",
         oauth2_client_id="client_id",
         oauth2_client_secret_plain="secret",
-        oauth2_access_token_plain="old_token",
-        oauth2_access_token_expires_at=past_expiry,
     )
     new_expires = int(time.time()) + 3600
 
@@ -192,15 +206,33 @@ async def test_get_xoauth2_string_cache_miss_refreshes(db_path: Path) -> None:
     decoded = base64.b64decode(result).decode("ascii")
     assert "Bearer new_access_token" in decoded
 
-    # Verify DB was updated with new token
-    async with get_db(db_path) as db:
-        async with db.execute(
-            "SELECT oauth2_access_token_expires_at FROM agent_credentials WHERE id = ?",
-            (agent_id,),
-        ) as cur:
-            row = await cur.fetchone()
-    assert row is not None
-    assert row["oauth2_access_token_expires_at"] == new_expires
+    # The new token is cached in memory (not persisted to the DB).
+    cached = _access_token_cache.get(str(agent_id))
+    assert cached is not None
+    assert cached[1] == "new_access_token"
+    assert cached[2] == float(new_expires)
+
+
+async def test_get_xoauth2_string_second_call_uses_cache(db_path: Path) -> None:
+    """A refresh populates the cache; the next call must not refresh again."""
+    agent_id = await _insert_agent(
+        db_path,
+        oauth2_provider="google",
+        oauth2_refresh_token_plain="refresh_tok",
+        oauth2_client_id="client_id",
+        oauth2_client_secret_plain="secret",
+    )
+    new_expires = int(time.time()) + 3600
+
+    with patch(
+        "gateway.oauth2_tokens._refresh_google_token",
+        new_callable=AsyncMock,
+        return_value=("new_access_token", new_expires),
+    ) as mock_refresh:
+        await get_xoauth2_string(str(agent_id), db_path)
+        await get_xoauth2_string(str(agent_id), db_path)
+
+    mock_refresh.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------

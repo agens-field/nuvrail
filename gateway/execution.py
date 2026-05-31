@@ -82,7 +82,7 @@ async def resolve_imap_credentials(row: dict, db_path: Path) -> ImapCredentials:
 
     Raises RuntimeError if neither an agent nor a fallback host is available.
     """
-    from gateway.credentials import decrypt_credential  # noqa: PLC0415
+    from gateway.credentials import fetch_credential  # noqa: PLC0415
 
     cred = await get_agent_credential(row.get("agent_id"), db_path)
     if cred:
@@ -91,7 +91,7 @@ async def resolve_imap_credentials(row: dict, db_path: Path) -> ImapCredentials:
             host=cred["upstream_host"],
             port=int(cred["upstream_imap_port"]),
             user=cred["upstream_user"],
-            password=decrypt_credential(raw_pass) if raw_pass else None,
+            password=await fetch_credential(raw_pass) if raw_pass else None,
             oauth2_provider=cred.get("oauth2_provider"),
             cred=cred,
         )
@@ -289,14 +289,14 @@ async def _save_to_sent_folder(
                 )
                 return
         else:
-            from gateway.credentials import decrypt_credential as _dc  # noqa: PLC0415
+            from gateway.credentials import fetch_credential as _fc  # noqa: PLC0415
             raw_pass = cred.get("upstream_password")
             if not raw_pass:
                 logger.warning(
                     "[approve] Sent-folder APPEND skipped op=%s — no upstream_password", op_id
                 )
                 return
-            status, data = await client.login(imap_user, _dc(raw_pass))
+            status, data = await client.login(imap_user, await _fc(raw_pass))
             if status != "OK":
                 logger.warning(
                     "[approve] Sent-folder APPEND skipped op=%s — LOGIN failed: %s", op_id, data
@@ -577,7 +577,7 @@ async def execute_operation(
         # before this field was introduced.
         body_text = envelope.get("body") or envelope.get("body_preview", "")
 
-        from gateway.credentials import decrypt_credential  # noqa: PLC0415
+        from gateway.credentials import fetch_credential  # noqa: PLC0415
         agent_id = row.get("agent_id")
         cred = await get_agent_credential(agent_id, db_path)
         if cred:
@@ -593,7 +593,7 @@ async def execute_operation(
                         f"Agent for operation {op_id} has no upstream_password. "
                         "Re-add the agent credentials."
                     )
-                smtp_pass = decrypt_credential(raw_pass)
+                smtp_pass = await fetch_credential(raw_pass)
         else:
             is_oauth2 = False
             smtp_host = os.environ.get("NUVRAIL_TEST_SMTP_HOST", "")
