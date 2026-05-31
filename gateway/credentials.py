@@ -37,7 +37,15 @@ import json
 import logging
 import os
 import secrets
+import uuid
 from pathlib import Path
+
+from gateway.secret_store import (
+    LOCAL_BACKEND,
+    SecretContext,
+    configured_backend,
+    get_secret_store,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -136,12 +144,30 @@ def is_encrypted(value: str) -> bool:
         return False
 
 
-def decrypt_credential(stored: str) -> str:
-    """Decrypt a stored credential value.
+def _aes_decrypt_envelope(envelope: dict) -> str:
+    """Decrypt a parsed v1 AES-256-GCM envelope dict to plaintext."""
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-    Accepts both encrypted envelopes and legacy plaintext values.
-    Plaintext is returned as-is with a deprecation warning — re-encrypt
-    by rewriting the credential via POST /agents or a migration script.
+    try:
+        nonce = bytes.fromhex(envelope["iv"])
+        ciphertext_and_tag = bytes.fromhex(envelope["ct"])
+        key = get_master_key()
+        aesgcm = AESGCM(key)
+        plaintext = aesgcm.decrypt(nonce, ciphertext_and_tag, None)
+        return plaintext.decode("utf-8")
+    except Exception as exc:
+        raise ValueError(f"Failed to decrypt credential: {exc}") from exc
+
+
+def decrypt_credential(stored: str) -> str:
+    """Decrypt a stored *local* credential value (AES-256-GCM or plaintext).
+
+    Accepts both v1 encrypted envelopes and legacy plaintext values.
+    Plaintext is returned as-is with a deprecation warning.
+
+    NOTE: this handles only the local AES path. Code that may encounter
+    external secret-store references (v2 envelopes) must use the async
+    fetch_credential() instead.
     """
     if not is_encrypted(stored):
         # Legacy plaintext — return as-is, log a deprecation notice
@@ -151,15 +177,115 @@ def decrypt_credential(stored: str) -> str:
         )
         return stored
 
-    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    return _aes_decrypt_envelope(json.loads(stored))
 
+
+# ---------------------------------------------------------------------------
+# Backend-agnostic credential API (Pattern B)
+#
+# A stored credential is one of:
+#   - legacy plaintext                       (pre-encryption rows)
+#   - v1 AES-256-GCM envelope                {"v":1,"iv":…,"ct":…}
+#   - v2 external secret reference           {"v":2,"backend":…,"ref":…}
+#
+# WRITES go to whatever NUVRAIL_SECRET_BACKEND selects (store_credential).
+# READS dispatch on the stored value's own version/backend (fetch_credential),
+# so existing v1/plaintext rows keep working regardless of the configured
+# backend — which is what makes an online migration safe.
+# ---------------------------------------------------------------------------
+def _parse_envelope(stored: str) -> dict | None:
+    """Return the parsed envelope dict, or None if `stored` is plaintext."""
+    if not isinstance(stored, str) or not stored.startswith('{"v":'):
+        return None
     try:
-        envelope = json.loads(stored)
-        nonce = bytes.fromhex(envelope["iv"])
-        ciphertext_and_tag = bytes.fromhex(envelope["ct"])
-        key = get_master_key()
-        aesgcm = AESGCM(key)
-        plaintext = aesgcm.decrypt(nonce, ciphertext_and_tag, None)
-        return plaintext.decode("utf-8")
-    except Exception as exc:
-        raise ValueError(f"Failed to decrypt credential: {exc}") from exc
+        obj = json.loads(stored)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(obj, dict) or "v" not in obj:
+        return None
+    return obj
+
+
+def is_reference(stored: str) -> bool:
+    """True if `stored` is a v2 external secret-store reference envelope."""
+    env = _parse_envelope(stored)
+    return bool(env and env.get("v") == 2 and env.get("backend") and "ref" in env)
+
+
+async def store_credential(
+    plaintext: str,
+    *,
+    field: str,
+    owner_user_id: int | None = None,
+) -> str:
+    """Persist a secret to the configured backend and return what to store in the DB.
+
+    - local backend → returns a v1 AES-256-GCM envelope (unchanged behaviour).
+    - aws-sm / gcp-sm → writes the secret to the manager and returns a v2
+      reference envelope; the plaintext never touches the DB.
+
+    `field` and `owner_user_id` are used only for naming/tagging/auditing in
+    the external store.
+    """
+    backend = configured_backend()
+    if backend == LOCAL_BACKEND:
+        return encrypt_credential(plaintext)
+
+    store = get_secret_store(backend)
+    if store is None:  # pragma: no cover - defensive
+        raise ValueError(f"No secret store available for backend {backend!r}")
+    ctx = SecretContext(
+        field=field,
+        secret_id=uuid.uuid4().hex,
+        owner_user_id=owner_user_id,
+    )
+    ref = await store.put(plaintext, ctx=ctx)
+    return json.dumps({"v": 2, "backend": backend, "ref": ref}, separators=(",", ":"))
+
+
+async def fetch_credential(stored: str) -> str:
+    """Resolve a stored credential to plaintext, whatever its form.
+
+    Dispatches on the stored value itself (not the configured backend) so that
+    plaintext, v1 AES envelopes, and v2 external references all resolve
+    correctly during and after a migration.
+    """
+    env = _parse_envelope(stored)
+    if env is None:
+        logger.warning(
+            "[credentials] Resolving a plaintext credential — "
+            "this field should be migrated. See gateway/credentials.py."
+        )
+        return stored
+
+    version = env.get("v")
+    if version == 1:
+        return _aes_decrypt_envelope(env)
+    if version == 2:
+        backend = env.get("backend")
+        store = get_secret_store(backend)
+        if store is None:
+            raise ValueError(
+                f"Credential references backend {backend!r} but no store is "
+                "configured for it (is NUVRAIL_SECRET_BACKEND / its env set?)"
+            )
+        return await store.get(env["ref"])
+    raise ValueError(f"Unknown credential envelope version: {version!r}")
+
+
+async def delete_credential(stored: str | None) -> None:
+    """Best-effort delete of the external secret behind a stored credential.
+
+    No-op for plaintext and v1 AES envelopes (nothing external to delete) and
+    for None. Used to clean up orphaned secrets when a DB write fails, and by
+    purge/GC tooling. Soft-revoking an agent does NOT call this — secrets are
+    retained so the agent can be un-revoked.
+    """
+    if not stored:
+        return
+    env = _parse_envelope(stored)
+    if not env or env.get("v") != 2:
+        return
+    store = get_secret_store(env.get("backend"))
+    if store is not None:
+        await store.delete(env["ref"])

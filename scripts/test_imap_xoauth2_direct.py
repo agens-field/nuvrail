@@ -32,7 +32,7 @@ async def main() -> None:
     agent_username = sys.argv[1]
 
     from gateway.state_db import get_db
-    from gateway.credentials import decrypt_credential
+    from gateway.credentials import fetch_credential
     from gateway.oauth2_tokens import _refresh_google_token
 
     # Load credentials from DB.
@@ -49,8 +49,8 @@ async def main() -> None:
 
     email = row["upstream_user"]
     client_id = row["oauth2_client_id"]
-    client_secret = decrypt_credential(row["oauth2_client_secret"])
-    refresh_token = decrypt_credential(row["oauth2_refresh_token"])
+    client_secret = await fetch_credential(row["oauth2_client_secret"])
+    refresh_token = await fetch_credential(row["oauth2_refresh_token"])
 
     # Always get a fresh token for this test (bypass cache).
     print(f"\nFetching fresh access token for {email}...")

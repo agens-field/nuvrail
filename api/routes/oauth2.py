@@ -27,6 +27,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import logging
 import os
 import secrets
 import time
@@ -41,8 +42,10 @@ from fastapi.responses import JSONResponse, RedirectResponse
 
 from api.auth import get_current_user, hash_agent_token
 from api.routes.operations import get_db_path
-from gateway.credentials import encrypt_credential
+from gateway.credentials import delete_credential, store_credential
 from gateway.state_db import get_db
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -251,6 +254,7 @@ async def oauth2_google_callback(
         )
     client_id, client_secret = creds
 
+    created_refs: list[str] = []
     try:
         refresh_token, access_token, id_token = await _exchange_code(
             code, client_id, client_secret, _get_redirect_uri()
@@ -261,6 +265,16 @@ async def oauth2_google_callback(
         agent_username = "nuvrail_" + secrets.token_hex(8)
         agent_token_plain = secrets.token_urlsafe(32)
         hashed = hash_agent_token(agent_token_plain)
+
+        uid = pending["user_id"]
+        # Store secrets externally before touching the DB.
+        stored_client_secret = await store_credential(
+            client_secret, field="oauth2_client_secret", owner_user_id=uid
+        )
+        stored_refresh_token = await store_credential(
+            refresh_token, field="oauth2_refresh_token", owner_user_id=uid
+        )
+        created_refs = [stored_client_secret, stored_refresh_token]
 
         async with get_db(db_path) as db:
             await db.execute(
@@ -276,7 +290,7 @@ async def oauth2_google_callback(
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    pending["user_id"],
+                    uid,
                     pending["label"],
                     agent_username,
                     hashed,
@@ -288,8 +302,8 @@ async def oauth2_google_callback(
                     None,
                     "google",
                     client_id,
-                    encrypt_credential(client_secret),
-                    encrypt_credential(refresh_token),
+                    stored_client_secret,
+                    stored_refresh_token,
                     now,
                 ),
             )
@@ -304,6 +318,12 @@ async def oauth2_google_callback(
         }
 
     except Exception as exc:
+        # Clean up any secrets created before the failure to avoid orphans.
+        for ref in created_refs:
+            try:
+                await delete_credential(ref)
+            except Exception:  # noqa: BLE001
+                logger.warning("[oauth2] Failed to clean up orphaned secret after callback error")
         _results[state] = {"error": str(exc), "user_id": pending["user_id"]}
 
     return RedirectResponse(

@@ -37,7 +37,7 @@ async def main() -> None:
     agent_username = sys.argv[1]
 
     from gateway.state_db import get_db
-    from gateway.credentials import decrypt_credential
+    from gateway.credentials import fetch_credential
     from gateway.oauth2_tokens import _refresh_google_token
 
     # 1. Load the agent credentials row.
@@ -73,7 +73,7 @@ async def main() -> None:
     if row["oauth2_access_token"]:
         print("\n--- Checking cached access token via tokeninfo ---")
         try:
-            cached_access_token = decrypt_credential(row["oauth2_access_token"])
+            cached_access_token = await fetch_credential(row["oauth2_access_token"])
         except Exception as exc:
             print(f"ERROR: Failed to decrypt cached token: {exc}", file=sys.stderr)
             print("      NUVRAIL_MASTER_KEY mismatch or corrupt cached token — proxy is sending garbage to Gmail.")
@@ -107,8 +107,8 @@ async def main() -> None:
         sys.exit(1)
 
     try:
-        refresh_token = decrypt_credential(row["oauth2_refresh_token"])
-        client_secret = decrypt_credential(row["oauth2_client_secret"])
+        refresh_token = await fetch_credential(row["oauth2_refresh_token"])
+        client_secret = await fetch_credential(row["oauth2_client_secret"])
         client_id = row["oauth2_client_id"]
     except Exception as exc:
         print(f"ERROR: Failed to decrypt credentials: {exc}", file=sys.stderr)
