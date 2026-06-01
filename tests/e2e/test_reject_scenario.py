@@ -6,7 +6,7 @@ Tests:
   1. SMTP send rejected → message never arrives in INBOX
   2. IMAP write rejected → flag NOT applied to message
 
-These tests require live network access to blizzard.mxrouting.net.
+These tests require live network access to mail.example.com.
 Credentials come from .env via the e2e conftest.
 """
 from __future__ import annotations

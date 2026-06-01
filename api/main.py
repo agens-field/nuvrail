@@ -101,7 +101,7 @@ else:
     # Always set NUVRAIL_CORS_ORIGINS in production.
     logger.warning(
         "NUVRAIL_CORS_ORIGINS is not set — allowing all origins (*). "
-        "Set it to your deployed URL (e.g. https://test.nuvrail.com) in production."
+        "Set it to your deployed URL (e.g. https://nuvrail.example.com) in production."
     )
     _CORS_ORIGINS = ["*"]
 

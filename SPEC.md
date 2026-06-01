@@ -39,7 +39,7 @@ The result: the AI can propose email changes freely, but nothing reaches the rea
 | Environment | Base URL | Purpose |
 |---|---|---|
 | **Internal testing** | *(self-hosted)* | Development, QA, dogfooding |
-| **Production** | `mail.nuvrail.com` | Live customer traffic |
+| **Production** | `nuvrail.example.com` | Live customer traffic |
 
 **Ports:**
 - IMAP proxy: `993` (TLS) external; `10143` internal/dev
@@ -312,7 +312,7 @@ CREATE TABLE pending_reverts (
 
 ## 8. Approval REST API **[BUILT]**
 
-Base URL: `http://localhost:8080/api/v1` (dev) / `https://mail.nuvrail.com/api/v1` (prod)
+Base URL: `http://localhost:8080/api/v1` (dev) / `https://nuvrail.example.com/api/v1` (prod)
 
 All endpoints require `Authorization: Bearer <token>` except `/auth/register` and `/auth/login`.
 

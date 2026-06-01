@@ -179,7 +179,7 @@ docker compose up -d gateway
 docker compose logs -f gateway --tail 50
 
 # Quick API health check
-curl -s https://test.nuvrail.com/api/v1/health | python3 -m json.tool
+curl -s https://nuvrail.example.com/api/v1/health | python3 -m json.tool
 ```
 
 ### Step 7 — Post-restore audit entry

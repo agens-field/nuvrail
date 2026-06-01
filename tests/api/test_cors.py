@@ -54,18 +54,18 @@ def _make_app(origins: list[str]) -> FastAPI:
 
 
 def test_parse_cors_single_origin() -> None:
-    result = _parse_cors_origins("https://nuvrail.com")
-    assert result == ["https://nuvrail.com"]
+    result = _parse_cors_origins("https://example.com")
+    assert result == ["https://example.com"]
 
 
 def test_parse_cors_multiple_origins() -> None:
-    result = _parse_cors_origins("https://nuvrail.com,https://test.nuvrail.com")
-    assert result == ["https://nuvrail.com", "https://test.nuvrail.com"]
+    result = _parse_cors_origins("https://example.com,https://nuvrail.example.com")
+    assert result == ["https://example.com", "https://nuvrail.example.com"]
 
 
 def test_parse_cors_strips_whitespace() -> None:
-    result = _parse_cors_origins("https://nuvrail.com , https://test.nuvrail.com ")
-    assert result == ["https://nuvrail.com", "https://test.nuvrail.com"]
+    result = _parse_cors_origins("https://example.com , https://nuvrail.example.com ")
+    assert result == ["https://example.com", "https://nuvrail.example.com"]
 
 
 def test_parse_cors_empty_string_falls_back_to_wildcard() -> None:
@@ -77,15 +77,15 @@ def test_parse_cors_whitespace_only_falls_back_to_wildcard() -> None:
 
 
 def test_parse_cors_skips_empty_segments() -> None:
-    result = _parse_cors_origins("https://nuvrail.com,,https://test.nuvrail.com,")
-    assert result == ["https://nuvrail.com", "https://test.nuvrail.com"]
+    result = _parse_cors_origins("https://example.com,,https://nuvrail.example.com,")
+    assert result == ["https://example.com", "https://nuvrail.example.com"]
 
 
 # ---------------------------------------------------------------------------
 # CORS middleware behaviour tests
 # ---------------------------------------------------------------------------
 
-PROD_ORIGINS = ["https://nuvrail.com", "https://test.nuvrail.com"]
+PROD_ORIGINS = ["https://example.com", "https://nuvrail.example.com"]
 
 
 @pytest.mark.asyncio
@@ -94,9 +94,9 @@ async def test_allowed_origin_receives_acao_header() -> None:
     app = _make_app(PROD_ORIGINS)
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
-        resp = await client.get("/ping", headers={"Origin": "https://nuvrail.com"})
+        resp = await client.get("/ping", headers={"Origin": "https://example.com"})
     assert resp.status_code == 200
-    assert resp.headers.get("access-control-allow-origin") == "https://nuvrail.com"
+    assert resp.headers.get("access-control-allow-origin") == "https://example.com"
 
 
 @pytest.mark.asyncio
@@ -104,9 +104,9 @@ async def test_second_allowed_origin_receives_acao_header() -> None:
     app = _make_app(PROD_ORIGINS)
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
-        resp = await client.get("/ping", headers={"Origin": "https://test.nuvrail.com"})
+        resp = await client.get("/ping", headers={"Origin": "https://nuvrail.example.com"})
     assert resp.status_code == 200
-    assert resp.headers.get("access-control-allow-origin") == "https://test.nuvrail.com"
+    assert resp.headers.get("access-control-allow-origin") == "https://nuvrail.example.com"
 
 
 @pytest.mark.asyncio
@@ -140,12 +140,12 @@ async def test_preflight_allowed_origin() -> None:
         resp = await client.options(
             "/ping",
             headers={
-                "Origin": "https://nuvrail.com",
+                "Origin": "https://example.com",
                 "Access-Control-Request-Method": "GET",
             },
         )
     assert resp.status_code == 200
-    assert resp.headers.get("access-control-allow-origin") == "https://nuvrail.com"
+    assert resp.headers.get("access-control-allow-origin") == "https://example.com"
 
 
 @pytest.mark.asyncio

@@ -4,7 +4,7 @@ API endpoint tests for /api/v1/operations (Milestone 1.0).
 Uses httpx.AsyncClient against the FastAPI app with a tmp_path-isolated DB
 injected via FastAPI dependency overrides.
 
-The test_approve_smtp_operation test sends a real email to testing@nuvrail.com
+The test_approve_smtp_operation test sends a real email to testing@example.com
 (the test mailbox — sending to itself is acceptable for integration verification).
 """
 import os
@@ -204,8 +204,8 @@ async def test_get_operation_detail(
         protocol="smtp",
         description="Send test email",
         smtp_envelope={
-            "from": "testing@nuvrail.com",
-            "to": ["testing@nuvrail.com"],
+            "from": "testing@example.com",
+            "to": ["testing@example.com"],
             "subject": "Test",
             "body": full_body,
             "body_preview": full_body[:200],
@@ -242,7 +242,7 @@ async def test_smtp_envelope_full_body_stored_and_returned(
         protocol="smtp",
         description="Send long email",
         smtp_envelope={
-            "from": "agent@test.nuvrail.com",
+            "from": "agent@nuvrail.example.com",
             "to": ["human@example.com"],
             "subject": "Long body test",
             "body": long_body,
@@ -373,7 +373,7 @@ async def test_approve_smtp_operation(
 ) -> None:
     """POST approve on an SMTP op relays the message to the upstream SMTP server.
 
-    Sends a real email to testing@nuvrail.com — sending to itself is acceptable
+    Sends a real email to testing@example.com — sending to itself is acceptable
     for integration verification. Requires NUVRAIL_TEST_SMTP_* env vars to be set.
     """
     smtp_host = os.environ.get("NUVRAIL_TEST_SMTP_HOST", "")
@@ -403,10 +403,10 @@ async def test_approve_smtp_operation(
         op_type="smtp_send",
         protocol="smtp",
         agent_id=smtp_agent_id,
-        description='Send email to testing@nuvrail.com — Subject: "Milestone 1.0 test"',
+        description='Send email to testing@example.com — Subject: "Milestone 1.0 test"',
         smtp_envelope={
-            "from": "testing@nuvrail.com",
-            "to": ["testing@nuvrail.com"],
+            "from": "testing@example.com",
+            "to": ["testing@example.com"],
             "subject": "Milestone 1.0 test",
             "body": "This is an automated test from the Nuvrail approval gateway.",
             "body_preview": "This is an automated test from the Nuvrail approval gateway.",

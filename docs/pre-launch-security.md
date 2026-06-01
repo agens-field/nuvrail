@@ -110,7 +110,7 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 async def login(...): ...
 ```
 
-This is Phase 0 with a single known user — immediate exploitation risk is low. However, the API will be publicly reachable at `test.nuvrail.com` and should have at minimum IP-based throttling on auth endpoints before wider exposure.
+This is Phase 0 with a single known user — immediate exploitation risk is low. However, the API will be publicly reachable at `nuvrail.example.com` and should have at minimum IP-based throttling on auth endpoints before wider exposure.
 
 **Filed as a launch-gate item** — must be addressed before public launch.
 
@@ -153,7 +153,7 @@ Additionally: `allow_methods=["*"]` and `allow_headers=["*"]` are more permissiv
 
 **Required before launch:**
 
-1. Set `NUVRAIL_CORS_ORIGINS=https://nuvrail.com` in fly.io production secrets
+1. Set `NUVRAIL_CORS_ORIGINS=https://example.com` in fly.io production secrets
 2. Consider tightening to specific methods and headers:
    ```python
    allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"]
@@ -173,7 +173,7 @@ Additionally: `allow_methods=["*"]` and `allow_headers=["*"]` are more permissiv
 |---|---|
 | `NUVRAIL_MASTER_KEY` | Generate a fresh key for production (never reuse the staging key). Staging key was rotated 2026-05-07 after the incident. Production key must be independently generated. |
 | `VAPID_PRIVATE_KEY` / `VAPID_PUBLIC_KEY` | Rotated 2026-05-07. Production should use a separate VAPID keypair from staging. |
-| GitHub PAT (KC, `kc@nuvrail.com`) | Scoped to agens-field org. Review expiry before launch; create a machine-user token for CI if GitHub Actions are wired. |
+| GitHub PAT (KC, `kc@example.com`) | Scoped to agens-field org. Review expiry before launch; create a machine-user token for CI if GitHub Actions are wired. |
 | Agent tokens | All production agent credentials will be fresh (no carryover from staging). ✅ |
 | Human API bearer tokens | SHA-256 hashed at rest since commit `cf07b3d`. Plaintext shown to user once only. ✅ |
 

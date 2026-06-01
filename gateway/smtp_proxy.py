@@ -596,7 +596,7 @@ async def handle_smtp_client(
                     sender = m.group(1)
                     logger.debug("[%s] MAIL FROM: %s", peer_str, sender)
                 # Rewrite MAIL FROM with the upstream user's real address.
-                # The agent may send any From address (e.g. nuvrail_xxx@test.nuvrail.com);
+                # The agent may send any From address (e.g. nuvrail_xxx@nuvrail.example.com);
                 # upstream will reject it unless it matches the authenticated account.
                 if upstream_credential is not None:
                     real_from = upstream_credential["upstream_user"]

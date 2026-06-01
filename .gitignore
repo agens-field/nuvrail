@@ -51,7 +51,7 @@ web/dist/
 *.swp
 *.swo
 
-# Internal company docs — live in nuvrail-internal only
+# Internal/private docs — kept out of this repo as a safety net
 CompanySOUL.md
 HEALTH_BASELINE.md
 MarketingEthos.md

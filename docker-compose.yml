@@ -17,16 +17,15 @@ services:
       context: web
       dockerfile: Dockerfile.web
       args:
-        VITE_API_URL: https://test.nuvrail.com
-        VITE_PROXY_HOST: test.nuvrail.com
+        # Point these at the gateway's externally-reachable URL/host (the
+        # browser talks to it directly). Defaults work for local self-hosting.
+        VITE_API_URL: http://localhost:8080
+        VITE_PROXY_HOST: localhost
     ports:
-      - "127.0.0.1:3000:80"       # Approval web app — localhost only; nginx proxies HTTPS
+      - "127.0.0.1:3000:80"       # Approval web app — localhost only; front with a TLS reverse proxy
     depends_on:
       - gateway
     restart: unless-stopped
-
-  # landing: moved to agens-field/nuvrail-internal (web/landing)
-  # Build and run separately from that repo; nginx still proxies :3001 → HTTPS.
 
 volumes:
   nuvrail_data:

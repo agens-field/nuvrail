@@ -1,14 +1,16 @@
 """
-Capture real IMAP fixture lines from MXrouting.
+Capture real IMAP fixture lines from an upstream server.
 
-Connects to blizzard.mxrouting.net:993 (SSL), performs a standard set of
-read-only operations, and prints each command sent.  The printed lines become
-test fixtures for test_imap_parser.py.
+Connects to an IMAP server (SSL), performs a standard set of read-only
+operations, and prints each command sent. The printed lines become test
+fixtures for test_imap_parser.py.
 
 Usage:
     PYTHONPATH=. .venv/bin/python scripts/capture_imap_fixtures.py
 
-Credentials loaded from .env:
+Config loaded from .env:
+    IMAP_HOST=<host>          (default: imap.example.com)
+    IMAP_PORT=<port>          (default: 993)
     IMAP_USER=<email>
     IMAP_PASSWORD=<password>
 """
@@ -21,8 +23,8 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-HOST = "blizzard.mxrouting.net"
-PORT = 993
+HOST = os.environ.get("IMAP_HOST", "imap.example.com")
+PORT = int(os.environ.get("IMAP_PORT", "993"))
 
 USER = os.environ.get("IMAP_USER", "")
 PASSWORD = os.environ.get("IMAP_PASSWORD", "")

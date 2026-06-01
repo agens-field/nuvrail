@@ -9,7 +9,7 @@ Test topology:
   smtp_proxy server (gateway.smtp_proxy — local, plain)
         │  STARTTLS
         ▼
-  upstream SMTP (blizzard.mxrouting.net:587)
+  upstream SMTP (mail.example.com:587)
 
 Each test starts the proxy via an ephemeral port (port 0), connects as a
 plain TCP client, and exercises the command/response behaviour.
