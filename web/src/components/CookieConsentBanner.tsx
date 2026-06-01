@@ -21,6 +21,10 @@ import { useEffect, useState } from 'react'
 export const CONSENT_KEY = 'nuvrail_cookie_consent'
 export const CONSENT_EVENT = 'nuvrail_consent_updated'
 
+// Optional privacy-policy URL shown in the banner. Unset (the default) omits
+// the link — self-hosted builds set VITE_PRIVACY_POLICY_URL to their own page.
+const PRIVACY_URL = import.meta.env.VITE_PRIVACY_POLICY_URL ?? ''
+
 export type ConsentLevel = 'accepted_all' | 'necessary_only'
 
 export function getConsent(): ConsentLevel | null {
@@ -64,10 +68,15 @@ export default function CookieConsentBanner() {
         >
           Plausible Analytics
         </a>
-        {' '}— no cookies, no personal data — to understand how the app is used.{' '}
-        <a href="https://nuvrail.com/privacy" target="_blank" rel="noopener noreferrer" className="text-accent underline">
-          Privacy Policy
-        </a>
+        {' '}— no cookies, no personal data — to understand how the app is used.
+        {PRIVACY_URL && (
+          <>
+            {' '}
+            <a href={PRIVACY_URL} target="_blank" rel="noopener noreferrer" className="text-accent underline">
+              Privacy Policy
+            </a>
+          </>
+        )}
       </p>
       <div className="flex gap-2 shrink-0">
         <button

@@ -22,7 +22,7 @@ import { Mail, CheckCircle } from 'lucide-react'
 import { getOAuthResult } from '../api/client'
 import type { OAuthResultResponse } from '../api/client'
 
-const PROXY_HOST = import.meta.env.VITE_PROXY_HOST ?? 'test.nuvrail.com'
+const PROXY_HOST = import.meta.env.VITE_PROXY_HOST ?? 'nuvrail.example.com'
 const MAX_POLLS = 10
 const POLL_INTERVAL_MS = 1000
 const OAUTH_RESULT_KEY = 'nuvrail_oauth_result'

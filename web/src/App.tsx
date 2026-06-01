@@ -1,5 +1,5 @@
 import { useEffect } from 'react'
-import { HashRouter, NavLink, Route, Routes, useNavigate, useLocation } from 'react-router-dom'
+import { HashRouter, NavLink, Navigate, Route, Routes, useNavigate, useLocation } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Toaster } from 'sonner'
 import PendingView from './views/PendingView'
@@ -16,6 +16,7 @@ import ThemeToggle, { useTheme } from './components/ThemeToggle'
 import PlausibleAnalytics from './components/PlausibleAnalytics'
 import CookieConsentBanner from './components/CookieConsentBanner'
 import { getToken, setupPushNotifications } from './api/client'
+import { useFeatures } from './hooks/useFeatures'
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -30,6 +31,29 @@ const NAV_LINK_BASE =
   'px-3 py-1.5 text-sm font-medium rounded-md transition-colors'
 const NAV_LINK_ACTIVE = 'bg-accent text-white dark:text-[#111c27]'
 const NAV_LINK_INACTIVE = 'text-fg-2 hover:text-fg hover:bg-surface-hi'
+
+const navClass = ({ isActive }: { isActive: boolean }) =>
+  `${NAV_LINK_BASE} ${isActive ? NAV_LINK_ACTIVE : NAV_LINK_INACTIVE}`
+
+// Auto-approval rules are an enterprise feature. The server reports
+// availability via GET /api/v1/features (auto_approval_rules); open-core builds
+// report false, so the nav link and route are hidden there.
+function RulesNavLink() {
+  const features = useFeatures()
+  if (!features?.features.auto_approval_rules) return null
+  return (
+    <NavLink to="/rules" className={navClass}>
+      Rules
+    </NavLink>
+  )
+}
+
+function RulesRoute() {
+  const features = useFeatures()
+  // Render nothing until features resolve (or while unauthenticated) to avoid a flash.
+  if (features === undefined) return null
+  return features.features.auto_approval_rules ? <RulesView /> : <Navigate to="/" replace />
+}
 
 function AuthGuard({ children }: { children: React.ReactNode }) {
   const navigate = useNavigate()
@@ -87,14 +111,7 @@ export default function App() {
                   >
                     Pending
                   </NavLink>
-                  <NavLink
-                    to="/rules"
-                    className={({ isActive }) =>
-                      `${NAV_LINK_BASE} ${isActive ? NAV_LINK_ACTIVE : NAV_LINK_INACTIVE}`
-                    }
-                  >
-                    Rules
-                  </NavLink>
+                  <RulesNavLink />
                   <NavLink
                     to="/audit"
                     className={({ isActive }) =>
@@ -128,7 +145,7 @@ export default function App() {
             <main className="max-w-4xl mx-auto px-4 py-6">
               <Routes>
                 <Route path="/" element={<PendingView />} />
-                <Route path="/rules" element={<RulesView />} />
+                <Route path="/rules" element={<RulesRoute />} />
                 <Route path="/audit" element={<AuditView />} />
                 <Route path="/agents" element={<AgentsView />} />
                 <Route path="/oauth2/callback" element={<OAuthCallbackView />} />

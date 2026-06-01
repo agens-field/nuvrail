@@ -278,7 +278,7 @@ function AddAgentModal({ onCreated, onClose }: { onCreated: () => void; onClose:
     }
   }
 
-  const proxyHost = import.meta.env.VITE_PROXY_HOST ?? 'test.nuvrail.com'
+  const proxyHost = import.meta.env.VITE_PROXY_HOST ?? 'nuvrail.example.com'
 
   function buildConfigSnippet(): string {
     if (!result) return ''
