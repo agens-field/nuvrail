@@ -5,7 +5,7 @@
 > up-to-date guide (nginx TLS stream for proxy ports, Docker Compose for services).
 
 **Audience:** Developer setting up a test instance on a Linux server with nginx already running.  
-**Assumes:** Ubuntu 22.04 LTS, Python 3.11+, nginx installed, a domain or subdomain pointed at the server (e.g. `test.nuvrail.com`), a working MXrouting account in `.env`.
+**Assumes:** Ubuntu 22.04 LTS, Python 3.11+, nginx installed, a domain or subdomain pointed at the server (e.g. `nuvrail.example.com`), a working MXrouting account in `.env`.
 
 ---
 
@@ -27,7 +27,7 @@ AI Agent (on same or remote machine)
     ├──► IMAP  ──►  nuvrail-imap-proxy  (:10143, localhost)
     └──► SMTP  ──►  nuvrail-smtp-proxy  (:10587, localhost)
          │
-         └──► MXrouting upstream (blizzard.mxrouting.net)
+         └──► MXrouting upstream (mail.example.com)
 ```
 
 The proxies listen on localhost only. The REST API is exposed via nginx with TLS. The AI agent connects to the proxies directly (port-forwarded if remote, or from localhost if co-located).
@@ -68,15 +68,15 @@ Fill in:
 NUVRAIL_DATA_DIR=/var/lib/nuvrail
 
 # Upstream IMAP (the real mail server behind the proxy)
-NUVRAIL_TEST_IMAP_HOST=blizzard.mxrouting.net
+NUVRAIL_TEST_IMAP_HOST=mail.example.com
 NUVRAIL_TEST_IMAP_PORT=993
-NUVRAIL_TEST_IMAP_USER=testing@nuvrail.com
+NUVRAIL_TEST_IMAP_USER=you@example.com
 NUVRAIL_TEST_IMAP_PASS=<your-password>
 
 # Upstream SMTP
-NUVRAIL_TEST_SMTP_HOST=blizzard.mxrouting.net
+NUVRAIL_TEST_SMTP_HOST=mail.example.com
 NUVRAIL_TEST_SMTP_PORT=587
-NUVRAIL_TEST_SMTP_USER=testing@nuvrail.com
+NUVRAIL_TEST_SMTP_USER=you@example.com
 NUVRAIL_TEST_SMTP_PASS=<your-password>
 
 # Proxy listen addresses (keep on localhost — nginx handles external TLS)
@@ -116,13 +116,13 @@ Before setting up services, confirm everything works:
 # Terminal 1 — start IMAP proxy
 source .venv/bin/activate
 PYTHONPATH=. python -m gateway.proxy
-# → Nuvrail IMAP proxy listening on 127.0.0.1:10143 → blizzard.mxrouting.net:993
+# → Nuvrail IMAP proxy listening on 127.0.0.1:10143 → mail.example.com:993
 
 # Terminal 2 — test it
 python3 -c "
 import imaplib
 c = imaplib.IMAP4('127.0.0.1', 10143)
-print(c.login('testing@nuvrail.com', '<your-password>'))
+print(c.login('you@example.com', '<your-password>'))
 print(c.select('INBOX'))
 c.logout()
 "
@@ -132,17 +132,17 @@ c.logout()
 ```bash
 # Terminal 1 — start SMTP proxy
 PYTHONPATH=. python -m gateway.smtp_proxy
-# → Nuvrail SMTP proxy listening on 127.0.0.1:10587 → blizzard.mxrouting.net:587
+# → Nuvrail SMTP proxy listening on 127.0.0.1:10587 → mail.example.com:587
 
 # Terminal 2 — test it (sends to itself, returns STAGED — no actual send yet)
 python3 -c "
 import smtplib, base64
 c = smtplib.SMTP('127.0.0.1', 10587)
 c.ehlo('test')
-creds = base64.b64encode(b'\x00testing@nuvrail.com\x00<your-password>').decode()
+creds = base64.b64encode(b'\x00you@example.com\x00<your-password>').decode()
 print(c.docmd('AUTH PLAIN', creds))
-print(c.docmd('MAIL FROM', '<testing@nuvrail.com>'))
-print(c.docmd('RCPT TO', '<testing@nuvrail.com>'))
+print(c.docmd('MAIL FROM', '<you@example.com>'))
+print(c.docmd('RCPT TO', '<you@example.com>'))
 print(c.docmd('DATA'))
 c.send(b'Subject: test\r\n\r\nHello\r\n.\r\n')
 print(c.getreply())
@@ -268,16 +268,16 @@ Add a new site config. Assumes you already have certbot/Let's Encrypt set up for
 ```nginx
 server {
     listen 80;
-    server_name test.nuvrail.com;
+    server_name nuvrail.example.com;
     return 301 https://$host$request_uri;
 }
 
 server {
     listen 443 ssl;
-    server_name test.nuvrail.com;
+    server_name nuvrail.example.com;
 
-    ssl_certificate     /etc/letsencrypt/live/test.nuvrail.com/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/test.nuvrail.com/privkey.pem;
+    ssl_certificate     /etc/letsencrypt/live/nuvrail.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/nuvrail.example.com/privkey.pem;
     include             /etc/letsencrypt/options-ssl-nginx.conf;
     ssl_dhparam         /etc/letsencrypt/ssl-dhparams.pem;
 
@@ -320,13 +320,13 @@ sudo systemctl reload nginx
 Get TLS certificate (if not already done for this subdomain):
 
 ```bash
-sudo certbot --nginx -d test.nuvrail.com
+sudo certbot --nginx -d nuvrail.example.com
 ```
 
 Verify API is reachable over HTTPS:
 
 ```bash
-curl -s https://test.nuvrail.com/api/v1/operations?status=pending | python3 -m json.tool
+curl -s https://nuvrail.example.com/api/v1/operations?status=pending | python3 -m json.tool
 ```
 
 ---
@@ -339,7 +339,7 @@ The proxies listen on `127.0.0.1` by default. If your AI agent runs on the same 
 
 On the machine running the AI agent:
 ```bash
-ssh -N -L 10143:127.0.0.1:10143 -L 10587:127.0.0.1:10587 user@test.nuvrail.com
+ssh -N -L 10143:127.0.0.1:10143 -L 10587:127.0.0.1:10587 user@nuvrail.example.com
 ```
 
 The agent then connects to `localhost:10143` and `localhost:10587` as if it were co-located.
@@ -370,7 +370,7 @@ cd nuvrail
 source .venv/bin/activate
 
 # Point tests at the live server's API
-export NUVRAIL_PROXY_API_URL=https://test.nuvrail.com
+export NUVRAIL_PROXY_API_URL=https://nuvrail.example.com
 
 # Run only integration tests (skips unit tests that use localhost fixtures)
 PYTHONPATH=. pytest tests/integration/ -v
@@ -387,10 +387,10 @@ PYTHONPATH=. pytest tests/integration/ -v
 sudo systemctl status nuvrail-imap nuvrail-smtp nuvrail-api
 
 # API health endpoint
-curl -s https://test.nuvrail.com/health
+curl -s https://nuvrail.example.com/health
 
 # Check pending operations
-curl -s https://test.nuvrail.com/api/v1/operations?status=pending | python3 -m json.tool
+curl -s https://nuvrail.example.com/api/v1/operations?status=pending | python3 -m json.tool
 ```
 
 ### Restart after code update
@@ -408,15 +408,15 @@ sudo systemctl restart nuvrail-imap nuvrail-smtp nuvrail-api
 
 ```bash
 # List pending
-curl -s https://test.nuvrail.com/api/v1/operations?status=pending | \
+curl -s https://nuvrail.example.com/api/v1/operations?status=pending | \
   python3 -m json.tool
 
 # Approve one (replace op_XXXXXX with real ID)
-curl -s -X POST https://test.nuvrail.com/api/v1/operations/op_XXXXXX/approve | \
+curl -s -X POST https://nuvrail.example.com/api/v1/operations/op_XXXXXX/approve | \
   python3 -m json.tool
 
 # Reject one
-curl -s -X POST https://test.nuvrail.com/api/v1/operations/op_XXXXXX/reject | \
+curl -s -X POST https://nuvrail.example.com/api/v1/operations/op_XXXXXX/reject | \
   python3 -m json.tool
 ```
 

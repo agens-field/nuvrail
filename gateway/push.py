@@ -7,8 +7,8 @@ VAPID key pair is generated on first run and stored at:
 
 Environment:
   NUVRAIL_VAPID_EMAIL — contact email for VAPID header (required for push)
-                        e.g. "mailto:admin@nuvrail.com"
-                        Defaults to "mailto:admin@nuvrail.com" if not set.
+                        e.g. "mailto:admin@example.com"
+                        Defaults to "mailto:admin@example.com" if not set.
 
 Usage:
   notify_staged(op_id, description, is_urgent, db_path) — fire and forget
@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 _DATA_DIR = Path(os.environ.get("NUVRAIL_DATA_DIR", str(Path.home() / ".nuvrail")))
 _VAPID_PRIVATE_PEM = _DATA_DIR / "vapid_private.pem"
 _VAPID_PUBLIC_PEM = _DATA_DIR / "vapid_public.pem"
-_VAPID_EMAIL = os.environ.get("NUVRAIL_VAPID_EMAIL", "").strip() or "mailto:admin@nuvrail.com"
+_VAPID_EMAIL = os.environ.get("NUVRAIL_VAPID_EMAIL", "").strip() or "mailto:admin@example.com"
 
 # Cached after first load
 _vapid_public_key_b64: Optional[str] = None

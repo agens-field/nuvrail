@@ -9,7 +9,7 @@ Test topology:
   proxy server (gateway.proxy — local, plain)
         │  SSL/TLS
         ▼
-  upstream IMAP (blizzard.mxrouting.net:993)
+  upstream IMAP (mail.example.com:993)
 
 Each test starts the proxy as a background asyncio task, binds to an
 ephemeral port, then connects to it as a plain TCP client.

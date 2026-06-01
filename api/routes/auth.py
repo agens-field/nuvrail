@@ -602,7 +602,7 @@ async def reset_request(
 
     if os.environ.get("NUVRAIL_RESET_TOKEN_LOG", "").strip().lower() in ("1", "true", "yes"):
         # Dev-only opt-in: surface the full reset URL for local testing.
-        host = os.environ.get("NUVRAIL_HOST_URL", "https://mail.nuvrail.com")
+        host = os.environ.get("NUVRAIL_HOST_URL", "http://localhost:8080")
         reset_url = f"{host}/#/reset?token={token_plain}"
         _log.warning(
             "[reset-request] NUVRAIL_RESET_TOKEN_LOG is enabled — logging reset "

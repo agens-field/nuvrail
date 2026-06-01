@@ -14,7 +14,7 @@ Test topology:
    ├─► direct IMAP  (ground truth: verify flag state before and after)
    └─► FastAPI API  (approve / reject the staged operation)
 
-These tests require live network access to blizzard.mxrouting.net.
+These tests require live network access to mail.example.com.
 Credentials come from .env via the e2e conftest.
 
 All API calls pass auth_headers (Bearer token) from e2e_setup, exercising

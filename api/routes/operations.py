@@ -20,7 +20,7 @@ Execution flow for IMAP:
   approve request
       │
       ▼
-  open fresh IMAP4_SSL → blizzard.mxrouting.net:993
+  open fresh IMAP4_SSL → mail.example.com:993
       │  LOGIN (plain credentials from env)
       │
       ▼

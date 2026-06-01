@@ -9,8 +9,8 @@ Stands up all three in-process components simultaneously:
   │   ├─► SMTP proxy  (asyncio server, ephemeral port)      │
   │   ├─► FastAPI app (httpx.AsyncClient, in-process)       │
   │   │    └── all share the same tmp_path SQLite DB        │
-  │   ├─► direct IMAP (blizzard.mxrouting.net:993)          │
-  │   └─► direct SMTP (blizzard.mxrouting.net:587)          │
+  │   ├─► direct IMAP (mail.example.com:993)          │
+  │   └─► direct SMTP (mail.example.com:587)          │
   └─────────────────────────────────────────────────────────┘
 
 All three components (IMAP proxy, SMTP proxy, FastAPI) write to the same
@@ -196,7 +196,7 @@ async def e2e_setup(tmp_path_factory: pytest.TempPathFactory) -> dict:
     register_resp = await api_client.post(
         "/api/v1/auth/register",
         json={
-            "email": "e2e-test@nuvrail.com",
+            "email": "e2e-test@example.com",
             "password": "e2e-test-password",
             "display_name": "E2E Test User",
         },
@@ -207,7 +207,7 @@ async def e2e_setup(tmp_path_factory: pytest.TempPathFactory) -> dict:
 
     login_resp = await api_client.post(
         "/api/v1/auth/login",
-        json={"email": "e2e-test@nuvrail.com", "password": "e2e-test-password"},
+        json={"email": "e2e-test@example.com", "password": "e2e-test-password"},
     )
     assert login_resp.status_code == 200, (
         f"e2e_setup: failed to log in test user: {login_resp.status_code} {login_resp.text}"

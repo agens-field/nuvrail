@@ -64,8 +64,8 @@ No plain-text port is reachable from outside the host.
 
 - Ubuntu 22.04 LTS (or equivalent Debian-based distro)
 - DNS `A` records pointing at your server:
-  - `test.nuvrail.com` → server IP (approval UI + proxy)
-  - `nuvrail.com` → same IP (landing page, optional)
+  - `nuvrail.example.com` → server IP (approval UI + proxy)
+  - `example.com` → same IP (landing page, optional)
 - Git, Docker Engine + Compose plugin, nginx with stream module, certbot
 
 ```bash
@@ -94,11 +94,11 @@ Required environment variables:
 | Variable | Description |
 |---|---|
 | `NUVRAIL_MASTER_KEY` | 64 hex chars — `python3 -c "import secrets; print(secrets.token_bytes(32).hex())"` |
-| `NUVRAIL_CORS_ORIGINS` | `https://test.nuvrail.com` |
+| `NUVRAIL_CORS_ORIGINS` | `https://nuvrail.example.com` |
 | `NUVRAIL_VAPID_EMAIL` | Admin contact email, e.g. `mailto:you@yourdomain.com` |
 | `GOOGLE_CLIENT_ID` | GCP OAuth2 client ID (required for Gmail agent setup) |
 | `GOOGLE_CLIENT_SECRET` | GCP OAuth2 client secret (required for Gmail agent setup) |
-| `GOOGLE_REDIRECT_URI` | `https://test.nuvrail.com/api/v1/oauth2/google/callback` |
+| `GOOGLE_REDIRECT_URI` | `https://nuvrail.example.com/api/v1/oauth2/google/callback` |
 
 > ⚠️ **Back up `NUVRAIL_MASTER_KEY`.** It encrypts every upstream credential in the
 > database. Losing it makes all stored agent credentials unrecoverable.
@@ -110,7 +110,7 @@ Required environment variables:
 ```bash
 sudo ufw allow 80  # temporarily for certbot
 sudo certbot certonly --standalone \
-  -d test.nuvrail.com -d nuvrail.com \
+  -d nuvrail.example.com -d example.com \
   --non-interactive --agree-tos -m you@yourdomain.com
 ```
 
@@ -138,8 +138,8 @@ sudo mkdir -p /etc/nginx/stream.d
 # IMAP SSL (:993) → gateway container (:10143)
 server {
     listen 993 ssl;
-    ssl_certificate     /etc/letsencrypt/live/test.nuvrail.com/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/test.nuvrail.com/privkey.pem;
+    ssl_certificate     /etc/letsencrypt/live/nuvrail.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/nuvrail.example.com/privkey.pem;
     ssl_protocols       TLSv1.2 TLSv1.3;
     ssl_ciphers         HIGH:!aNULL:!MD5;
     proxy_pass          127.0.0.1:10143;
@@ -150,8 +150,8 @@ server {
 # SMTPS (:465) → gateway container (:10587)
 server {
     listen 465 ssl;
-    ssl_certificate     /etc/letsencrypt/live/test.nuvrail.com/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/test.nuvrail.com/privkey.pem;
+    ssl_certificate     /etc/letsencrypt/live/nuvrail.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/nuvrail.example.com/privkey.pem;
     ssl_protocols       TLSv1.2 TLSv1.3;
     ssl_ciphers         HIGH:!aNULL:!MD5;
     proxy_pass          127.0.0.1:10587;
@@ -165,15 +165,15 @@ server {
 ```nginx
 server {
     listen 80;
-    server_name test.nuvrail.com nuvrail.com www.nuvrail.com;
+    server_name nuvrail.example.com example.com www.example.com;
     return 301 https://$host$request_uri;
 }
 
 server {
     listen 443 ssl;
-    server_name test.nuvrail.com;
-    ssl_certificate     /etc/letsencrypt/live/test.nuvrail.com/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/test.nuvrail.com/privkey.pem;
+    server_name nuvrail.example.com;
+    ssl_certificate     /etc/letsencrypt/live/nuvrail.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/nuvrail.example.com/privkey.pem;
     include             /etc/letsencrypt/options-ssl-nginx.conf;
     ssl_dhparam         /etc/letsencrypt/ssl-dhparams.pem;
     add_header Strict-Transport-Security "max-age=63072000; includeSubDomains" always;
@@ -192,9 +192,9 @@ server {
 
 server {
     listen 443 ssl;
-    server_name nuvrail.com www.nuvrail.com;
-    ssl_certificate     /etc/letsencrypt/live/nuvrail.com/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/nuvrail.com/privkey.pem;
+    server_name example.com www.example.com;
+    ssl_certificate     /etc/letsencrypt/live/example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/example.com/privkey.pem;
     include             /etc/letsencrypt/options-ssl-nginx.conf;
     ssl_dhparam         /etc/letsencrypt/ssl-dhparams.pem;
     location / {
@@ -237,35 +237,35 @@ docker compose logs gateway --tail=30
 
 ```bash
 # Approval UI
-curl -s -o /dev/null -w "%{http_code}" https://test.nuvrail.com/
+curl -s -o /dev/null -w "%{http_code}" https://nuvrail.example.com/
 # → 200
 
 # API health
-curl -s https://test.nuvrail.com/api/v1/health | python3 -m json.tool
+curl -s https://nuvrail.example.com/api/v1/health | python3 -m json.tool
 # → {"status": "ok", ...}
 
 # IMAP proxy (should see: * OK Nuvrail IMAP proxy ready)
-openssl s_client -connect test.nuvrail.com:993 -quiet 2>/dev/null
+openssl s_client -connect nuvrail.example.com:993 -quiet 2>/dev/null
 
 # SMTP proxy (should see: 220 Nuvrail SMTP proxy ready)
-openssl s_client -connect test.nuvrail.com:465 -quiet 2>/dev/null
+openssl s_client -connect nuvrail.example.com:465 -quiet 2>/dev/null
 ```
 
 ---
 
 ### Step 6 — Create your account
 
-Open `https://test.nuvrail.com` in your browser and complete the first-run setup, or use the API directly:
+Open `https://nuvrail.example.com` in your browser and complete the first-run setup, or use the API directly:
 
 ```bash
 # Register your account
-curl -s -X POST https://test.nuvrail.com/api/v1/auth/register \
+curl -s -X POST https://nuvrail.example.com/api/v1/auth/register \
   -H 'Content-Type: application/json' \
   -d '{"email": "you@yourdomain.com", "password": "your-strong-password", "display_name": "Your Name"}' \
   | python3 -m json.tool
 
 # Log in to get a bearer token
-TOKEN=$(curl -s -X POST https://test.nuvrail.com/api/v1/auth/login \
+TOKEN=$(curl -s -X POST https://nuvrail.example.com/api/v1/auth/login \
   -H 'Content-Type: application/json' \
   -d '{"email": "you@yourdomain.com", "password": "your-strong-password"}' \
   | python3 -c "import sys,json; print(json.load(sys.stdin)['token'])")
@@ -279,14 +279,14 @@ Nuvrail supports Gmail (OAuth2), standard IMAP/SMTP, and more providers coming. 
 
 ### Gmail via OAuth2 (recommended)
 
-1. Go to `https://test.nuvrail.com` → **Agents** → **Connect Gmail**
+1. Go to `https://nuvrail.example.com` → **Agents** → **Connect Gmail**
 2. Complete the Google OAuth2 consent flow
 3. Copy the one-time agent token that appears on success — you won't see it again
 
 ### Standard IMAP/SMTP
 
 ```bash
-curl -s -X POST https://test.nuvrail.com/api/v1/agents \
+curl -s -X POST https://nuvrail.example.com/api/v1/agents \
   -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{
@@ -309,9 +309,9 @@ Point any IMAP/SMTP client at the Nuvrail proxy using the agent credentials. The
 
 | Setting | Value |
 |---|---|
-| **IMAP host** | `test.nuvrail.com` |
+| **IMAP host** | `nuvrail.example.com` |
 | **IMAP port** | `993` (SSL) |
-| **SMTP host** | `test.nuvrail.com` |
+| **SMTP host** | `nuvrail.example.com` |
 | **SMTP port** | `465` (SSL) |
 | **Username** | agent username from setup (e.g. `nuvrail_abc123`) |
 | **Password** | agent token from setup (one-time, copy it at creation) |
@@ -321,14 +321,14 @@ Point any IMAP/SMTP client at the Nuvrail proxy using the agent credentials. The
 ```json
 {
   "imap": {
-    "host": "test.nuvrail.com",
+    "host": "nuvrail.example.com",
     "port": 993,
     "ssl": true,
     "username": "nuvrail_abc123",
     "password": "your-agent-token"
   },
   "smtp": {
-    "host": "test.nuvrail.com",
+    "host": "nuvrail.example.com",
     "port": 465,
     "ssl": true,
     "username": "nuvrail_abc123",
@@ -359,7 +359,7 @@ Point any IMAP/SMTP client at the Nuvrail proxy using the agent credentials. The
 When an agent stages an operation:
 
 1. **Push notification** arrives on your phone/browser (requires enabling notifications on the PWA)
-2. Open the approval UI at `https://test.nuvrail.com`
+2. Open the approval UI at `https://nuvrail.example.com`
 3. Each pending operation shows: type, subject, sender, destination folder or recipient
 4. Tap **Approve** to execute against the real mail server, or **Reject** to revert
 
@@ -369,15 +369,15 @@ You can also approve/reject via the API:
 
 ```bash
 # List pending operations
-curl -s https://test.nuvrail.com/api/v1/operations?status=pending \
+curl -s https://nuvrail.example.com/api/v1/operations?status=pending \
   -H "Authorization: Bearer $TOKEN" | python3 -m json.tool
 
 # Approve
-curl -s -X POST https://test.nuvrail.com/api/v1/operations/op_XXXXXX/approve \
+curl -s -X POST https://nuvrail.example.com/api/v1/operations/op_XXXXXX/approve \
   -H "Authorization: Bearer $TOKEN"
 
 # Reject
-curl -s -X POST https://test.nuvrail.com/api/v1/operations/op_XXXXXX/reject \
+curl -s -X POST https://nuvrail.example.com/api/v1/operations/op_XXXXXX/reject \
   -H "Authorization: Bearer $TOKEN"
 ```
 
@@ -472,6 +472,20 @@ sudo ufw enable
 # Do NOT expose ports 10143, 10587, or 8080 to the internet —
 # these are internal Docker ports, accessed only via nginx.
 ```
+
+---
+
+## License
+
+Nuvrail core is licensed under the **GNU Affero General Public License v3.0**
+(AGPL-3.0) — see [LICENSE](LICENSE). Copyright © 2026 Agens Field.
+
+Under the AGPL's network-use clause, anyone who runs a modified version as a
+network service must make their modified source available to its users.
+
+Commercial/enterprise features — such as the auto-approval rules engine and
+per-plan entitlements — ship in a separate, proprietary package and are **not**
+part of this repository.
 
 ---
 

@@ -351,8 +351,8 @@ async def test_imap_append_to_drafts_staged_then_approved(
         # ── Step 2: APPEND via IMAP proxy ─────────────────────────────────
         # Build a minimal RFC 2822 message
         draft_body = (
-            f"From: test@nuvrail.com\r\n"
-            f"To: test@nuvrail.com\r\n"
+            f"From: test@example.com\r\n"
+            f"To: test@example.com\r\n"
             f"Subject: {subject}\r\n"
             f"Content-Type: text/plain\r\n"
             f"\r\n"

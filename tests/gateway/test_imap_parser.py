@@ -352,7 +352,7 @@ def test_uid_keyword_case_insensitive() -> None:
 # ---------------------------------------------------------------------------
 # Real MXrouting fixture lines (captured session)
 # ---------------------------------------------------------------------------
-# Commands sent during a real IMAP session to blizzard.mxrouting.net:993
+# Commands sent during a real IMAP session to mail.example.com:993
 
 MXROUTING_FIXTURES = [
     # LIST "" "*"

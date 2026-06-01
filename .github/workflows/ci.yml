@@ -30,18 +30,14 @@ jobs:
       - name: Lint (ruff)
         run: python -m ruff check .
 
-      - name: Run tests (with JSON report)
+      - name: Run tests
         # Run all tests except integration/e2e suites (those require real credentials).
-        # --json-report-file is consumed by the KPI reporter step below.
         run: |
           python -m pytest \
             --ignore=tests/integration \
             --ignore=tests/e2e \
             --tb=short \
-            -q \
-            --json-report \
-            --json-report-file=pytest-report.json \
-          || true  # allow failure so KPI reporter always runs
+            -q
 
       - name: Security scan (gitleaks)
         # Informational only — non-blocking. Flags leaked secrets for human review.
@@ -53,16 +49,6 @@ jobs:
           else
             echo "gitleaks not found on runner — skipping scan"
           fi
-
-      - name: Report test KPIs to Ripple Path
-        # Posts pass rate and deploy success signal to the Engineering Health path.
-        # Requires RIPPLEPATH_API_TOKEN secret set on the repo.
-        # Safe to fail — exits 0 on API error so CI result is not masked.
-        if: always()
-        env:
-          RIPPLEPATH_API_TOKEN: ${{ secrets.RIPPLEPATH_API_TOKEN }}
-        run: |
-          python scripts/report_ci_kpis.py pytest-report.json
 
   # Validate the self-host docker-compose build (gateway + web) so a broken
   # Dockerfile is caught on PRs. No secrets — values are only baked into the

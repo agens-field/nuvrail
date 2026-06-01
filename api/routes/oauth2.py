@@ -98,7 +98,7 @@ def _not_configured_response() -> JSONResponse:
 def _get_redirect_uri() -> str:
     return os.environ.get(
         "GOOGLE_REDIRECT_URI",
-        "https://test.nuvrail.com/api/v1/oauth2/google/callback",
+        "http://localhost:8080/api/v1/oauth2/google/callback",
     )
 
 
