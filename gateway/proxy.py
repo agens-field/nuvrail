@@ -66,6 +66,7 @@ from gateway.provider_profiles import (
 from gateway.credentials import fetch_credential
 from gateway.security_controls import build_auth_abuse_protector
 from gateway.batching import get_or_create_batch
+from gateway.extensions import load_plugins
 from gateway.staging import create_operation
 from gateway.state_db import (
     DB_PATH,
@@ -1509,6 +1510,11 @@ async def start_proxy(host: str, port: int) -> asyncio.AbstractServer:
 
 async def main() -> None:
     """Entry point: read config from env and start the proxy."""
+    # Load optional plugins in THIS process. The IMAP proxy stages operations
+    # (create_operation -> run_auto_decision), so the auto-decision provider must
+    # be registered here, not just in the API process. No-op in open core.
+    load_plugins()
+
     host = os.environ.get("NUVRAIL_PROXY_HOST", "127.0.0.1")
     port = int(os.environ.get("NUVRAIL_PROXY_IMAP_PORT", "10143"))
 
