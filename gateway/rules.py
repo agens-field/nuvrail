@@ -118,3 +118,30 @@ async def evaluate_rules(
         return None
     action = rule.get("action")
     return action if action in {"approve", "reject"} else None
+
+
+async def auto_decision(
+    op: dict, *, db_path: Path = DB_PATH, user_id: Optional[int] = None
+) -> Optional[dict]:
+    """Adapter for gateway.extensions.run_auto_decision.
+
+    Returns ``{"action", "rule"}`` for the first matching enabled rule, else
+    ``None``. Combines match + action lookup in one pass so the staging path
+    does not query the ruleset twice.
+    """
+    rule = await get_matching_rule(op, db_path=db_path, user_id=user_id)
+    if rule is None:
+        return None
+    action = rule.get("action")
+    if action not in {"approve", "reject"}:
+        return None
+    return {"action": action, "rule": rule}
+
+
+# Register the built-in rules engine as the auto-decision provider. When the
+# rules engine is extracted to the enterprise package (repo split, Phase 1+),
+# this registration moves there and is wired via load_plugins(); the seam in
+# gateway/extensions.py stays in core. See docs/REPO_SPLIT.md.
+from gateway.extensions import register_auto_decision_provider  # noqa: E402
+
+register_auto_decision_provider(auto_decision)

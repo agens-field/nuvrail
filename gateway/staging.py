@@ -22,7 +22,11 @@ from typing import Optional
 import asyncio
 
 from gateway.audit import insert_audit_event, record_audit_event
-from gateway.rules import evaluate_rules, get_matching_rule
+import gateway.rules  # noqa: F401  import side effect: registers the built-in
+#                     auto-decision provider. Phase 1 of the repo split moves
+#                     this registration to the enterprise plugin (see
+#                     docs/REPO_SPLIT.md); the seam below stays in core.
+from gateway.extensions import run_auto_decision
 from gateway.state_db import DB_PATH, get_db
 from gateway.state_db import insert_pending_reverts, restore_from_snapshot
 
@@ -229,16 +233,13 @@ async def create_operation(
         "folder_from": folder_from,
         "snapshot": snapshot,
     }
-    auto_action = await evaluate_rules(rule_op, db_path=db_path, user_id=rule_user_id)
-    if auto_action in {"approve", "reject"}:
-        matched_rule = await get_matching_rule(
-            rule_op, db_path=db_path, user_id=rule_user_id
+    decision = await run_auto_decision(rule_op, db_path=db_path, user_id=rule_user_id)
+    auto_action = decision["action"] if decision else None
+    if decision is not None:
+        await _apply_auto_rule_decision(
+            op_id, decision["action"], decision["rule"], db_path,
+            agent_id=agent_id, op_type=op_type,
         )
-        if matched_rule is not None:
-            await _apply_auto_rule_decision(
-                op_id, auto_action, matched_rule, db_path,
-                agent_id=agent_id, op_type=op_type,
-            )
 
     if auto_action is None:
         # Fire-and-forget Web Push notification. Non-fatal — staging always succeeds.

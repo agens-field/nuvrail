@@ -38,6 +38,7 @@ from api.auth import (
     verify_password,
 )
 from gateway.credentials import delete_credential, store_credential
+from gateway.entitlements import entitlements
 from gateway.security_controls import build_auth_abuse_protector
 from api.models import (
     AgentCreateRequest,
@@ -346,6 +347,20 @@ async def create_agent(
                     "detail": f"Supported providers: {', '.join(supported_providers)}",
                 },
             )
+
+    # --- Enforce per-plan agent quota (no-op in open core) ------------------
+    # The limit (if any) lives in the entitlements provider, not here, so the
+    # public build never caps agents. The enterprise provider raises 402 when a
+    # plan's agent limit is reached. Checked before the upstream IMAP probe so a
+    # capped request fails fast.
+    async with get_db(db_path) as db:
+        async with db.execute(
+            "SELECT COUNT(*) AS c FROM agent_credentials "
+            "WHERE user_id = ? AND revoked_at IS NULL",
+            (current_user["id"],),
+        ) as cur:
+            agent_count = (await cur.fetchone())["c"]
+    await entitlements().assert_can_create_agent(current_user, agent_count)
 
     # --- Validate IMAP connectivity (password path only) --------------------
     if using_password:
