@@ -69,6 +69,7 @@ from dotenv import load_dotenv
 from gateway.agent_auth import decode_sasl_plain, verify_agent_login
 from gateway.credentials import fetch_credential
 from gateway.security_controls import build_auth_abuse_protector
+from gateway.extensions import load_plugins
 from gateway.staging import create_operation
 from gateway.state_db import get_db
 from logging_config import redact_protocol_line
@@ -779,6 +780,11 @@ async def start_smtp_proxy(host: str, port: int) -> asyncio.AbstractServer:
 
 async def main() -> None:
     """Entry point: read config from env and start the proxy."""
+    # Load optional plugins in THIS process. The SMTP proxy stages send
+    # operations (create_operation -> run_auto_decision), so the auto-decision
+    # provider must be registered here too. No-op in open core.
+    load_plugins()
+
     host = os.environ.get("NUVRAIL_PROXY_HOST", "127.0.0.1")
     port = int(os.environ.get("NUVRAIL_PROXY_SMTP_PORT", "10587"))
 
