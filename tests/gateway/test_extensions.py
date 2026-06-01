@@ -14,10 +14,12 @@ import gateway.extensions as ext
 
 @pytest.fixture(autouse=True)
 def _preserve_provider():
-    """The provider is process-global; save/restore it around each test."""
+    """Provider and migrations are process-global; save/restore around each test."""
     saved = ext._auto_decision_provider
+    saved_migs = list(ext._migrations)
     yield
     ext._auto_decision_provider = saved
+    ext._migrations[:] = saved_migs
 
 
 async def test_no_provider_returns_none():
@@ -52,6 +54,31 @@ async def test_load_plugins_registers_builtin_rules():
     # The in-core rules engine should now be the registered provider.
     from gateway.rules import auto_decision
     assert ext._auto_decision_provider is auto_decision
+
+
+async def test_register_migration_runs_in_init_db(tmp_path):
+    from gateway.state_db import get_db, init_db
+
+    ext.reset_migrations()
+    ran = {}
+
+    async def probe_migration(db):
+        await db.execute("CREATE TABLE IF NOT EXISTS _ext_probe (x INTEGER)")
+        ran["called"] = True
+
+    ext.register_migration(probe_migration)
+    # Registering the same migration twice must not duplicate it.
+    ext.register_migration(probe_migration)
+    assert len(ext.get_migrations()) == 1
+
+    db_path = tmp_path / "mig.db"
+    await init_db(db_path)
+
+    assert ran.get("called") is True
+    async with get_db(db_path) as db:
+        async with db.execute("PRAGMA table_info(_ext_probe)") as cur:
+            cols = await cur.fetchall()
+    assert cols, "migration-created table should exist after init_db"
 
 
 def test_load_plugins_is_exception_safe(monkeypatch):

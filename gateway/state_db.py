@@ -397,6 +397,12 @@ async def init_db(path: Path = DB_PATH) -> None:
             """)
             await db.execute("DROP TABLE agent_credentials_old")
 
+        # Run migrations registered by plugins (e.g. the enterprise plan_tier
+        # column). No-op in the public build where nothing is registered.
+        from gateway.extensions import get_migrations  # noqa: PLC0415
+        for migrate in get_migrations():
+            await migrate(db)
+
         await db.commit()
 
 
