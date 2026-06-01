@@ -3,10 +3,12 @@ name: CI
 on:
   pull_request:
     branches: [main]
-  workflow_call:   # deploy.yml calls this as a gate before every deploy
-  # Note: push to main is intentionally omitted here. deploy.yml handles
-  # push → main by calling this workflow before deploying to staging.
-  # Keeping it here would run the test suite twice on every push to main.
+  push:
+    branches: [main]
+  # Fly.io deployment lives in the private nuvrail-enterprise repo (it builds a
+  # combined image from this core + the enterprise plugin). This repo is the
+  # open self-host product; it only lints, tests, and validates the self-host
+  # docker-compose build.
 
 jobs:
   test:
@@ -61,3 +63,18 @@ jobs:
           RIPPLEPATH_API_TOKEN: ${{ secrets.RIPPLEPATH_API_TOKEN }}
         run: |
           python scripts/report_ci_kpis.py pytest-report.json
+
+  # Validate the self-host docker-compose build (gateway + web) so a broken
+  # Dockerfile is caught on PRs. No secrets — values are only baked into the
+  # build image, never executed here.
+  build:
+    name: "Self-host image build"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Provide a .env (compose requires the env_file to exist)
+        run: cp .env.example .env
+
+      - name: Build self-host images (docker compose build)
+        run: docker compose build
