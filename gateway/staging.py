@@ -22,10 +22,10 @@ from typing import Optional
 import asyncio
 
 from gateway.audit import insert_audit_event, record_audit_event
-import gateway.rules  # noqa: F401  import side effect: registers the built-in
-#                     auto-decision provider. Phase 1 of the repo split moves
-#                     this registration to the enterprise plugin (see
-#                     docs/REPO_SPLIT.md); the seam below stays in core.
+# The auto-approval rules engine lives in the nuvrail-enterprise plugin, which
+# registers the auto-decision provider via load_plugins(). With no plugin
+# installed (open core), run_auto_decision() returns None and every operation
+# follows the normal manual-approval path. See docs/REPO_SPLIT.md.
 from gateway.extensions import run_auto_decision
 from gateway.state_db import DB_PATH, get_db
 from gateway.state_db import insert_pending_reverts, restore_from_snapshot

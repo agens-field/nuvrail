@@ -24,10 +24,14 @@ async def test_open_core_allows_any_agent_count():
     await e.assert_can_create_agent({"id": 1}, current_count=999)
 
 
-async def test_open_core_features_all_enabled():
+async def test_open_core_feature_availability():
     e = ent.entitlements()
-    for feature in ent.KNOWN_FEATURES:
-        assert await e.feature_enabled({"id": 1}, feature) is True
+    # multi-agent has no quota in open core → available.
+    assert await e.feature_enabled({"id": 1}, "multi_agent") is True
+    # the rules engine is an enterprise plugin → unavailable in open core.
+    assert await e.feature_enabled({"id": 1}, "auto_approval_rules") is False
+    # unknown features default to unavailable.
+    assert await e.feature_enabled({"id": 1}, "nonexistent") is False
 
 
 async def test_open_core_features_payload_shape():
@@ -35,7 +39,8 @@ async def test_open_core_features_payload_shape():
     assert payload["plan"] == "open-core"
     assert payload["limits"]["max_agents"] is None
     assert set(payload["features"]) == set(ent.KNOWN_FEATURES)
-    assert all(payload["features"].values())
+    assert payload["features"]["multi_agent"] is True
+    assert payload["features"]["auto_approval_rules"] is False
 
 
 async def test_register_and_reset_entitlements():
