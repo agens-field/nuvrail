@@ -376,6 +376,22 @@ export async function testRule(body: RuleTestRequest): Promise<RuleTestResponse>
 }
 
 // ---------------------------------------------------------------------------
+// Features / entitlements — what the current user's plan allows.
+// In open-core builds auto_approval_rules is false (the rules engine is an
+// enterprise plugin); the UI uses this to show/hide gated sections.
+// ---------------------------------------------------------------------------
+
+export interface FeaturesResponse {
+  plan: string
+  features: Record<string, boolean>
+  limits: { max_agents: number | null }
+}
+
+export async function fetchFeatures(): Promise<FeaturesResponse> {
+  return apiFetch<FeaturesResponse>('/api/v1/features')
+}
+
+// ---------------------------------------------------------------------------
 // Web Push
 // ---------------------------------------------------------------------------
 

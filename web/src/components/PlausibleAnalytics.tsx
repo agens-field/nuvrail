@@ -5,8 +5,9 @@
  * Listens for 'nuvrail_consent_updated' so analytics activate immediately
  * when the user accepts via CookieConsentBanner — no reload required.
  *
- * Domain is set via VITE_PLAUSIBLE_DOMAIN (defaults to 'app.nuvrail.com').
- * Set to an empty string to disable (e.g. staging, local dev).
+ * Domain is set via VITE_PLAUSIBLE_DOMAIN. Empty/unset (the default) disables
+ * analytics entirely — self-hosted builds send nothing unless the operator
+ * explicitly configures a domain.
  *
  * Deduplication: if the script tag is already present the effect is a no-op.
  */
@@ -14,7 +15,7 @@
 import { useEffect } from 'react'
 import { CONSENT_EVENT, CONSENT_KEY } from './CookieConsentBanner'
 
-const PLAUSIBLE_DOMAIN = import.meta.env.VITE_PLAUSIBLE_DOMAIN ?? 'app.nuvrail.com'
+const PLAUSIBLE_DOMAIN = import.meta.env.VITE_PLAUSIBLE_DOMAIN ?? ''
 const PLAUSIBLE_SRC = 'https://plausible.io/js/script.js'
 
 function injectIfConsented() {
