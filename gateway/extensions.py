@@ -101,18 +101,10 @@ def load_plugins(app=None) -> None:
     """
     global _plugins_loaded
 
-    # Built-in (Phase 0): the rules engine still ships in core. Register it
-    # explicitly here rather than relying on import side effects (the module may
-    # already be cached, so a re-import would not re-run registration). When the
-    # rules engine moves to the enterprise package this block goes away and the
-    # entry-point loop below picks it up instead.
-    try:
-        from gateway import rules as _rules  # noqa: PLC0415
-        register_auto_decision_provider(_rules.auto_decision)
-    except Exception:  # noqa: BLE001
-        logger.exception("[extensions] Failed to load built-in rules engine")
-
-    # External plugins via entry points (none in the public build).
+    # External plugins via entry points (none in the public build). The
+    # nuvrail-enterprise package, when installed, registers the auto-approval
+    # rules engine (auto-decision provider) and the /rules router here.
+    # Open core has no built-in providers — operations stay manual-approval.
     try:
         eps = importlib.metadata.entry_points(group="nuvrail.plugins")
     except Exception:  # noqa: BLE001  (older importlib API / lookup failure)

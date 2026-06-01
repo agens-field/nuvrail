@@ -6,7 +6,7 @@ Sub-milestone: 1.0
 from __future__ import annotations
 
 import json
-from typing import List, Literal, Optional
+from typing import List, Optional
 
 from pydantic import BaseModel, field_validator
 
@@ -123,42 +123,12 @@ class BatchRejectResponse(BaseModel):
     total: int
 
 
-# ---------------------------------------------------------------------------
-# Auto-approval rule models
-# ---------------------------------------------------------------------------
-
-
-class AutoApprovalRule(BaseModel):
-    id: int
-    enabled: bool
-    priority: int
-    op_type: Optional[str] = None
-    sender_pattern: Optional[str] = None
-    folder_from: Optional[str] = None
-    action: Literal["approve", "reject"]
-    description: str
-    created_at: int
-    hits: int = 0  # auto-approved/rejected ops matched by this rule (from audit_log)
-
-
-class AutoApprovalRuleCreateRequest(BaseModel):
-    enabled: bool = True
-    priority: int = 0
-    op_type: Optional[str] = None
-    sender_pattern: Optional[str] = None
-    folder_from: Optional[str] = None
-    action: Literal["approve", "reject"]
-    description: str
-
-
-class AutoApprovalRuleUpdateRequest(BaseModel):
-    enabled: Optional[bool] = None
-    priority: Optional[int] = None
-    op_type: Optional[str] = None
-    sender_pattern: Optional[str] = None
-    folder_from: Optional[str] = None
-    action: Optional[Literal["approve", "reject"]] = None
-    description: Optional[str] = None
+# NOTE: The auto-approval rule CRUD models (AutoApprovalRule,
+# *CreateRequest, *UpdateRequest) moved to the nuvrail-enterprise package along
+# with the rules engine and the /rules API. The auto_approval_rules TABLE and
+# the ExportAutoApprovalRule model below stay in core so account data-export
+# keeps working in an open-core build (it returns an empty list there).
+# See docs/REPO_SPLIT.md.
 
 
 class AuditEntry(BaseModel):

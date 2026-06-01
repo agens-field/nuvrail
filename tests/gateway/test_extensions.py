@@ -45,15 +45,15 @@ async def test_routes_to_registered_provider():
     assert seen["op"] == {"op_type": "trash"}
 
 
-async def test_load_plugins_registers_builtin_rules():
+async def test_load_plugins_no_builtin_provider_in_open_core():
+    """Open core ships no auto-decision provider: load_plugins registers none.
+
+    The rules engine is an enterprise plugin; with no plugin installed, the
+    provider stays unset and staging follows the manual-approval path.
+    """
     ext.reset_auto_decision_provider()
-    assert ext._auto_decision_provider is None
-
     ext.load_plugins(app=None)
-
-    # The in-core rules engine should now be the registered provider.
-    from gateway.rules import auto_decision
-    assert ext._auto_decision_provider is auto_decision
+    assert ext._auto_decision_provider is None
 
 
 async def test_register_migration_runs_in_init_db(tmp_path):

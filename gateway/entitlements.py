@@ -34,18 +34,29 @@ class Entitlements(Protocol):
 
 
 class OpenCoreEntitlements:
-    """Public default: everything available, no quotas."""
+    """Public default: no quotas, and only features present in core are enabled.
+
+    A feature is "available" in open core only if its code ships in core. The
+    auto-approval rules engine is an enterprise plugin, so it is reported as
+    unavailable here; multi-agent has no quota in open core, so it is available.
+    """
+
+    # Features whose implementation ships in the open-core build.
+    _OPEN_CORE_FEATURES = {
+        "multi_agent": True,
+        "auto_approval_rules": False,  # provided by the enterprise plugin
+    }
 
     async def assert_can_create_agent(self, user: dict, current_count: int) -> None:
         return
 
     async def feature_enabled(self, user: dict, feature: str) -> bool:
-        return True
+        return self._OPEN_CORE_FEATURES.get(feature, False)
 
     async def features(self, user: dict) -> dict:
         return {
             "plan": "open-core",
-            "features": {name: True for name in KNOWN_FEATURES},
+            "features": {name: self._OPEN_CORE_FEATURES.get(name, False) for name in KNOWN_FEATURES},
             "limits": {"max_agents": None},  # None = unlimited
         }
 
