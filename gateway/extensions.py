@@ -31,7 +31,12 @@ logger = logging.getLogger(__name__)
 # decision) or a dict with at least ``{"action": "approve"|"reject", "rule": dict}``.
 AutoDecisionProvider = Callable[..., Awaitable[Optional[dict]]]
 
+# A migration takes an open aiosqlite connection and applies idempotent schema
+# changes (e.g. ADD COLUMN guarded by a PRAGMA check). Run during init_db().
+Migration = Callable[..., Awaitable[None]]
+
 _auto_decision_provider: Optional[AutoDecisionProvider] = None
+_migrations: list[Migration] = []
 
 
 def register_auto_decision_provider(fn: AutoDecisionProvider) -> None:
@@ -44,6 +49,27 @@ def reset_auto_decision_provider() -> None:
     """Clear the registered provider. For tests."""
     global _auto_decision_provider
     _auto_decision_provider = None
+
+
+def register_migration(fn: Migration) -> None:
+    """Register a plugin schema migration to run during init_db().
+
+    The callable receives the open aiosqlite connection and must be idempotent
+    (guard ADD COLUMN with a PRAGMA table_info check) since init_db runs on every
+    startup. Registration order is preserved.
+    """
+    if fn not in _migrations:
+        _migrations.append(fn)
+
+
+def get_migrations() -> list[Migration]:
+    """Return the registered plugin migrations, in registration order."""
+    return list(_migrations)
+
+
+def reset_migrations() -> None:
+    """Clear registered migrations. For tests."""
+    _migrations.clear()
 
 
 async def run_auto_decision(op: dict, *, db_path, user_id) -> Optional[dict]:
