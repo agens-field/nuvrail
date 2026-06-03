@@ -39,6 +39,12 @@ type RuleFormState = {
   delay_minutes: string       // cool-down for approve_after (entered in minutes)
   rate_limit_per_hour: string // optional cap for approving actions
   set_urgent: boolean         // urgency override for hold/approve_after
+  // Tier 3 guardrails
+  is_guardrail: boolean
+  shadow: boolean
+  active_start: string        // "HH:MM" active-window start (blank = always)
+  active_end: string          // "HH:MM" active-window end
+  active_tz: string           // IANA tz (blank = UTC)
   description: string
 }
 
@@ -57,6 +63,11 @@ const initialFormState: RuleFormState = {
   delay_minutes: '',
   rate_limit_per_hour: '',
   set_urgent: false,
+  is_guardrail: false,
+  shadow: false,
+  active_start: '',
+  active_end: '',
+  active_tz: '',
   description: '',
 }
 
@@ -105,6 +116,23 @@ function normalizeCount(value: string): number | null {
   return Number.isFinite(n) && n >= 0 ? Math.floor(n) : null
 }
 
+/** "HH:MM" -> minutes since midnight, or null if blank/invalid. */
+function hhmmToMinutes(value: string): number | null {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(value.trim())
+  if (!m) return null
+  const h = Number(m[1])
+  const min = Number(m[2])
+  if (h > 23 || min > 59) return null
+  return h * 60 + min
+}
+
+/** minutes since midnight -> "HH:MM" (for display / time inputs). */
+function minutesToHHMM(total: number): string {
+  const h = Math.floor(total / 60)
+  const m = total % 60
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`
+}
+
 /** Humanise a duration in minutes, e.g. 90 -> "1h 30m", 10 -> "10m". */
 function humanizeMinutes(totalMinutes: number): string {
   if (totalMinutes <= 0) return '0m'
@@ -145,12 +173,21 @@ function buildRulePreview(form: RuleFormState, agentLabel: (id: number) => strin
   else if (min !== null) parts.push(`affecting ≥ ${min} messages`)
   else if (max !== null) parts.push(`affecting ≤ ${max} messages`)
   if (form.agent_id) parts.push(`staged by ${agentLabel(Number(form.agent_id))}`)
+  const start = hhmmToMinutes(form.active_start)
+  const end = hhmmToMinutes(form.active_end)
+  if (start !== null && end !== null) {
+    parts.push(`only ${form.active_start}–${form.active_end} ${form.active_tz.trim() || 'UTC'}`)
+  }
   const cap = normalizeCount(form.rate_limit_per_hour)
   const capClause =
     cap !== null && (form.action === 'approve' || form.action === 'approve_after')
       ? `, up to ${cap}/hour then fall back to manual review`
       : ''
-  return `This rule will ${actionPhrase(form)}: ${parts.join(', ')}${capClause}.`
+  if (form.shadow) {
+    return `Shadow mode: would ${actionPhrase(form)} ${parts.join(', ')} — logged only, never acts.`
+  }
+  const lead = form.is_guardrail ? 'Guardrail — wins over normal rules. Will' : 'This rule will'
+  return `${lead} ${actionPhrase(form)}: ${parts.join(', ')}${capClause}.`
 }
 
 const ACTION_BADGE: Record<AutoApprovalAction, string> = {
@@ -186,6 +223,11 @@ function ruleConditions(rule: AutoApprovalRule, agentLabel: (id: number) => stri
     chips.push(`count: ${min ?? 0}–${max ?? '∞'}`)
   }
   if (rule.agent_id != null) chips.push(`agent: ${agentLabel(rule.agent_id)}`)
+  if (rule.active_start_min != null && rule.active_end_min != null) {
+    chips.push(
+      `${minutesToHHMM(rule.active_start_min)}–${minutesToHHMM(rule.active_end_min)} ${rule.active_tz || 'UTC'}`
+    )
+  }
   return chips
 }
 
@@ -260,6 +302,21 @@ export default function RulesView() {
     const canSetUrgent = form.action === 'hold' || form.action === 'approve_after'
     const rateLimit = normalizeCount(form.rate_limit_per_hour)
 
+    const startMin = hhmmToMinutes(form.active_start)
+    const endMin = hhmmToMinutes(form.active_end)
+    if ((form.active_start.trim() === '') !== (form.active_end.trim() === '')) {
+      toast.error('An active window needs both a start and end time')
+      return
+    }
+    if (form.active_start.trim() && startMin === null) {
+      toast.error('Active window times must be valid (HH:MM)')
+      return
+    }
+    if (form.active_end.trim() && endMin === null) {
+      toast.error('Active window times must be valid (HH:MM)')
+      return
+    }
+
     const maxPriority = rules.reduce((currentMax, rule) => Math.max(currentMax, rule.priority), 0)
 
     createMutation.mutate({
@@ -279,6 +336,11 @@ export default function RulesView() {
       delay_seconds: form.action === 'approve_after' && delayMinutes ? delayMinutes * 60 : null,
       rate_limit_per_hour: isApproving ? rateLimit : null,
       set_urgent: canSetUrgent && form.set_urgent ? 1 : null,
+      is_guardrail: form.is_guardrail,
+      shadow: form.shadow,
+      active_start_min: startMin,
+      active_end_min: endMin,
+      active_tz: normalizeOptionalInput(form.active_tz),
     })
   }
 
@@ -615,6 +677,78 @@ export default function RulesView() {
             </div>
           </fieldset>
 
+          {/* Guardrails — safety controls (Tier 3). */}
+          <fieldset className="rounded-md border border-edge/70 p-3">
+            <legend className="px-1 text-xs font-medium text-fg-3">Guardrails</legend>
+            <div className="space-y-3">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <label className="inline-flex items-start gap-2 rounded-md bg-surface-hi border border-edge px-3 py-2 text-sm text-fg-2">
+                  <input
+                    type="checkbox"
+                    checked={form.is_guardrail}
+                    onChange={(e) => setForm((prev) => ({ ...prev, is_guardrail: e.target.checked }))}
+                    className="mt-0.5 accent-rose-500"
+                  />
+                  <span>
+                    Guardrail
+                    <span className="block text-xs text-fg-3/70">
+                      Evaluated before all normal rules; wins regardless of priority. Use to make a
+                      safety rule unbeatable.
+                    </span>
+                  </span>
+                </label>
+                <label className="inline-flex items-start gap-2 rounded-md bg-surface-hi border border-edge px-3 py-2 text-sm text-fg-2">
+                  <input
+                    type="checkbox"
+                    checked={form.shadow}
+                    onChange={(e) => setForm((prev) => ({ ...prev, shadow: e.target.checked }))}
+                    className="mt-0.5 accent-violet-500"
+                  />
+                  <span>
+                    Shadow mode
+                    <span className="block text-xs text-fg-3/70">
+                      Logs what it would do without acting — measure a rule's impact before
+                      enabling it for real.
+                    </span>
+                  </span>
+                </label>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                <div>
+                  <label className="block text-xs font-medium text-fg-3 mb-1">Active from</label>
+                  <input
+                    type="time"
+                    value={form.active_start}
+                    onChange={(e) => setForm((prev) => ({ ...prev, active_start: e.target.value }))}
+                    className={inputClass}
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-fg-3 mb-1">Active until</label>
+                  <input
+                    type="time"
+                    value={form.active_end}
+                    onChange={(e) => setForm((prev) => ({ ...prev, active_end: e.target.value }))}
+                    className={inputClass}
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-fg-3 mb-1">Timezone</label>
+                  <input
+                    value={form.active_tz}
+                    onChange={(e) => setForm((prev) => ({ ...prev, active_tz: e.target.value }))}
+                    placeholder="UTC"
+                    className={inputClass}
+                  />
+                </div>
+              </div>
+              <p className="text-xs text-fg-3/70">
+                Leave the times blank for always-on. A window only auto-decides during those hours
+                (e.g. block 3am anomalies); outside it, ops fall to manual review.
+              </p>
+            </div>
+          </fieldset>
+
           <div>
             <label className="block text-xs font-medium text-fg-3 mb-1">Description</label>
             <input
@@ -860,7 +994,27 @@ export default function RulesView() {
                       className="border-b border-edge/60 last:border-b-0 hover:bg-surface/50"
                     >
                       <td className="px-3 py-2 text-fg-2">{rule.priority}</td>
-                      <td className="px-3 py-2 text-fg">{rule.description}</td>
+                      <td className="px-3 py-2 text-fg">
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          {rule.is_guardrail && (
+                            <span
+                              className="inline-flex px-1.5 py-0.5 rounded text-xs font-medium bg-rose-900/70 text-rose-200"
+                              title="Guardrail — evaluated first, wins over normal rules"
+                            >
+                              guardrail
+                            </span>
+                          )}
+                          {rule.shadow && (
+                            <span
+                              className="inline-flex px-1.5 py-0.5 rounded text-xs font-medium bg-violet-900/70 text-violet-200"
+                              title="Shadow — logged only, never acts"
+                            >
+                              shadow
+                            </span>
+                          )}
+                          <span>{rule.description}</span>
+                        </div>
+                      </td>
                       <td className="px-3 py-2 text-fg-2">{rule.op_type ?? 'any'}</td>
                       <td className="px-3 py-2">
                         {conditions.length === 0 ? (
@@ -888,12 +1042,21 @@ export default function RulesView() {
                         </span>
                       </td>
                       <td className="px-3 py-2">
-                        <span
-                          className="inline-flex px-2 py-1 rounded text-xs font-medium bg-surface-hi text-fg-2"
-                          title="Operations auto-decided by this rule"
-                        >
-                          {rule.hits}
-                        </span>
+                        {rule.shadow ? (
+                          <span
+                            className="inline-flex px-2 py-1 rounded text-xs font-medium bg-violet-900/50 text-violet-200"
+                            title="Operations this shadow rule would have acted on"
+                          >
+                            {rule.shadow_hits ?? 0} shadow
+                          </span>
+                        ) : (
+                          <span
+                            className="inline-flex px-2 py-1 rounded text-xs font-medium bg-surface-hi text-fg-2"
+                            title="Operations auto-decided by this rule"
+                          >
+                            {rule.hits}
+                          </span>
+                        )}
                       </td>
                       <td className="px-3 py-2">
                         <button
