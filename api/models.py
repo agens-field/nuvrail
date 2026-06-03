@@ -28,6 +28,7 @@ class OperationResponse(BaseModel):
     created_at: int
     expires_at: int
     decided_at: Optional[int] = None
+    scheduled_execute_at: Optional[int] = None  # cool-down deadline (approve_after)
     imap_command: Optional[str] = None
     smtp_envelope: Optional[dict] = None
     message_ids: List[str] = []

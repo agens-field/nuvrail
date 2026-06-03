@@ -62,52 +62,83 @@ async def _resolve_user_id_for_agent(
     return row["user_id"] if row is not None else None
 
 
-def _decision_to_status(action: str) -> Optional[str]:
-    if action == "approve":
-        return "approved"
-    if action == "reject":
-        return "rejected"
-    return None
+# Auto-actions that fully decide an op at staging time (no human review left).
+# Used by create_operation to suppress the pending-review push notification.
+_TERMINAL_AUTO_ACTIONS = {"approve", "reject"}
+
+
+async def _set_schedule_and_urgency(
+    op_id: str,
+    db_path: Path,
+    scheduled_execute_at: Optional[int] = None,
+    is_urgent: Optional[int] = None,
+) -> None:
+    """Set scheduled_execute_at and/or is_urgent on a still-pending op.
+
+    Only the provided fields are written, so a 'hold' can bump urgency without
+    touching scheduling and a cool-down can schedule without forcing urgency.
+    """
+    sets: list[str] = []
+    values: list[object] = []
+    if scheduled_execute_at is not None:
+        sets.append("scheduled_execute_at = ?")
+        values.append(scheduled_execute_at)
+    if is_urgent is not None:
+        sets.append("is_urgent = ?")
+        values.append(1 if is_urgent else 0)
+    if not sets:
+        return
+    values.append(op_id)
+    async with get_db(db_path) as db:
+        await db.execute(
+            f"UPDATE staged_operations SET {', '.join(sets)} WHERE id = ?",  # noqa: S608
+            values,
+        )
+        await db.commit()
 
 
 async def _apply_auto_rule_decision(
     op_id: str,
-    action: str,
-    rule: dict,
+    decision: dict,
     db_path: Path,
     agent_id: Optional[int] = None,
     op_type: Optional[str] = None,
 ) -> None:
     """Apply a matched auto-rule decision.
 
-    Always records the auto-rule decision in the audit log (event 'approved' or
-    'rejected', actor 'auto_rule', carrying the rule id — this is what the rule
-    `hits` count is derived from).
+    Always records the decision in the audit log (actor 'auto_rule', carrying
+    the rule id — this is what the rule `hits` count is derived from). The
+    ``decision`` dict carries ``action`` plus optional ``delay_seconds`` (for
+    'approve_after') and ``is_urgent`` (an urgency override). The matching logic
+    that produced it lives in the enterprise plugin; core only applies it.
 
     - reject: mark the operation 'rejected' and roll back optimistic local state.
-    - approve: execute the operation upstream via the shared executor — the SAME
-      code path a human approval uses — so an auto-approved operation actually
-      happens instead of being silently left in a non-executed state. The
-      executor sets the final status ('executed' on success, 'failed' on
-      upstream error) and writes its own audit row.
+    - approve: execute upstream via the shared executor — the SAME code path a
+      human approval uses — so the op actually happens. The executor sets the
+      final status ('executed'/'failed') and writes its own audit row.
+    - approve_after: leave the op 'pending' but stamp ``scheduled_execute_at``;
+      the scheduled-execution loop (gateway.scheduler) executes it when the
+      cool-down elapses, unless a human approves ('send now') or rejects
+      ('cancel') first. Gives a catch-it-before-it-sends window — the only
+      safety net for outbound mail, which cannot be undone.
+    - hold: leave the op 'pending' for manual review, optionally bumping urgency.
     """
-    decision_status = _decision_to_status(action)
-    if decision_status is None:
-        return
-
+    action = decision.get("action")
+    rule = decision.get("rule") or {}
+    delay_seconds = decision.get("delay_seconds")
+    is_urgent = decision.get("is_urgent")
     now = int(time.time())
-    detail = json.dumps(
-        {
-            "rule_id": rule.get("id"),
-            "rule_description": rule.get("description"),
-        }
-    )
+    detail_obj: dict = {
+        "rule_id": rule.get("id"),
+        "rule_description": rule.get("description"),
+    }
 
-    if decision_status == "rejected":
+    if action == "reject":
         await update_operation_status(op_id, "rejected", decided_by="auto_rule", db_path=db_path)
         await record_audit_event(
             db_path, timestamp=now, event="rejected", actor="auto_rule",
-            operation_id=op_id, agent_id=agent_id, op_type=op_type, detail=detail,
+            operation_id=op_id, agent_id=agent_id, op_type=op_type,
+            detail=json.dumps(detail_obj),
         )
         # Roll back optimistic local state immediately.
         try:
@@ -121,13 +152,44 @@ async def _apply_auto_rule_decision(
             )
         return
 
+    if action == "approve_after":
+        # Defer execution. The op stays pending (cancelable) with a deadline.
+        delay = int(delay_seconds) if delay_seconds else 0
+        scheduled_at = now + max(delay, 0)
+        detail_obj["delay_seconds"] = delay
+        detail_obj["scheduled_execute_at"] = scheduled_at
+        await _set_schedule_and_urgency(
+            op_id, db_path, scheduled_execute_at=scheduled_at, is_urgent=is_urgent
+        )
+        await record_audit_event(
+            db_path, timestamp=now, event="scheduled", actor="auto_rule",
+            operation_id=op_id, agent_id=agent_id, op_type=op_type,
+            detail=json.dumps(detail_obj),
+        )
+        return
+
+    if action == "hold":
+        # Keep for manual review; the only effect is optional urgency + audit
+        # attribution so the user can see which rule flagged it.
+        await _set_schedule_and_urgency(op_id, db_path, is_urgent=is_urgent)
+        await record_audit_event(
+            db_path, timestamp=now, event="held", actor="auto_rule",
+            operation_id=op_id, agent_id=agent_id, op_type=op_type,
+            detail=json.dumps(detail_obj),
+        )
+        return
+
+    if action != "approve":
+        return
+
     # action == "approve"
     # Record the auto-rule decision first (audit + rule-hit attribution), then
     # execute upstream. We do NOT set an intermediate 'approved' status — the
     # executor transitions the op straight to 'executed' or 'failed'.
     await record_audit_event(
         db_path, timestamp=now, event="approved", actor="auto_rule",
-        operation_id=op_id, agent_id=agent_id, op_type=op_type, detail=detail,
+        operation_id=op_id, agent_id=agent_id, op_type=op_type,
+        detail=json.dumps(detail_obj),
     )
 
     row = await get_operation(op_id, db_path=db_path)
@@ -248,11 +310,15 @@ async def create_operation(
     auto_action = decision["action"] if decision else None
     if decision is not None:
         await _apply_auto_rule_decision(
-            op_id, decision["action"], decision["rule"], db_path,
+            op_id, decision, db_path,
             agent_id=agent_id, op_type=op_type,
         )
 
-    if auto_action is None:
+    # Notify unless the op was terminally decided. 'approve' executed it and
+    # 'reject' reverted it — neither needs a review notification. Everything
+    # else (no match, a cool-down 'approve_after', or a 'hold') leaves the op
+    # actionable by the human, who must be told it is waiting.
+    if auto_action not in _TERMINAL_AUTO_ACTIONS:
         # Fire-and-forget Web Push notification. Non-fatal — staging always succeeds.
         try:
             from gateway.push import notify_staged as _notify

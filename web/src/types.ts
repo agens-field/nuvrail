@@ -21,6 +21,7 @@ export interface Operation {
   created_at: number
   expires_at: number
   decided_at?: number
+  scheduled_execute_at?: number  // cool-down deadline (approve_after); auto-executes when passed
   imap_command?: string
   smtp_envelope?: SmtpEnvelope
   message_previews?: MessagePreview[]
@@ -102,7 +103,7 @@ export interface AuditListResponse {
   offset: number
 }
 
-export type AutoApprovalAction = 'approve' | 'reject'
+export type AutoApprovalAction = 'approve' | 'reject' | 'approve_after' | 'hold'
 
 export interface AutoApprovalRule {
   id: number
@@ -119,6 +120,10 @@ export interface AutoApprovalRule {
   min_message_count?: number | null
   max_message_count?: number | null
   agent_id?: number | null
+  // Tier 2 action parameters
+  delay_seconds?: number | null        // cool-down for action 'approve_after'
+  rate_limit_per_hour?: number | null  // cap an approving rule's hourly budget
+  set_urgent?: number | null           // urgency override for 'hold'/'approve_after'
   action: AutoApprovalAction
   description: string
   created_at: number
@@ -158,6 +163,9 @@ export interface AutoApprovalRuleCreateRequest {
   min_message_count?: number | null
   max_message_count?: number | null
   agent_id?: number | null
+  delay_seconds?: number | null
+  rate_limit_per_hour?: number | null
+  set_urgent?: number | null
   action: AutoApprovalAction
   description: string
 }
@@ -175,6 +183,9 @@ export interface AutoApprovalRuleUpdateRequest {
   min_message_count?: number | null
   max_message_count?: number | null
   agent_id?: number | null
+  delay_seconds?: number | null
+  rate_limit_per_hour?: number | null
+  set_urgent?: number | null
   action?: AutoApprovalAction
   description?: string
 }

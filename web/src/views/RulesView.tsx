@@ -17,6 +17,13 @@ const OP_TYPE_OPTIONS = [
   { value: 'smtp_send', label: 'smtp_send' },
 ] as const
 
+const ACTION_OPTIONS: { value: AutoApprovalAction; label: string }[] = [
+  { value: 'approve', label: 'Approve immediately' },
+  { value: 'approve_after', label: 'Approve after a delay (cool-down)' },
+  { value: 'reject', label: 'Reject' },
+  { value: 'hold', label: 'Hold for review' },
+]
+
 type RuleFormState = {
   op_type: string
   sender_pattern: string
@@ -29,6 +36,9 @@ type RuleFormState = {
   max_message_count: string
   agent_id: string // '' = any agent
   action: AutoApprovalAction
+  delay_minutes: string       // cool-down for approve_after (entered in minutes)
+  rate_limit_per_hour: string // optional cap for approving actions
+  set_urgent: boolean         // urgency override for hold/approve_after
   description: string
 }
 
@@ -44,6 +54,9 @@ const initialFormState: RuleFormState = {
   max_message_count: '',
   agent_id: '',
   action: 'approve',
+  delay_minutes: '',
+  rate_limit_per_hour: '',
+  set_urgent: false,
   description: '',
 }
 
@@ -92,6 +105,32 @@ function normalizeCount(value: string): number | null {
   return Number.isFinite(n) && n >= 0 ? Math.floor(n) : null
 }
 
+/** Humanise a duration in minutes, e.g. 90 -> "1h 30m", 10 -> "10m". */
+function humanizeMinutes(totalMinutes: number): string {
+  if (totalMinutes <= 0) return '0m'
+  const h = Math.floor(totalMinutes / 60)
+  const m = totalMinutes % 60
+  if (h && m) return `${h}h ${m}m`
+  if (h) return `${h}h`
+  return `${m}m`
+}
+
+function actionPhrase(form: RuleFormState): string {
+  const urgent = form.set_urgent ? ' (mark urgent)' : ''
+  switch (form.action) {
+    case 'approve_after': {
+      const mins = normalizeCount(form.delay_minutes) ?? 0
+      return `auto-approve after ${humanizeMinutes(mins)} (cancelable until then)${urgent}`
+    }
+    case 'reject':
+      return 'auto-reject'
+    case 'hold':
+      return `hold for manual review${urgent}`
+    default:
+      return 'auto-approve'
+  }
+}
+
 function buildRulePreview(form: RuleFormState, agentLabel: (id: number) => string): string {
   const parts: string[] = [form.op_type ? `${form.op_type} ops` : 'any ops']
   if (form.sender_pattern.trim()) parts.push(describeSender(form.sender_pattern))
@@ -106,8 +145,30 @@ function buildRulePreview(form: RuleFormState, agentLabel: (id: number) => strin
   else if (min !== null) parts.push(`affecting ≥ ${min} messages`)
   else if (max !== null) parts.push(`affecting ≤ ${max} messages`)
   if (form.agent_id) parts.push(`staged by ${agentLabel(Number(form.agent_id))}`)
-  const verb = form.action === 'approve' ? 'auto-approve' : 'auto-reject'
-  return `This rule will ${verb}: ${parts.join(', ')}.`
+  const cap = normalizeCount(form.rate_limit_per_hour)
+  const capClause =
+    cap !== null && (form.action === 'approve' || form.action === 'approve_after')
+      ? `, up to ${cap}/hour then fall back to manual review`
+      : ''
+  return `This rule will ${actionPhrase(form)}: ${parts.join(', ')}${capClause}.`
+}
+
+const ACTION_BADGE: Record<AutoApprovalAction, string> = {
+  approve: 'bg-emerald-900/70 text-emerald-200',
+  approve_after: 'bg-sky-900/70 text-sky-200',
+  reject: 'bg-red-900/70 text-red-200',
+  hold: 'bg-amber-900/70 text-amber-200',
+}
+
+/** Compact action label for the rules table, including Tier 2 modifiers. */
+function actionLabel(rule: AutoApprovalRule): string {
+  const base =
+    rule.action === 'approve_after'
+      ? `approve after ${humanizeMinutes(Math.round((rule.delay_seconds ?? 0) / 60))}`
+      : rule.action
+  const cap = rule.rate_limit_per_hour != null ? ` ≤${rule.rate_limit_per_hour}/h` : ''
+  const urgent = rule.set_urgent ? ' ⚡' : ''
+  return `${base}${cap}${urgent}`
 }
 
 /** Short labelled chips summarising every match condition set on a rule. */
@@ -189,6 +250,16 @@ export default function RulesView() {
       return
     }
 
+    const delayMinutes = normalizeCount(form.delay_minutes)
+    if (form.action === 'approve_after' && !delayMinutes) {
+      toast.error('A cool-down rule needs a delay greater than 0 minutes')
+      return
+    }
+
+    const isApproving = form.action === 'approve' || form.action === 'approve_after'
+    const canSetUrgent = form.action === 'hold' || form.action === 'approve_after'
+    const rateLimit = normalizeCount(form.rate_limit_per_hour)
+
     const maxPriority = rules.reduce((currentMax, rule) => Math.max(currentMax, rule.priority), 0)
 
     createMutation.mutate({
@@ -205,6 +276,9 @@ export default function RulesView() {
       min_message_count: min,
       max_message_count: max,
       agent_id: form.agent_id ? Number(form.agent_id) : null,
+      delay_seconds: form.action === 'approve_after' && delayMinutes ? delayMinutes * 60 : null,
+      rate_limit_per_hour: isApproving ? rateLimit : null,
+      set_urgent: canSetUrgent && form.set_urgent ? 1 : null,
     })
   }
 
@@ -347,28 +421,87 @@ export default function RulesView() {
             </div>
             <div>
               <label className="block text-xs font-medium text-fg-3 mb-1">Action</label>
-              <div className="flex items-center gap-4 rounded-md bg-surface-hi border border-edge px-3 py-2 text-sm text-fg-2">
-                <label className="inline-flex items-center gap-2">
-                  <input
-                    type="radio"
-                    checked={form.action === 'approve'}
-                    onChange={() => setForm((prev) => ({ ...prev, action: 'approve' }))}
-                    className="accent-emerald-500"
-                  />
-                  Approve
-                </label>
-                <label className="inline-flex items-center gap-2">
-                  <input
-                    type="radio"
-                    checked={form.action === 'reject'}
-                    onChange={() => setForm((prev) => ({ ...prev, action: 'reject' }))}
-                    className="accent-red-500"
-                  />
-                  Reject
-                </label>
-              </div>
+              <select
+                value={form.action}
+                onChange={(e) =>
+                  setForm((prev) => ({ ...prev, action: e.target.value as AutoApprovalAction }))
+                }
+                className={inputClass}
+              >
+                {ACTION_OPTIONS.map((o) => (
+                  <option key={o.value} value={o.value}>
+                    {o.label}
+                  </option>
+                ))}
+              </select>
             </div>
           </div>
+
+          {/* Action settings — only those relevant to the chosen action. */}
+          {form.action !== 'reject' && (
+            <fieldset className="rounded-md border border-edge/70 p-3">
+              <legend className="px-1 text-xs font-medium text-fg-3">Action settings</legend>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3 items-end">
+                {form.action === 'approve_after' && (
+                  <div>
+                    <label className="block text-xs font-medium text-fg-3 mb-1">
+                      Delay (minutes) <span className="text-red-400">*</span>
+                    </label>
+                    <input
+                      type="number"
+                      min={1}
+                      value={form.delay_minutes}
+                      onChange={(e) =>
+                        setForm((prev) => ({ ...prev, delay_minutes: e.target.value }))
+                      }
+                      placeholder="10"
+                      className={inputClass}
+                    />
+                    <p className="text-xs text-fg-3/70 mt-1">
+                      Auto-runs after this long unless you cancel first — your window to catch a
+                      bad send.
+                    </p>
+                  </div>
+                )}
+                {(form.action === 'approve' || form.action === 'approve_after') && (
+                  <div>
+                    <label className="block text-xs font-medium text-fg-3 mb-1">
+                      Rate limit (per hour)
+                    </label>
+                    <input
+                      type="number"
+                      min={1}
+                      value={form.rate_limit_per_hour}
+                      onChange={(e) =>
+                        setForm((prev) => ({ ...prev, rate_limit_per_hour: e.target.value }))
+                      }
+                      placeholder="No limit"
+                      className={inputClass}
+                    />
+                    <p className="text-xs text-fg-3/70 mt-1">
+                      Beyond this many auto-approvals per hour, fall back to manual review.
+                    </p>
+                  </div>
+                )}
+                {(form.action === 'hold' || form.action === 'approve_after') && (
+                  <div>
+                    <label className="block text-xs font-medium text-fg-3 mb-1">Urgency</label>
+                    <label className="inline-flex items-center gap-2 rounded-md bg-surface-hi border border-edge px-3 py-2 text-sm text-fg-2 w-full">
+                      <input
+                        type="checkbox"
+                        checked={form.set_urgent}
+                        onChange={(e) =>
+                          setForm((prev) => ({ ...prev, set_urgent: e.target.checked }))
+                        }
+                        className="accent-amber-500"
+                      />
+                      Mark matching ops urgent
+                    </label>
+                  </div>
+                )}
+              </div>
+            </fieldset>
+          )}
 
           {/* Match conditions — all optional; blank means "don't care". */}
           <fieldset className="rounded-md border border-edge/70 p-3">
@@ -747,13 +880,11 @@ export default function RulesView() {
                       </td>
                       <td className="px-3 py-2">
                         <span
-                          className={`inline-flex px-2 py-1 rounded text-xs font-medium ${
-                            rule.action === 'approve'
-                              ? 'bg-emerald-900/70 text-emerald-200'
-                              : 'bg-red-900/70 text-red-200'
+                          className={`inline-flex px-2 py-1 rounded text-xs font-medium whitespace-nowrap ${
+                            ACTION_BADGE[rule.action] ?? 'bg-surface-hi text-fg-2'
                           }`}
                         >
-                          {rule.action}
+                          {actionLabel(rule)}
                         </span>
                       </td>
                       <td className="px-3 py-2">
