@@ -111,6 +111,14 @@ export interface AutoApprovalRule {
   op_type?: string | null
   sender_pattern?: string | null
   folder_from?: string | null
+  // Tier 1 predicates (null/absent = "don't care")
+  folder_to?: string | null
+  recipient_pattern?: string | null
+  subject_pattern?: string | null
+  flag_pattern?: string | null
+  min_message_count?: number | null
+  max_message_count?: number | null
+  agent_id?: number | null
   action: AutoApprovalAction
   description: string
   created_at: number
@@ -121,6 +129,13 @@ export interface RuleTestRequest {
   op_type: string
   sender?: string | null
   folder_from?: string | null
+  folder_to?: string | null
+  recipient?: string | null
+  subject?: string | null
+  flags_add?: string[] | null
+  flags_remove?: string[] | null
+  message_ids?: string[] | null
+  agent_id?: number | null
 }
 
 export interface RuleTestResponse {
@@ -136,6 +151,13 @@ export interface AutoApprovalRuleCreateRequest {
   op_type?: string | null
   sender_pattern?: string | null
   folder_from?: string | null
+  folder_to?: string | null
+  recipient_pattern?: string | null
+  subject_pattern?: string | null
+  flag_pattern?: string | null
+  min_message_count?: number | null
+  max_message_count?: number | null
+  agent_id?: number | null
   action: AutoApprovalAction
   description: string
 }
@@ -146,6 +168,13 @@ export interface AutoApprovalRuleUpdateRequest {
   op_type?: string | null
   sender_pattern?: string | null
   folder_from?: string | null
+  folder_to?: string | null
+  recipient_pattern?: string | null
+  subject_pattern?: string | null
+  flag_pattern?: string | null
+  min_message_count?: number | null
+  max_message_count?: number | null
+  agent_id?: number | null
   action?: AutoApprovalAction
   description?: string
 }

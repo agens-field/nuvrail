@@ -225,12 +225,23 @@ async def create_operation(
 
     # Evaluate auto-rules before push notifications. Auto-approved/rejected
     # operations should not create pending-review push noise.
+    #
+    # This dict is the sole input an auto-decision provider sees, so it must
+    # carry every field a rule might match on. ``smtp_envelope`` already holds
+    # ``to``/``subject`` (extracted provider-side); the remaining fields below
+    # let rules match a move's destination, the flags being changed, how many
+    # messages an op touches, and which agent staged it.
     rule_op = {
         "id": op_id,
         "op_type": op_type,
         "sender": (smtp_envelope or {}).get("from") if smtp_envelope else None,
         "smtp_envelope": smtp_envelope,
         "folder_from": folder_from,
+        "folder_to": folder_to,
+        "flags_add": flags_add,
+        "flags_remove": flags_remove,
+        "message_ids": message_ids,
+        "agent_id": agent_id,
         "snapshot": snapshot,
     }
     decision = await run_auto_decision(rule_op, db_path=db_path, user_id=rule_user_id)

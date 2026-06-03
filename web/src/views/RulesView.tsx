@@ -2,7 +2,7 @@ import { useMemo, useState, type FormEvent } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { ArrowDown, ArrowUp, FlaskConical, Inbox, Plus, RefreshCw, Trash2 } from 'lucide-react'
-import { createRule, deleteRule, fetchRules, testRule, updateRule } from '../api/client'
+import { createRule, deleteRule, fetchAgents, fetchRules, testRule, updateRule } from '../api/client'
 import type { AutoApprovalAction, AutoApprovalRule, RuleTestResponse } from '../types'
 
 const OP_TYPE_OPTIONS = [
@@ -21,6 +21,13 @@ type RuleFormState = {
   op_type: string
   sender_pattern: string
   folder_from: string
+  folder_to: string
+  recipient_pattern: string
+  subject_pattern: string
+  flag_pattern: string
+  min_message_count: string
+  max_message_count: string
+  agent_id: string // '' = any agent
   action: AutoApprovalAction
   description: string
 }
@@ -29,30 +36,96 @@ const initialFormState: RuleFormState = {
   op_type: '',
   sender_pattern: '',
   folder_from: '',
+  folder_to: '',
+  recipient_pattern: '',
+  subject_pattern: '',
+  flag_pattern: '',
+  min_message_count: '',
+  max_message_count: '',
+  agent_id: '',
   action: 'approve',
   description: '',
 }
 
+type TestFormState = {
+  op_type: string
+  sender: string
+  folder_from: string
+  folder_to: string
+  recipient: string
+  subject: string
+  flag: string
+  message_count: string
+  agent_id: string
+}
+
+const initialTestForm: TestFormState = {
+  op_type: '',
+  sender: '',
+  folder_from: '',
+  folder_to: '',
+  recipient: '',
+  subject: '',
+  flag: '',
+  message_count: '',
+  agent_id: '',
+}
+
 function describeSender(pattern: string): string {
   const trimmed = pattern.trim()
-  if (!trimmed) return 'from any sender'
   if (trimmed.startsWith('*@')) {
     return `from addresses ending in ${trimmed.slice(1)}`
   }
   return `from senders matching "${trimmed}"`
 }
 
-function buildRulePreview(form: RuleFormState): string {
-  const opTypeLabel = form.op_type ? form.op_type : 'any'
-  const senderLabel = describeSender(form.sender_pattern)
-  const folder = form.folder_from.trim()
-  const folderLabel = folder ? ` in folder ${folder}` : ''
-  return `This rule would match: ${opTypeLabel} ops ${senderLabel}${folderLabel}.`
-}
-
 function normalizeOptionalInput(value: string): string | null {
   const trimmed = value.trim()
   return trimmed.length > 0 ? trimmed : null
+}
+
+/** Parse a non-negative integer count input, or null when blank/invalid. */
+function normalizeCount(value: string): number | null {
+  const trimmed = value.trim()
+  if (!trimmed) return null
+  const n = Number(trimmed)
+  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : null
+}
+
+function buildRulePreview(form: RuleFormState, agentLabel: (id: number) => string): string {
+  const parts: string[] = [form.op_type ? `${form.op_type} ops` : 'any ops']
+  if (form.sender_pattern.trim()) parts.push(describeSender(form.sender_pattern))
+  if (form.folder_from.trim()) parts.push(`from ${form.folder_from.trim()}`)
+  if (form.folder_to.trim()) parts.push(`into ${form.folder_to.trim()}`)
+  if (form.recipient_pattern.trim()) parts.push(`to recipients matching "${form.recipient_pattern.trim()}"`)
+  if (form.subject_pattern.trim()) parts.push(`with subject matching "${form.subject_pattern.trim()}"`)
+  if (form.flag_pattern.trim()) parts.push(`touching flag "${form.flag_pattern.trim()}"`)
+  const min = normalizeCount(form.min_message_count)
+  const max = normalizeCount(form.max_message_count)
+  if (min !== null && max !== null) parts.push(`affecting ${min}–${max} messages`)
+  else if (min !== null) parts.push(`affecting ≥ ${min} messages`)
+  else if (max !== null) parts.push(`affecting ≤ ${max} messages`)
+  if (form.agent_id) parts.push(`staged by ${agentLabel(Number(form.agent_id))}`)
+  const verb = form.action === 'approve' ? 'auto-approve' : 'auto-reject'
+  return `This rule will ${verb}: ${parts.join(', ')}.`
+}
+
+/** Short labelled chips summarising every match condition set on a rule. */
+function ruleConditions(rule: AutoApprovalRule, agentLabel: (id: number) => string): string[] {
+  const chips: string[] = []
+  if (rule.sender_pattern) chips.push(`sender: ${rule.sender_pattern}`)
+  if (rule.folder_from) chips.push(`from: ${rule.folder_from}`)
+  if (rule.folder_to) chips.push(`to: ${rule.folder_to}`)
+  if (rule.recipient_pattern) chips.push(`recipient: ${rule.recipient_pattern}`)
+  if (rule.subject_pattern) chips.push(`subject: ${rule.subject_pattern}`)
+  if (rule.flag_pattern) chips.push(`flag: ${rule.flag_pattern}`)
+  const min = rule.min_message_count
+  const max = rule.max_message_count
+  if (min != null || max != null) {
+    chips.push(`count: ${min ?? 0}–${max ?? '∞'}`)
+  }
+  if (rule.agent_id != null) chips.push(`agent: ${agentLabel(rule.agent_id)}`)
+  return chips
 }
 
 export default function RulesView() {
@@ -62,7 +135,7 @@ export default function RulesView() {
   const [updatingRuleId, setUpdatingRuleId] = useState<number | null>(null)
 
   // Rule test panel
-  const [testForm, setTestForm] = useState({ op_type: '', sender: '', folder_from: '' })
+  const [testForm, setTestForm] = useState<TestFormState>(initialTestForm)
   const [testResult, setTestResult] = useState<RuleTestResponse | null>(null)
   const [testPending, setTestPending] = useState(false)
 
@@ -70,6 +143,13 @@ export default function RulesView() {
     queryKey: ['rules'],
     queryFn: fetchRules,
   })
+
+  // Agents power the friendly agent picker + label lookup in the rules table.
+  const { data: agents } = useQuery({ queryKey: ['agents'], queryFn: fetchAgents })
+  const agentLabel = useMemo(() => {
+    const byId = new Map((agents ?? []).map((a) => [a.id, a.label || a.agent_username]))
+    return (id: number) => byId.get(id) ?? `#${id}`
+  }, [agents])
 
   const createMutation = useMutation({
     mutationFn: createRule,
@@ -83,7 +163,7 @@ export default function RulesView() {
     },
   })
 
-  const previewText = useMemo(() => buildRulePreview(form), [form])
+  const previewText = useMemo(() => buildRulePreview(form, agentLabel), [form, agentLabel])
   const rules = useMemo(
     () =>
       [...(data ?? [])].sort((a, b) => {
@@ -102,6 +182,13 @@ export default function RulesView() {
       return
     }
 
+    const min = normalizeCount(form.min_message_count)
+    const max = normalizeCount(form.max_message_count)
+    if (min !== null && max !== null && min > max) {
+      toast.error('Min messages cannot exceed max messages')
+      return
+    }
+
     const maxPriority = rules.reduce((currentMax, rule) => Math.max(currentMax, rule.priority), 0)
 
     createMutation.mutate({
@@ -111,6 +198,13 @@ export default function RulesView() {
       op_type: normalizeOptionalInput(form.op_type),
       sender_pattern: normalizeOptionalInput(form.sender_pattern),
       folder_from: normalizeOptionalInput(form.folder_from),
+      folder_to: normalizeOptionalInput(form.folder_to),
+      recipient_pattern: normalizeOptionalInput(form.recipient_pattern),
+      subject_pattern: normalizeOptionalInput(form.subject_pattern),
+      flag_pattern: normalizeOptionalInput(form.flag_pattern),
+      min_message_count: min,
+      max_message_count: max,
+      agent_id: form.agent_id ? Number(form.agent_id) : null,
     })
   }
 
@@ -148,11 +242,20 @@ export default function RulesView() {
     }
     setTestPending(true)
     setTestResult(null)
+    const count = normalizeCount(testForm.message_count)
+    const flag = testForm.flag.trim()
     try {
       const result = await testRule({
         op_type: testForm.op_type.trim(),
         sender: testForm.sender.trim() || null,
         folder_from: testForm.folder_from.trim() || null,
+        folder_to: testForm.folder_to.trim() || null,
+        recipient: testForm.recipient.trim() || null,
+        subject: testForm.subject.trim() || null,
+        flags_add: flag ? [flag] : null,
+        message_ids:
+          count && count > 0 ? Array.from({ length: count }, (_, i) => String(i + 1)) : null,
+        agent_id: testForm.agent_id ? Number(testForm.agent_id) : null,
       })
       setTestResult(result)
     } catch (err) {
@@ -196,6 +299,11 @@ export default function RulesView() {
     }
   }
 
+  const inputClass =
+    'w-full rounded-md bg-surface-hi border border-edge px-3 py-2 text-sm text-fg-2 placeholder:text-fg-3'
+
+  const agentOptions = (agents ?? []).filter((a) => a.revoked_at == null)
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
@@ -228,7 +336,7 @@ export default function RulesView() {
               <select
                 value={form.op_type}
                 onChange={(e) => setForm((prev) => ({ ...prev, op_type: e.target.value }))}
-                className="w-full rounded-md bg-surface-hi border border-edge px-3 py-2 text-sm text-fg-2"
+                className={inputClass}
               >
                 {OP_TYPE_OPTIONS.map((option) => (
                   <option key={option.value || 'any'} value={option.value}>
@@ -260,29 +368,120 @@ export default function RulesView() {
                 </label>
               </div>
             </div>
-            <div>
-              <label className="block text-xs font-medium text-fg-3 mb-1">
-                Sender pattern
-              </label>
-              <input
-                value={form.sender_pattern}
-                onChange={(e) => setForm((prev) => ({ ...prev, sender_pattern: e.target.value }))}
-                placeholder="*@newsletter.com"
-                className="w-full rounded-md bg-surface-hi border border-edge px-3 py-2 text-sm text-fg-2 placeholder:text-fg-3"
-              />
-            </div>
-            <div>
-              <label className="block text-xs font-medium text-fg-3 mb-1">
-                Source folder (optional)
-              </label>
-              <input
-                value={form.folder_from}
-                onChange={(e) => setForm((prev) => ({ ...prev, folder_from: e.target.value }))}
-                placeholder="INBOX"
-                className="w-full rounded-md bg-surface-hi border border-edge px-3 py-2 text-sm text-fg-2 placeholder:text-fg-3"
-              />
-            </div>
           </div>
+
+          {/* Match conditions — all optional; blank means "don't care". */}
+          <fieldset className="rounded-md border border-edge/70 p-3">
+            <legend className="px-1 text-xs font-medium text-fg-3">
+              Match conditions <span className="text-fg-3/70">— leave blank to ignore</span>
+            </legend>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+              <div>
+                <label className="block text-xs font-medium text-fg-3 mb-1">Sender pattern</label>
+                <input
+                  value={form.sender_pattern}
+                  onChange={(e) => setForm((prev) => ({ ...prev, sender_pattern: e.target.value }))}
+                  placeholder="*@newsletter.com"
+                  className={inputClass}
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-fg-3 mb-1">Source folder</label>
+                <input
+                  value={form.folder_from}
+                  onChange={(e) => setForm((prev) => ({ ...prev, folder_from: e.target.value }))}
+                  placeholder="INBOX"
+                  className={inputClass}
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-fg-3 mb-1">Destination folder</label>
+                <input
+                  value={form.folder_to}
+                  onChange={(e) => setForm((prev) => ({ ...prev, folder_to: e.target.value }))}
+                  placeholder="Archive"
+                  className={inputClass}
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-fg-3 mb-1">
+                  Recipient pattern <span className="text-fg-3/70">(sends)</span>
+                </label>
+                <input
+                  value={form.recipient_pattern}
+                  onChange={(e) =>
+                    setForm((prev) => ({ ...prev, recipient_pattern: e.target.value }))
+                  }
+                  placeholder="*@mycompany.com"
+                  className={inputClass}
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-fg-3 mb-1">
+                  Subject pattern <span className="text-fg-3/70">(sends)</span>
+                </label>
+                <input
+                  value={form.subject_pattern}
+                  onChange={(e) => setForm((prev) => ({ ...prev, subject_pattern: e.target.value }))}
+                  placeholder="*invoice*"
+                  className={inputClass}
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-fg-3 mb-1">
+                  Flag pattern <span className="text-fg-3/70">(flag changes)</span>
+                </label>
+                <input
+                  value={form.flag_pattern}
+                  onChange={(e) => setForm((prev) => ({ ...prev, flag_pattern: e.target.value }))}
+                  placeholder="\Deleted"
+                  className={inputClass}
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-fg-3 mb-1">Min messages</label>
+                <input
+                  type="number"
+                  min={0}
+                  value={form.min_message_count}
+                  onChange={(e) =>
+                    setForm((prev) => ({ ...prev, min_message_count: e.target.value }))
+                  }
+                  placeholder="0"
+                  className={inputClass}
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-fg-3 mb-1">Max messages</label>
+                <input
+                  type="number"
+                  min={0}
+                  value={form.max_message_count}
+                  onChange={(e) =>
+                    setForm((prev) => ({ ...prev, max_message_count: e.target.value }))
+                  }
+                  placeholder="25"
+                  className={inputClass}
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-fg-3 mb-1">Agent</label>
+                <select
+                  value={form.agent_id}
+                  onChange={(e) => setForm((prev) => ({ ...prev, agent_id: e.target.value }))}
+                  className={inputClass}
+                >
+                  <option value="">Any agent</option>
+                  {agentOptions.map((a) => (
+                    <option key={a.id} value={String(a.id)}>
+                      {a.label || a.agent_username}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+          </fieldset>
+
           <div>
             <label className="block text-xs font-medium text-fg-3 mb-1">Description</label>
             <input
@@ -290,7 +489,7 @@ export default function RulesView() {
               onChange={(e) => setForm((prev) => ({ ...prev, description: e.target.value }))}
               placeholder="Auto-approve mark_read from newsletters"
               required
-              className="w-full rounded-md bg-surface-hi border border-edge px-3 py-2 text-sm text-fg-2 placeholder:text-fg-3"
+              className={inputClass}
             />
           </div>
           <div className="rounded-md border border-indigo-800/60 bg-indigo-900/20 px-3 py-2 text-sm text-indigo-100">
@@ -312,40 +511,135 @@ export default function RulesView() {
         <div className="flex items-center gap-2 mb-4">
           <FlaskConical className="w-4 h-4 text-amber-400" />
           <h2 className="text-sm font-semibold text-fg">Test rules</h2>
-          <span className="text-xs text-fg-3 ml-1">— dry-run a sample operation against your ruleset</span>
+          <span className="text-xs text-fg-3 ml-1">
+            — dry-run a sample operation against your ruleset
+          </span>
         </div>
         <form onSubmit={(e) => void handleTestRule(e)} className="space-y-3">
           <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
             <div>
-              <label className="block text-xs font-medium text-fg-3 mb-1">Op type <span className="text-red-400">*</span></label>
+              <label className="block text-xs font-medium text-fg-3 mb-1">
+                Op type <span className="text-red-400">*</span>
+              </label>
               <select
                 value={testForm.op_type}
-                onChange={(e) => { setTestForm((p) => ({ ...p, op_type: e.target.value })); setTestResult(null) }}
-                className="w-full rounded-md bg-surface-hi border border-edge px-3 py-2 text-sm text-fg-2"
+                onChange={(e) => {
+                  setTestForm((p) => ({ ...p, op_type: e.target.value }))
+                  setTestResult(null)
+                }}
+                className={inputClass}
               >
                 <option value="">— select —</option>
                 {OP_TYPE_OPTIONS.filter((o) => o.value).map((o) => (
-                  <option key={o.value} value={o.value}>{o.label}</option>
+                  <option key={o.value} value={o.value}>
+                    {o.label}
+                  </option>
                 ))}
               </select>
             </div>
             <div>
-              <label className="block text-xs font-medium text-fg-3 mb-1">Sender (optional)</label>
+              <label className="block text-xs font-medium text-fg-3 mb-1">Sender</label>
               <input
                 value={testForm.sender}
-                onChange={(e) => { setTestForm((p) => ({ ...p, sender: e.target.value })); setTestResult(null) }}
+                onChange={(e) => {
+                  setTestForm((p) => ({ ...p, sender: e.target.value }))
+                  setTestResult(null)
+                }}
                 placeholder="digest@example.com"
-                className="w-full rounded-md bg-surface-hi border border-edge px-3 py-2 text-sm text-fg-2 placeholder:text-fg-3"
+                className={inputClass}
               />
             </div>
             <div>
-              <label className="block text-xs font-medium text-fg-3 mb-1">Source folder (optional)</label>
+              <label className="block text-xs font-medium text-fg-3 mb-1">Source folder</label>
               <input
                 value={testForm.folder_from}
-                onChange={(e) => { setTestForm((p) => ({ ...p, folder_from: e.target.value })); setTestResult(null) }}
+                onChange={(e) => {
+                  setTestForm((p) => ({ ...p, folder_from: e.target.value }))
+                  setTestResult(null)
+                }}
                 placeholder="INBOX"
-                className="w-full rounded-md bg-surface-hi border border-edge px-3 py-2 text-sm text-fg-2 placeholder:text-fg-3"
+                className={inputClass}
               />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-fg-3 mb-1">Destination folder</label>
+              <input
+                value={testForm.folder_to}
+                onChange={(e) => {
+                  setTestForm((p) => ({ ...p, folder_to: e.target.value }))
+                  setTestResult(null)
+                }}
+                placeholder="Archive"
+                className={inputClass}
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-fg-3 mb-1">Recipient</label>
+              <input
+                value={testForm.recipient}
+                onChange={(e) => {
+                  setTestForm((p) => ({ ...p, recipient: e.target.value }))
+                  setTestResult(null)
+                }}
+                placeholder="bob@mycompany.com"
+                className={inputClass}
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-fg-3 mb-1">Subject</label>
+              <input
+                value={testForm.subject}
+                onChange={(e) => {
+                  setTestForm((p) => ({ ...p, subject: e.target.value }))
+                  setTestResult(null)
+                }}
+                placeholder="Your invoice for May"
+                className={inputClass}
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-fg-3 mb-1">Flag</label>
+              <input
+                value={testForm.flag}
+                onChange={(e) => {
+                  setTestForm((p) => ({ ...p, flag: e.target.value }))
+                  setTestResult(null)
+                }}
+                placeholder="\Deleted"
+                className={inputClass}
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-fg-3 mb-1">Message count</label>
+              <input
+                type="number"
+                min={0}
+                value={testForm.message_count}
+                onChange={(e) => {
+                  setTestForm((p) => ({ ...p, message_count: e.target.value }))
+                  setTestResult(null)
+                }}
+                placeholder="3"
+                className={inputClass}
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-fg-3 mb-1">Agent</label>
+              <select
+                value={testForm.agent_id}
+                onChange={(e) => {
+                  setTestForm((p) => ({ ...p, agent_id: e.target.value }))
+                  setTestResult(null)
+                }}
+                className={inputClass}
+              >
+                <option value="">Any agent</option>
+                {agentOptions.map((a) => (
+                  <option key={a.id} value={String(a.id)}>
+                    {a.label || a.agent_username}
+                  </option>
+                ))}
+              </select>
             </div>
           </div>
           <div className="flex items-center gap-3">
@@ -358,16 +652,22 @@ export default function RulesView() {
               {testPending ? 'Testing…' : 'Test'}
             </button>
             {testResult !== null && (
-              <div className={`flex items-center gap-2 px-3 py-2 rounded-md text-sm font-medium border ${
-                !testResult.matched
-                  ? 'border-edge bg-surface-hi/60 text-fg-2'
-                  : testResult.action === 'approve'
-                  ? 'border-emerald-700 bg-emerald-900/30 text-emerald-200'
-                  : 'border-red-700 bg-red-900/30 text-red-200'
-              }`}>
+              <div
+                className={`flex items-center gap-2 px-3 py-2 rounded-md text-sm font-medium border ${
+                  !testResult.matched
+                    ? 'border-edge bg-surface-hi/60 text-fg-2'
+                    : testResult.action === 'approve'
+                      ? 'border-emerald-700 bg-emerald-900/30 text-emerald-200'
+                      : 'border-red-700 bg-red-900/30 text-red-200'
+                }`}
+              >
                 {!testResult.matched && '⚪ No rule matched — op would be queued for review'}
-                {testResult.matched && testResult.action === 'approve' && `✅ Would be auto-approved by: "${testResult.rule_description}"`}
-                {testResult.matched && testResult.action === 'reject' && `🚫 Would be auto-rejected by: "${testResult.rule_description}"`}
+                {testResult.matched &&
+                  testResult.action === 'approve' &&
+                  `✅ Would be auto-approved by: "${testResult.rule_description}"`}
+                {testResult.matched &&
+                  testResult.action === 'reject' &&
+                  `🚫 Would be auto-rejected by: "${testResult.rule_description}"`}
               </div>
             )}
           </div>
@@ -377,9 +677,7 @@ export default function RulesView() {
       <section className="rounded-lg border border-edge bg-surface/30 overflow-hidden">
         <div className="px-4 py-3 border-b border-edge flex items-center justify-between">
           <h2 className="text-sm font-semibold text-fg">Rules</h2>
-          <span className="text-xs text-fg-3">
-            {rules.length} total
-          </span>
+          <span className="text-xs text-fg-3">{rules.length} total</span>
         </div>
 
         {isLoading && (
@@ -399,9 +697,7 @@ export default function RulesView() {
         {!isLoading && !isError && rules.length === 0 && (
           <div className="flex flex-col items-center justify-center py-16 text-fg-3 gap-4">
             <Inbox className="w-10 h-10 opacity-40" />
-            <p className="text-sm">
-              No auto-approval rules yet. Add one to reduce approval noise.
-            </p>
+            <p className="text-sm">No auto-approval rules yet. Add one to reduce approval noise.</p>
           </div>
         )}
 
@@ -413,8 +709,7 @@ export default function RulesView() {
                   <th className="px-3 py-2">Priority</th>
                   <th className="px-3 py-2">Description</th>
                   <th className="px-3 py-2">Op type</th>
-                  <th className="px-3 py-2">Sender pattern</th>
-                  <th className="px-3 py-2">Folder</th>
+                  <th className="px-3 py-2">Conditions</th>
                   <th className="px-3 py-2">Action</th>
                   <th className="px-3 py-2">Hits</th>
                   <th className="px-3 py-2">Enabled</th>
@@ -425,6 +720,7 @@ export default function RulesView() {
                 {rules.map((rule, index) => {
                   const isUpdating = updatingRuleId === rule.id
                   const isDeleting = deletingRuleId === rule.id
+                  const conditions = ruleConditions(rule, agentLabel)
                   return (
                     <tr
                       key={rule.id}
@@ -433,8 +729,22 @@ export default function RulesView() {
                       <td className="px-3 py-2 text-fg-2">{rule.priority}</td>
                       <td className="px-3 py-2 text-fg">{rule.description}</td>
                       <td className="px-3 py-2 text-fg-2">{rule.op_type ?? 'any'}</td>
-                      <td className="px-3 py-2 text-fg-2">{rule.sender_pattern ?? 'any'}</td>
-                      <td className="px-3 py-2 text-fg-2">{rule.folder_from ?? 'any'}</td>
+                      <td className="px-3 py-2">
+                        {conditions.length === 0 ? (
+                          <span className="text-fg-3">any</span>
+                        ) : (
+                          <div className="flex flex-wrap gap-1">
+                            {conditions.map((c) => (
+                              <span
+                                key={c}
+                                className="inline-flex px-1.5 py-0.5 rounded text-xs bg-surface-hi text-fg-2 border border-edge/60 whitespace-nowrap"
+                              >
+                                {c}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                      </td>
                       <td className="px-3 py-2">
                         <span
                           className={`inline-flex px-2 py-1 rounded text-xs font-medium ${
