@@ -2,6 +2,7 @@ import { useMemo, useState, type FormEvent } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { ArrowDown, ArrowUp, FlaskConical, Inbox, Plus, RefreshCw, Trash2 } from 'lucide-react'
+import { formatDistanceToNow } from 'date-fns'
 import { createRule, deleteRule, fetchAgents, fetchRules, testRule, updateRule } from '../api/client'
 import type { AutoApprovalAction, AutoApprovalRule, RuleTestResponse } from '../types'
 
@@ -206,6 +207,19 @@ function actionLabel(rule: AutoApprovalRule): string {
   const cap = rule.rate_limit_per_hour != null ? ` ≤${rule.rate_limit_per_hour}/h` : ''
   const urgent = rule.set_urgent ? ' ⚡' : ''
   return `${base}${cap}${urgent}`
+}
+
+const TEST_ACTION_VERB: Record<string, string> = {
+  approve: 'auto-approved',
+  approve_after: 'auto-approved after a cool-down',
+  reject: 'auto-rejected',
+  hold: 'held for manual review',
+}
+
+function testHeadline(r: RuleTestResponse): string {
+  if (!r.matched) return '⚪ No rule matched — this op would be queued for review.'
+  const verb = TEST_ACTION_VERB[r.action ?? ''] ?? `decided (${r.action})`
+  return `Would be ${verb} by: "${r.rule_description}"`
 }
 
 /** Short labelled chips summarising every match condition set on a rule. */
@@ -918,26 +932,59 @@ export default function RulesView() {
               <FlaskConical className="w-3.5 h-3.5" />
               {testPending ? 'Testing…' : 'Test'}
             </button>
-            {testResult !== null && (
+          </div>
+          {testResult !== null && (
+            <div className="space-y-2">
               <div
-                className={`flex items-center gap-2 px-3 py-2 rounded-md text-sm font-medium border ${
+                className={`px-3 py-2 rounded-md text-sm font-medium border ${
                   !testResult.matched
                     ? 'border-edge bg-surface-hi/60 text-fg-2'
-                    : testResult.action === 'approve'
-                      ? 'border-emerald-700 bg-emerald-900/30 text-emerald-200'
-                      : 'border-red-700 bg-red-900/30 text-red-200'
+                    : testResult.action === 'reject'
+                      ? 'border-red-700 bg-red-900/30 text-red-200'
+                      : 'border-emerald-700 bg-emerald-900/30 text-emerald-200'
                 }`}
               >
-                {!testResult.matched && '⚪ No rule matched — op would be queued for review'}
-                {testResult.matched &&
-                  testResult.action === 'approve' &&
-                  `✅ Would be auto-approved by: "${testResult.rule_description}"`}
-                {testResult.matched &&
-                  testResult.action === 'reject' &&
-                  `🚫 Would be auto-rejected by: "${testResult.rule_description}"`}
+                {testHeadline(testResult)}
               </div>
-            )}
-          </div>
+              {testResult.matches && testResult.matches.length > 0 && (
+                <div className="rounded-md border border-edge bg-surface-hi/30 divide-y divide-edge/60">
+                  <div className="px-3 py-1.5 text-xs text-fg-3">
+                    {testResult.matches.length} rule
+                    {testResult.matches.length === 1 ? '' : 's'} match in evaluation order
+                  </div>
+                  {testResult.matches.map((m) => (
+                    <div
+                      key={m.rule_id}
+                      className={`flex items-center gap-2 px-3 py-1.5 text-xs ${
+                        m.selected ? 'bg-emerald-900/15' : ''
+                      }`}
+                    >
+                      <span className={m.selected ? 'text-emerald-300' : 'text-fg-3'}>
+                        {m.selected ? '▶ wins' : '—'}
+                      </span>
+                      <span className="font-medium text-fg-2 whitespace-nowrap">{m.action}</span>
+                      <span className="text-fg-3 truncate flex-1">{m.description}</span>
+                      {m.is_guardrail && (
+                        <span className="px-1.5 py-0.5 rounded bg-rose-900/60 text-rose-200">
+                          guardrail
+                        </span>
+                      )}
+                      {m.shadow && (
+                        <span className="px-1.5 py-0.5 rounded bg-violet-900/60 text-violet-200">
+                          shadow
+                        </span>
+                      )}
+                      {m.active_now === false && (
+                        <span className="px-1.5 py-0.5 rounded bg-surface-hi text-fg-3 border border-edge/60">
+                          inactive now
+                        </span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
         </form>
       </section>
 
@@ -1042,21 +1089,33 @@ export default function RulesView() {
                         </span>
                       </td>
                       <td className="px-3 py-2">
-                        {rule.shadow ? (
-                          <span
-                            className="inline-flex px-2 py-1 rounded text-xs font-medium bg-violet-900/50 text-violet-200"
-                            title="Operations this shadow rule would have acted on"
-                          >
-                            {rule.shadow_hits ?? 0} shadow
-                          </span>
-                        ) : (
-                          <span
-                            className="inline-flex px-2 py-1 rounded text-xs font-medium bg-surface-hi text-fg-2"
-                            title="Operations auto-decided by this rule"
-                          >
-                            {rule.hits}
-                          </span>
-                        )}
+                        <div className="flex flex-col gap-0.5">
+                          {rule.shadow ? (
+                            <span
+                              className="inline-flex w-fit px-2 py-1 rounded text-xs font-medium bg-violet-900/50 text-violet-200"
+                              title="Operations this shadow rule would have acted on"
+                            >
+                              {rule.shadow_hits ?? 0} shadow
+                            </span>
+                          ) : (
+                            <span
+                              className="inline-flex w-fit px-2 py-1 rounded text-xs font-medium bg-surface-hi text-fg-2"
+                              title="Operations auto-decided by this rule"
+                            >
+                              {rule.hits}
+                            </span>
+                          )}
+                          {rule.last_fired_at != null && (
+                            <span
+                              className="text-xs text-fg-3 whitespace-nowrap"
+                              title={`Last fired ${new Date(rule.last_fired_at * 1000).toLocaleString()}`}
+                            >
+                              {formatDistanceToNow(new Date(rule.last_fired_at * 1000), {
+                                addSuffix: true,
+                              })}
+                            </span>
+                          )}
+                        </div>
                       </td>
                       <td className="px-3 py-2">
                         <button

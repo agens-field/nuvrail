@@ -133,8 +133,9 @@ export interface AutoApprovalRule {
   action: AutoApprovalAction
   description: string
   created_at: number
-  hits: number         // ops this rule acted on (from audit log; excludes shadow)
+  hits: number          // ops this rule acted on (from audit log; excludes shadow)
   shadow_hits?: number  // ops a shadow rule would have acted on
+  last_fired_at?: number | null  // unix ts this rule last acted (excludes shadow)
 }
 
 export interface RuleTestRequest {
@@ -150,11 +151,22 @@ export interface RuleTestRequest {
   agent_id?: number | null
 }
 
+export interface RuleTestMatch {
+  rule_id: number
+  description: string
+  action: string
+  is_guardrail?: boolean
+  shadow?: boolean
+  active_now?: boolean
+  selected?: boolean
+}
+
 export interface RuleTestResponse {
   matched: boolean
   action?: string | null
   rule_id?: number | null
   rule_description?: string | null
+  matches?: RuleTestMatch[]  // all predicate-matching rules, in evaluation order
 }
 
 export interface AutoApprovalRuleCreateRequest {
