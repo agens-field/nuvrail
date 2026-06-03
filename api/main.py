@@ -34,6 +34,7 @@ from api.routes import audit, auth, features, health, oauth2, operations, push
 from api.routes import account
 from gateway.expiry import run_expiry_loop
 from gateway.extensions import load_plugins
+from gateway.scheduler import run_scheduled_execution_loop
 from gateway.scrubber import run_scrubber_loop
 from gateway.state_db import DB_PATH, init_db
 
@@ -43,6 +44,9 @@ _EXPIRY_INTERVAL = float(os.environ.get("NUVRAIL_EXPIRY_INTERVAL_SECONDS", "3600
 _EXPIRY_INITIAL_DELAY = float(os.environ.get("NUVRAIL_EXPIRY_INITIAL_DELAY_SECONDS", "60"))
 _SCRUBBER_INTERVAL = float(os.environ.get("NUVRAIL_SCRUBBER_INTERVAL_SECONDS", "3600"))
 _SCRUBBER_INITIAL_DELAY = float(os.environ.get("NUVRAIL_SCRUBBER_INITIAL_DELAY_SECONDS", "90"))
+# Cool-down scheduler runs frequently (deadlines are minutes, not hours).
+_SCHEDULER_INTERVAL = float(os.environ.get("NUVRAIL_SCHEDULER_INTERVAL_SECONDS", "30"))
+_SCHEDULER_INITIAL_DELAY = float(os.environ.get("NUVRAIL_SCHEDULER_INITIAL_DELAY_SECONDS", "15"))
 
 
 @asynccontextmanager
@@ -68,15 +72,27 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         ),
         name="nuvrail-scrubber-loop",
     )
+    # Start cool-down scheduled-execution loop (Tier 2 approve_after rules).
+    # No-op in builds with no rules engine — nothing ever sets
+    # scheduled_execute_at — so it is safe to always run.
+    scheduler_task = asyncio.create_task(
+        run_scheduled_execution_loop(
+            db_path=DB_PATH,
+            interval_seconds=_SCHEDULER_INTERVAL,
+            initial_delay_seconds=_SCHEDULER_INITIAL_DELAY,
+        ),
+        name="nuvrail-scheduler-loop",
+    )
     logger.info(
-        "Nuvrail API started — expiry loop every %.0fs, scrubber loop every %.0fs",
-        _EXPIRY_INTERVAL, _SCRUBBER_INTERVAL,
+        "Nuvrail API started — expiry every %.0fs, scrubber every %.0fs, "
+        "scheduler every %.0fs",
+        _EXPIRY_INTERVAL, _SCRUBBER_INTERVAL, _SCHEDULER_INTERVAL,
     )
 
     yield
 
     # Cancel background tasks on shutdown
-    for task in (expiry_task, scrubber_task):
+    for task in (expiry_task, scrubber_task, scheduler_task):
         task.cancel()
         try:
             await task

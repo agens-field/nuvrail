@@ -24,6 +24,14 @@ function formatExpiry(expiresAt: number): string {
   return `in ${formatDuration(duration, { format: ['hours', 'minutes'] }) || 'seconds'}`
 }
 
+/** Countdown to a cool-down deadline; "any moment now" once it has passed. */
+function formatCountdown(ts: number): string {
+  const diffMs = ts * 1000 - Date.now()
+  if (diffMs <= 0) return 'any moment now'
+  const duration = intervalToDuration({ start: 0, end: diffMs })
+  return `in ${formatDuration(duration, { format: ['hours', 'minutes'] }) || 'under a minute'}`
+}
+
 export default function OperationCard({ operation, selected, onToggleSelect }: OperationCardProps) {
   const qc = useQueryClient()
   const [showConfirm, setShowConfirm] = useState(false)
@@ -31,6 +39,10 @@ export default function OperationCard({ operation, selected, onToggleSelect }: O
   const isSmtp = operation.protocol.toLowerCase() === 'smtp'
   const isWarn = WARN_OP_TYPES.has(operation.op_type)
   const isUrgent = (operation.is_urgent ?? 0) === 1
+  // A cool-down (approve_after) op is pending but stamped with a deadline; it
+  // will auto-execute then unless the user cancels (reject) or sends now (approve).
+  const scheduledAt = operation.scheduled_execute_at ?? null
+  const isScheduled = scheduledAt != null && operation.status === 'pending'
 
   const invalidate = () => {
     void qc.invalidateQueries({ queryKey: ['operations'] })
@@ -174,6 +186,17 @@ export default function OperationCard({ operation, selected, onToggleSelect }: O
           <span>Expires {formatExpiry(operation.expires_at)}</span>
         </div>
 
+        {/* Cool-down banner: an approve_after op auto-runs at the deadline. */}
+        {isScheduled && (
+          <div className="flex items-center gap-1.5 text-xs px-2 py-1.5 rounded bg-sky-900/30 border border-sky-700/50 text-sky-200">
+            <Clock className="w-3 h-3 flex-shrink-0" />
+            <span>
+              Auto-approves {formatCountdown(scheduledAt!)} — reject to cancel, or approve to run
+              it now.
+            </span>
+          </div>
+        )}
+
         {/* Actions */}
         <div className="flex justify-end gap-2">
           <button
@@ -181,14 +204,14 @@ export default function OperationCard({ operation, selected, onToggleSelect }: O
             disabled={isPending}
             className="px-4 py-2 rounded-md font-medium text-sm bg-surface hover:bg-surface-hi text-fg border border-edge transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            Reject
+            {isScheduled ? 'Cancel' : 'Reject'}
           </button>
           <button
             onClick={handleApprove}
             disabled={isPending}
             className="px-4 py-2 rounded-md font-medium text-sm bg-emerald-600 hover:bg-emerald-500 text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            {approveMut.isPending ? 'Approving…' : 'Approve'}
+            {approveMut.isPending ? 'Approving…' : isScheduled ? 'Send now' : 'Approve'}
           </button>
         </div>
       </div>

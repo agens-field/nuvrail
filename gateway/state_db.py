@@ -144,6 +144,7 @@ CREATE TABLE IF NOT EXISTS staged_operations (
     decided_by      TEXT,
     executed_at     INTEGER,
     undo_expires_at INTEGER,
+    scheduled_execute_at INTEGER,  -- cool-down deadline; the scheduler auto-executes a pending op once this passes (NULL = no deferral)
     rejection_notified INTEGER NOT NULL DEFAULT 0,  -- 1 once SMTP 550 notice sent to agent
     error           TEXT
 );
@@ -322,6 +323,20 @@ async def init_db(path: Path = DB_PATH) -> None:
         # Idempotent index for per-agent queries.
         await db.execute(
             "CREATE INDEX IF NOT EXISTS idx_audit_log_agent_id ON audit_log(agent_id)"
+        )
+
+        # Migration: add scheduled_execute_at to staged_operations for cool-down
+        # auto-approvals. NULL on pre-existing rows means "no deferral", so the
+        # scheduler ignores them. Indexed for the loop's due-op query.
+        async with db.execute("PRAGMA table_info(staged_operations)") as cur:
+            op_cols = {row["name"] for row in await cur.fetchall()}
+        if "scheduled_execute_at" not in op_cols:
+            await db.execute(
+                "ALTER TABLE staged_operations ADD COLUMN scheduled_execute_at INTEGER"
+            )
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_staged_ops_scheduled"
+            " ON staged_operations(scheduled_execute_at)"
         )
 
         # Migration: add user_id to auto_approval_rules so rules are tenant-scoped.
