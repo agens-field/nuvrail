@@ -124,10 +124,17 @@ export interface AutoApprovalRule {
   delay_seconds?: number | null        // cool-down for action 'approve_after'
   rate_limit_per_hour?: number | null  // cap an approving rule's hourly budget
   set_urgent?: number | null           // urgency override for 'hold'/'approve_after'
+  // Tier 3 guardrails
+  is_guardrail?: boolean       // evaluated first; wins over normal rules
+  shadow?: boolean             // observational — logs but never acts
+  active_start_min?: number | null  // active-window start (minutes since midnight)
+  active_end_min?: number | null    // active-window end (minutes since midnight)
+  active_tz?: string | null         // IANA tz for the window (default UTC)
   action: AutoApprovalAction
   description: string
   created_at: number
-  hits: number  // ops auto-decided by this rule (from audit log)
+  hits: number         // ops this rule acted on (from audit log; excludes shadow)
+  shadow_hits?: number  // ops a shadow rule would have acted on
 }
 
 export interface RuleTestRequest {
@@ -166,6 +173,11 @@ export interface AutoApprovalRuleCreateRequest {
   delay_seconds?: number | null
   rate_limit_per_hour?: number | null
   set_urgent?: number | null
+  is_guardrail?: boolean
+  shadow?: boolean
+  active_start_min?: number | null
+  active_end_min?: number | null
+  active_tz?: string | null
   action: AutoApprovalAction
   description: string
 }
@@ -186,6 +198,11 @@ export interface AutoApprovalRuleUpdateRequest {
   delay_seconds?: number | null
   rate_limit_per_hour?: number | null
   set_urgent?: number | null
+  is_guardrail?: boolean
+  shadow?: boolean
+  active_start_min?: number | null
+  active_end_min?: number | null
+  active_tz?: string | null
   action?: AutoApprovalAction
   description?: string
 }
