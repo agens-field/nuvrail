@@ -38,16 +38,40 @@ def decode_sasl_plain(payload: "str | bytes") -> Optional[tuple[str, str]]:
     return username, password
 
 
-async def get_agent_credential(agent_id: Optional[int], db_path: Path) -> Optional[dict]:
-    """Return the agent_credentials row for ``agent_id`` as a dict, or None."""
+async def get_agent_credential(
+    agent_id: Optional[int],
+    db_path: Path,
+    *,
+    require_active: bool = True,
+) -> Optional[dict]:
+    """Return the agent_credentials row for ``agent_id`` as a dict, or None.
+
+    When ``require_active`` is True (the default, used on the execution path),
+    the row is returned only if the credential is **not revoked** and the
+    owning user is **not suspended** (ToS §4/§13 enforcement, issue #65). This
+    ensures a revocation or suspension is honored even for operations that were
+    staged *before* the revocation/suspension — the approve/execute path won't
+    relay for a now-dead credential or a suspended account.
+
+    Set ``require_active=False`` only for read/inspection use cases that must
+    see revoked/suspended credentials (none on the send path).
+    """
     if agent_id is None:
         return None
     from gateway.state_db import get_db  # noqa: PLC0415
 
+    if require_active:
+        sql = (
+            "SELECT ac.* FROM agent_credentials ac "
+            "JOIN users u ON u.id = ac.user_id "
+            "WHERE ac.id = ? AND ac.revoked_at IS NULL "
+            "AND u.suspended_at IS NULL AND u.deleted_at IS NULL"
+        )
+    else:
+        sql = "SELECT * FROM agent_credentials WHERE id = ?"
+
     async with get_db(db_path) as db:
-        async with db.execute(
-            "SELECT * FROM agent_credentials WHERE id = ?", (agent_id,)
-        ) as cur:
+        async with db.execute(sql, (agent_id,)) as cur:
             row = await cur.fetchone()
     return dict(row) if row else None
 
@@ -58,8 +82,14 @@ async def verify_agent_login(
     """Verify an agent's username + token against agent_credentials.
 
     Returns the credential row dict when the username exists, is not revoked,
-    and the token matches the stored bcrypt hash; otherwise None. Used on every
-    IMAP LOGIN / SMTP AUTH, so token hashing uses bcrypt rounds=10.
+    the owning user is not suspended or deleted, and the token matches the
+    stored bcrypt hash; otherwise None. Used on every IMAP LOGIN / SMTP AUTH
+    (both proxies call this), so token hashing uses bcrypt rounds=10.
+
+    The JOIN to ``users`` enforces account suspension (ToS §4/§13, issue #65)
+    at the proxy edge: a suspended account's agents fail LOGIN/AUTH and can
+    therefore neither stage nor send. ``revoked_at`` handles per-credential
+    revocation; ``suspended_at``/``deleted_at`` handle the whole account.
     """
     if not agent_user:
         return None
@@ -67,7 +97,10 @@ async def verify_agent_login(
 
     async with get_db(db_path) as db:
         async with db.execute(
-            "SELECT * FROM agent_credentials WHERE agent_username = ? AND revoked_at IS NULL",
+            "SELECT ac.* FROM agent_credentials ac "
+            "JOIN users u ON u.id = ac.user_id "
+            "WHERE ac.agent_username = ? AND ac.revoked_at IS NULL "
+            "AND u.suspended_at IS NULL AND u.deleted_at IS NULL",
             (agent_user,),
         ) as cur:
             row = await cur.fetchone()

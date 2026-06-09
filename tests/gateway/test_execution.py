@@ -28,6 +28,12 @@ async def db_path(tmp_path: Path) -> Path:
 
 async def _seed_agent(db_path: Path) -> int:
     async with get_db(db_path) as db:
+        # Seed the owning user (active) so the user-state JOIN in
+        # get_agent_credential (issue #65) resolves on the execution path.
+        await db.execute(
+            """INSERT INTO users (id, email, display_name, hashed_password, created_at)
+               VALUES (1, 'exec@example.com', 'T', 'x', 0)"""
+        )
         cur = await db.execute(
             """INSERT INTO agent_credentials
                (user_id, label, agent_username, hashed_token,

@@ -185,6 +185,37 @@ async def test_me_without_token(client: httpx.AsyncClient) -> None:
     assert resp.status_code == 401
 
 
+async def test_suspended_user_rejected_with_403(
+    client: httpx.AsyncClient, db_path: Path
+) -> None:
+    """Issue #65: a suspended account is rejected at bearer auth with 403.
+
+    The token is still valid (so not 401) — the account is administratively
+    disabled. This blocks every authenticated route, including approve/send and
+    agent management, for a suspended user.
+    """
+    token = await _register_and_login(client, email="suspendme@example.com")
+    # Sanity: works before suspension.
+    ok = await client.get(
+        "/api/v1/auth/me", headers={"Authorization": f"Bearer {token}"}
+    )
+    assert ok.status_code == 200
+
+    # Suspend directly in the DB (the manual incident-response path for #65).
+    async with get_db(db_path) as db:
+        await db.execute(
+            "UPDATE users SET suspended_at = 1 WHERE email = ?",
+            ("suspendme@example.com",),
+        )
+        await db.commit()
+
+    resp = await client.get(
+        "/api/v1/auth/me", headers={"Authorization": f"Bearer {token}"}
+    )
+    assert resp.status_code == 403
+    assert "suspend" in resp.json()["detail"].lower()
+
+
 # ---------------------------------------------------------------------------
 # Operations + audit now require auth
 # ---------------------------------------------------------------------------

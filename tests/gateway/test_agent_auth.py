@@ -74,17 +74,37 @@ def test_decode_sasl_plain_empty_returns_none() -> None:
 
 async def _seed_agent(
     db_path: Path, *, username: str = "nuvrail_x", token: str = "secret-token",
-    revoked: bool = False,
+    revoked: bool = False, user_suspended: bool = False,
+    user_deleted: bool = False,
 ) -> int:
+    """Insert an owning user + one agent credential; return the credential id.
+
+    Seeds a real ``users`` row (the agent_credentials.user_id FK) so the
+    suspension/deletion JOIN in verify_agent_login / get_agent_credential is
+    exercised honestly. ``user_suspended`` / ``user_deleted`` set the owning
+    account's lifecycle columns; ``revoked`` sets the per-credential kill flag.
+    """
     async with get_db(db_path) as db:
+        user_cur = await db.execute(
+            """INSERT INTO users
+               (email, display_name, hashed_password, created_at,
+                suspended_at, deleted_at)
+               VALUES (?, 'T', 'x', 0, ?, ?)""",
+            (
+                f"{username}@example.com",
+                1 if user_suspended else None,
+                1 if user_deleted else None,
+            ),
+        )
+        user_id = int(user_cur.lastrowid)
         cur = await db.execute(
             """INSERT INTO agent_credentials
                (user_id, label, agent_username, hashed_token,
                 upstream_host, upstream_imap_port, upstream_smtp_port,
                 upstream_user, upstream_password, created_at, revoked_at)
-               VALUES (1, 'l', ?, ?, 'imap.example.com', 993, 587,
+               VALUES (?, 'l', ?, ?, 'imap.example.com', 993, 587,
                        'u@example.com', 'x', 0, ?)""",
-            (username, hash_agent_token(token), 1 if revoked else None),
+            (user_id, username, hash_agent_token(token), 1 if revoked else None),
         )
         await db.commit()
         return int(cur.lastrowid)
@@ -113,6 +133,44 @@ async def test_verify_agent_login_empty_user(db_path: Path) -> None:
 async def test_verify_agent_login_revoked(db_path: Path) -> None:
     await _seed_agent(db_path, username="nuvrail_rev", token="t", revoked=True)
     assert await verify_agent_login("nuvrail_rev", "t", db_path) is None
+
+
+async def test_verify_agent_login_blocked_when_user_suspended(db_path: Path) -> None:
+    # Issue #65: a suspended account's agents must fail proxy auth even though
+    # the credential itself is valid and not revoked.
+    await _seed_agent(
+        db_path, username="nuvrail_susp", token="t", user_suspended=True
+    )
+    assert await verify_agent_login("nuvrail_susp", "t", db_path) is None
+
+
+async def test_verify_agent_login_blocked_when_user_deleted(db_path: Path) -> None:
+    await _seed_agent(
+        db_path, username="nuvrail_del", token="t", user_deleted=True
+    )
+    assert await verify_agent_login("nuvrail_del", "t", db_path) is None
+
+
+async def test_get_agent_credential_blocked_for_suspended_user(db_path: Path) -> None:
+    # Execution-path read (require_active default True) must drop the credential
+    # for a suspended account, so an op staged before suspension can't relay.
+    agent_id = await _seed_agent(
+        db_path, username="nuvrail_susp2", user_suspended=True
+    )
+    assert await get_agent_credential(agent_id, db_path) is None
+    # ...but require_active=False still returns it (inspection use).
+    row = await get_agent_credential(agent_id, db_path, require_active=False)
+    assert row is not None and row["id"] == agent_id
+
+
+async def test_get_agent_credential_blocked_for_revoked(db_path: Path) -> None:
+    agent_id = await _seed_agent(
+        db_path, username="nuvrail_rev2", revoked=True
+    )
+    assert await get_agent_credential(agent_id, db_path) is None
+    assert (
+        await get_agent_credential(agent_id, db_path, require_active=False)
+    ) is not None
 
 
 async def test_get_agent_credential_found_and_missing(db_path: Path) -> None:

@@ -140,6 +140,16 @@ async def get_current_user(
             detail="Account has been deleted",
             headers={"WWW-Authenticate": "Bearer"},
         )
+    # Issue #65: reject suspended accounts (ToS §4/§13 enforcement). 403 rather
+    # than 401 — the token is valid, the account is administratively disabled.
+    # A suspended user can neither approve/send nor manage agents via the API;
+    # combined with the proxy-auth and execution-path checks, suspension blocks
+    # every send route.
+    if user.get("suspended_at") is not None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Account is suspended",
+        )
     # Issue #28: lazily track last-used timestamp (non-blocking).
     await touch_last_used_at(user["id"], db_path=db_path)
     return user

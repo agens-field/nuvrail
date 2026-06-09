@@ -301,6 +301,12 @@ async def init_db(path: Path = DB_PATH) -> None:
             ("api_token_created_at", "INTEGER"),
             ("api_token_last_used_at", "INTEGER"),
             ("deleted_at", "INTEGER"),
+            # Account suspension (ToS §4/§13 enforcement, issue #65). NULL = active.
+            # Distinct from deleted_at: suspension is reversible (un-suspend by
+            # setting back to NULL) and retains the account + its data; deletion
+            # is terminal. Enforced at API bearer auth, proxy agent auth, and the
+            # execution path so a suspended account can neither stage nor send.
+            ("suspended_at", "INTEGER"),
         ]:
             if col_name not in user_cols:
                 await db.execute(
