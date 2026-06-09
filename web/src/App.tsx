@@ -96,7 +96,7 @@ export default function App() {
       <CookieConsentBanner />
       <HashRouter>
         <AuthGuard>
-          <div className="min-h-screen bg-bg text-fg">
+          <div className="min-h-screen flex flex-col bg-bg text-fg">
             {/* Top nav */}
             <header className="border-b border-edge bg-surface sticky top-0 z-10">
               <div className="max-w-4xl mx-auto px-4 py-2.5 flex items-center gap-1">
@@ -142,7 +142,7 @@ export default function App() {
             </header>
 
             {/* Page content */}
-            <main className="max-w-4xl mx-auto px-4 py-6">
+            <main className="max-w-4xl w-full mx-auto px-4 py-6 flex-1">
               <Routes>
                 <Route path="/" element={<PendingView />} />
                 <Route path="/rules" element={<RulesRoute />} />
@@ -156,6 +156,27 @@ export default function App() {
                 <Route path="/setup" element={<SetupView />} />
               </Routes>
             </main>
+
+            {/*
+              AGPL-3.0 §13 "source available" notice (legal risk R8). The hosted
+              Service runs the AGPL-3.0 core plus a proprietary enterprise plugin;
+              §13 requires offering network users the corresponding source of the
+              core. This visible link to the public repo satisfies that.
+            */}
+            <footer className="border-t border-edge mt-6 py-4 px-4">
+              <div className="max-w-4xl mx-auto text-center text-xs text-fg-2">
+                Nuvrail core is{' '}
+                <a
+                  href="https://github.com/agens-field/nuvrail"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="underline hover:text-fg"
+                >
+                  source available under AGPL-3.0
+                </a>
+                . Enterprise features are proprietary.
+              </div>
+            </footer>
           </div>
         </AuthGuard>
       </HashRouter>
