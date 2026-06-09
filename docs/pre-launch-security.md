@@ -78,6 +78,58 @@ Behaviour:
 
 ---
 
+## 3a. Outbound Send Rate Limit — Anti-Spam (R13)
+
+**Legal review item R13** (CAN-SPAM / CASL / GDPR e-marketing): agents and
+auto-approval rules dispatch real email. ToS §4 prohibits spam, but until now
+there was **no technical enforcement** on the send path — an approved op could
+relay unlimited mail. This closes the *throttle* half of R13. (The §4
+suspension/token-revocation half is tracked separately as part B/C.)
+
+**Method:** `gateway/send_rate_limiter.py` + hook in `gateway/execution.py`.
+
+```
+          execute_operation(smtp)
+                   │
+                   ▼
+     enforce_send_rate(agent_id, n_recipients)   ← BEFORE relay
+                   │
+     used = SUM(recipient_count) of executed smtp_send
+            audit rows for this agent within the window
+                   │
+        used + n > cap ? ──► record 'send_rate_exceeded'
+                   │           audit row + mark op failed
+                   │           + raise (fail CLOSED)
+                   ▼ allowed
+            aiosmtplib relay ──► audit 'executed' (recipient_count)
+                                  ↑ what future windows count against
+```
+
+**Properties:**
+- Enforced on BOTH human-approval and auto-rule paths (single chokepoint in
+  `execute_operation`).
+- **Durable** — counts from the hash-chained `audit_log`, not an in-memory
+  counter, so the ceiling survives restarts/deploys. No new table.
+- **Counts recipients, not operations** — one op to 40 recipients = 40 messages.
+- **Fails closed** — a count-query error refuses the send.
+- **Configurable:** `NUVRAIL_SEND_MAX_PER_WINDOW` (default 100),
+  `NUVRAIL_SEND_WINDOW_SECONDS` (default 3600). `0` disables (escape hatch);
+  an invalid value falls back to the default rather than silently disabling.
+- Lives in the **public core** — every self-hoster gets a sane outbound floor.
+
+**Tests:** `tests/gateway/test_send_rate_limiter.py` (14 cases: cap boundary,
+multi-recipient weighting, window expiry, agent isolation, non-smtp/non-executed
+exclusion, legacy rows, disabled mode, config parsing).
+
+**Pre-launch follow-up:** add an **e2e** check against staging that drives N
+sends through the live proxy and asserts the (N+1)th is refused with a
+`send_rate_exceeded` audit row — this is the automated proof legal asked for.
+Tracked below.
+
+**Status:** ✅ Throttle implemented + unit-tested. ⏳ e2e staging proof pending.
+
+---
+
 ## 4. Rate Limiting — API Layer (GAP)
 
 **Method:** Code review of `api/main.py`, `api/routes/auth.py`
@@ -219,3 +271,5 @@ The IMAP and SMTP proxies are **not** directly reachable from the public interne
 | 🟠 HIGH | Rotate `NUVRAIL_MASTER_KEY` and VAPID keys for production | Martin | #21 | Before launch |
 | 🟡 MEDIUM | Add `gitleaks` pre-push hook to both repos | KC | #23 | Before public repo exposure |
 | 🟢 LOW | Run `npm update` on build deps to clear audit findings | KC | #22 | Before Phase 2 beta |
+| 🟠 HIGH | (R13) Outbound send rate limit — throttle implemented; add e2e staging proof | KC | #64 | Before launch |
+| 🟠 HIGH | (R13) Verify ToS §4 enforcement: suspended user / revoked token cannot send (part C) | KC | #65 | Before launch |
