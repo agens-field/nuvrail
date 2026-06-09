@@ -40,6 +40,10 @@ import aiosmtplib
 
 from gateway.agent_auth import get_agent_credential
 from gateway.audit import record_audit_event
+from gateway.send_rate_limiter import (
+    SendRateLimitExceeded,
+    enforce_send_rate,
+)
 from gateway.staging import get_operation, update_operation_status
 from gateway.state_db import decode_json_list, get_db
 
@@ -635,6 +639,33 @@ async def execute_operation(
                 f"Operation {op_id} has no recipients in the staged envelope."
             )
 
+        # Anti-spam (R13): enforce the per-agent outbound send cap BEFORE we
+        # relay. Counts recipients (messages), fails closed, and applies to
+        # both human-approved and auto-rule-approved sends since both reach
+        # here. On exceedance we mark the op failed + write a
+        # 'send_rate_exceeded' audit row (shared failure path), then raise
+        # ExecutionError so the HTTP/auto layers treat it like any other
+        # execution failure.
+        recipient_count = len(relay_recipients)
+        try:
+            await enforce_send_rate(agent_id, recipient_count, db_path=db_path)
+        except SendRateLimitExceeded as exc:
+            await update_operation_status(
+                op_id, "failed", error=str(exc), db_path=db_path
+            )
+            await record_audit_event(
+                db_path, timestamp=int(time.time()),
+                event='send_rate_exceeded', actor='system',
+                operation_id=op_id, agent_id=agent_id, op_type=row.get('op_type'),
+                detail=json.dumps({
+                    'used': exc.used,
+                    'requested': exc.requested,
+                    'cap': exc.cap,
+                    'window_seconds': exc.window_seconds,
+                }),
+            )
+            raise ExecutionError(str(exc)) from exc
+
         logger.info(
             "[execute] SMTP relay start op=%s host=%s port=%d user=%s recipients=%s",
             op_id, smtp_host, smtp_port, smtp_user, relay_recipients,
@@ -705,11 +736,18 @@ async def execute_operation(
             await _record_execution_failure(op_id, row, exc, db_path)
             raise ExecutionError(f"IMAP execution failed: {exc}") from exc
 
-    # Mark operation as executed and insert audit log
+    # Mark operation as executed and insert audit log.
+    # For smtp_send we record recipient_count in the audit detail so the
+    # anti-spam send-rate limiter (gateway.send_rate_limiter) can SUM messages
+    # — not operations — when counting an agent's recent sends.
     await update_operation_status(op_id, "executed", db_path=db_path)
+    executed_detail: Optional[str] = None
+    if protocol == "smtp":
+        executed_detail = json.dumps({"recipient_count": len(relay_recipients)})
     await record_audit_event(
         db_path, timestamp=int(time.time()), event='executed', actor=actor,
         operation_id=op_id, agent_id=row.get('agent_id'), op_type=row.get('op_type'),
+        detail=executed_detail,
     )
 
     updated = await get_operation(op_id, db_path=db_path)
