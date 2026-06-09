@@ -88,7 +88,18 @@ async def resolve_imap_credentials(row: dict, db_path: Path) -> ImapCredentials:
     """
     from gateway.credentials import fetch_credential  # noqa: PLC0415
 
-    cred = await get_agent_credential(row.get("agent_id"), db_path)
+    agent_id = row.get("agent_id")
+    cred = await get_agent_credential(agent_id, db_path)
+    # Fail CLOSED on a blocked agent (issue #65): if the op carries a real
+    # agent_id but no *active* credential resolves — because the credential was
+    # revoked or the owning account suspended — do NOT fall through to the
+    # env-var fallback (that could relay a suspended user's mail in test/staging
+    # envs). Refuse the send instead.
+    if cred is None and agent_id is not None:
+        raise RuntimeError(
+            f"Agent {agent_id} for this operation is revoked or its account is "
+            "suspended — refusing to execute."
+        )
     if cred:
         raw_pass = cred.get("upstream_password")
         return ImapCredentials(
@@ -584,6 +595,14 @@ async def execute_operation(
         from gateway.credentials import fetch_credential  # noqa: PLC0415
         agent_id = row.get("agent_id")
         cred = await get_agent_credential(agent_id, db_path)
+        # Fail CLOSED on a blocked agent (issue #65): a real agent_id with no
+        # active credential (revoked, or owning account suspended) must NOT
+        # fall through to the env-var fallback below — refuse the send.
+        if cred is None and agent_id is not None:
+            raise ExecutionError(
+                f"Agent {agent_id} for operation {op_id} is revoked or its "
+                "account is suspended — refusing to execute."
+            )
         if cred:
             smtp_host = cred["upstream_smtp_host"] or cred["upstream_host"]
             smtp_port = int(cred["upstream_smtp_port"])
