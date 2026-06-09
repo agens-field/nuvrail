@@ -290,9 +290,10 @@ async def test_delete_account_sets_deleted_at(
         headers=_auth(token),
     )
 
+    # Email is tombstoned on deletion (R5), so query by deleted_at, not email.
     async with get_db(db_path) as db:
         async with db.execute(
-            "SELECT deleted_at FROM users WHERE email = ?", (email,)
+            "SELECT deleted_at FROM users WHERE deleted_at IS NOT NULL"
         ) as cur:
             row = await cur.fetchone()
     assert row is not None
@@ -312,16 +313,41 @@ async def test_delete_account_scrubs_sensitive_fields(
         headers=_auth(token),
     )
 
+    # The original email is pseudonymized to a tombstone on deletion (R5), so
+    # the row is no longer findable by it — look it up by deleted_at instead.
     async with get_db(db_path) as db:
         async with db.execute(
-            "SELECT hashed_password, api_token, display_name FROM users WHERE email = ?",
-            (email,),
+            "SELECT email, hashed_password, api_token, display_name\n"
+            "             FROM users WHERE deleted_at IS NOT NULL"
         ) as cur:
             row = await cur.fetchone()
     assert row is not None
     assert row["api_token"] is None
     assert row["display_name"] is None
     assert row["hashed_password"] == ""
+    # Original email must be gone; replaced by a non-reversible .invalid tombstone.
+    assert row["email"] != email
+    assert row["email"].endswith("@nuvrail.invalid")
+    assert row["email"].startswith("deleted+")
+
+
+async def test_delete_account_pseudonymizes_email(
+    client: httpx.AsyncClient, db_path: Path
+) -> None:
+    """R5: deletion replaces the email with a non-reversible tombstone so the
+    retained audit log can no longer be re-linked to the natural person."""
+    email = _unique_email()
+    token, _ = await _register_and_login(client, email=email)
+    await client.request(
+        "DELETE", "/api/v1/account",
+        json={"password": "supersecurepass"}, headers=_auth(token),
+    )
+    async with get_db(db_path) as db:
+        # The original email no longer exists anywhere in users.
+        async with db.execute(
+            "SELECT COUNT(*) AS n FROM users WHERE email = ?", (email,)
+        ) as cur:
+            assert (await cur.fetchone())["n"] == 0
 
 
 async def test_delete_account_writes_audit_event(

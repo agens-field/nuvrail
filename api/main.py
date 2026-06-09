@@ -35,6 +35,7 @@ from api.routes import account
 from gateway.expiry import run_expiry_loop
 from gateway.extensions import load_plugins
 from gateway.scheduler import run_scheduled_execution_loop
+from gateway.retention import run_retention_loop
 from gateway.scrubber import run_scrubber_loop
 from gateway.state_db import DB_PATH, init_db
 
@@ -47,6 +48,10 @@ _SCRUBBER_INITIAL_DELAY = float(os.environ.get("NUVRAIL_SCRUBBER_INITIAL_DELAY_S
 # Cool-down scheduler runs frequently (deadlines are minutes, not hours).
 _SCHEDULER_INTERVAL = float(os.environ.get("NUVRAIL_SCHEDULER_INTERVAL_SECONDS", "30"))
 _SCHEDULER_INITIAL_DELAY = float(os.environ.get("NUVRAIL_SCHEDULER_INITIAL_DELAY_SECONDS", "15"))
+# Data-retention purge: deleted accounts hard-purged after the window (R5).
+# Sweep daily — the window is months, so daily granularity is ample.
+_RETENTION_INTERVAL = float(os.environ.get("NUVRAIL_RETENTION_INTERVAL_SECONDS", "86400"))
+_RETENTION_INITIAL_DELAY = float(os.environ.get("NUVRAIL_RETENTION_INITIAL_DELAY_SECONDS", "120"))
 
 
 @asynccontextmanager
@@ -83,16 +88,26 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         ),
         name="nuvrail-scheduler-loop",
     )
+    # Start data-retention purge loop (R5 — GDPR storage limitation): hard-
+    # deletes accounts whose deleted_at is older than NUVRAIL_RETENTION_DAYS.
+    retention_task = asyncio.create_task(
+        run_retention_loop(
+            db_path=DB_PATH,
+            interval_seconds=_RETENTION_INTERVAL,
+            initial_delay_seconds=_RETENTION_INITIAL_DELAY,
+        ),
+        name="nuvrail-retention-loop",
+    )
     logger.info(
         "Nuvrail API started — expiry every %.0fs, scrubber every %.0fs, "
-        "scheduler every %.0fs",
-        _EXPIRY_INTERVAL, _SCRUBBER_INTERVAL, _SCHEDULER_INTERVAL,
+        "scheduler every %.0fs, retention every %.0fs",
+        _EXPIRY_INTERVAL, _SCRUBBER_INTERVAL, _SCHEDULER_INTERVAL, _RETENTION_INTERVAL,
     )
 
     yield
 
     # Cancel background tasks on shutdown
-    for task in (expiry_task, scrubber_task, scheduler_task):
+    for task in (expiry_task, scrubber_task, scheduler_task, retention_task):
         task.cancel()
         try:
             await task
