@@ -214,13 +214,24 @@ async def delete_account(
 ) -> DeleteAccountResponse:
     """Permanently delete the current user's account.
 
+    GDPR posture (R5 / Art. 17 + Art. 5(1)(e)): erasure is a two-stage process.
+    This endpoint performs **stage 1 — immediate pseudonymization**: it scrubs
+    every directly-identifying field (email, name, password, tokens, upstream
+    credentials) and tombstones the account, but **retains the audit log** under
+    Art. 17(3)(b)/(e) (legal obligation / legal claims) for security and
+    accountability. The retained audit rows carry only user_id/agent_id/event
+    metadata — once the email is tombstoned they are no longer readily linkable
+    to a natural person. **Stage 2 — the 12-month hard purge** (gateway.retention)
+    later deletes those retained rows and the tombstoned users row entirely.
+
     Steps (all in a single transaction):
       1. Verify password (prevents accidental or CSRF-driven deletion).
       2. Revoke all agent credentials (revoked_at = now).
       3. Delete push subscriptions for this user's agents.
       4. Null out encrypted credential columns in agent_credentials.
-      5. Null out display_name, hashed_password, api_token, reset_token in users row.
-      6. Set users.deleted_at = now.
+      5. Pseudonymize the users row: replace email with a non-reversible
+         tombstone, null display_name/password/tokens, set deleted_at = now.
+      6. (folded into 5)
       7. Mark all pending ops for this user's agents as 'cancelled'.
       8. Write 'account_deleted' audit event.
 
@@ -274,11 +285,18 @@ async def delete_account(
                 agent_ids,
             )
 
-        # 5 & 6. Scrub sensitive user columns and mark deleted
+        # 5 & 6. Pseudonymize + mark deleted.
+        # The email is the one remaining natural identifier that would let the
+        # retained audit log be re-linked to a person, so we replace it with a
+        # deterministic, non-reversible tombstone rather than leaving it intact.
+        # `.invalid` (RFC 2606) guarantees it can never collide with or be
+        # mistaken for a real address. Keeping it UNIQUE-safe: user_id is unique.
+        tombstone_email = f"deleted+{user_id}@nuvrail.invalid"
         await db.execute(
             """
             UPDATE users
-            SET display_name = NULL,
+            SET email = ?,
+                display_name = NULL,
                 hashed_password = '',
                 api_token = NULL,
                 reset_token = NULL,
@@ -286,7 +304,7 @@ async def delete_account(
                 deleted_at = ?
             WHERE id = ?
             """,
-            (now, user_id),
+            (tombstone_email, now, user_id),
         )
 
         # 7. Cancel all pending ops for this user's agents
