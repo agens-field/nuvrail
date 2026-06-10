@@ -246,6 +246,7 @@ async def _sync_upstream_line(
             info = parse_select_response(lines)
             folder_id = await update_folder_stats(
                 session["folder"],
+                user_id=session.get("user_id"),
                 exists_count=info.exists,
                 recent_count=info.recent,
                 uidvalidity=info.uidvalidity,
@@ -269,7 +270,9 @@ async def _sync_upstream_line(
         try:
             names = parse_list_response([stripped])
             if names:
-                await upsert_folders_from_list(names, db_path=db_path)
+                await upsert_folders_from_list(
+                    names, user_id=session.get("user_id"), db_path=db_path
+                )
                 logger.debug("[%s] LIST: upserted folders %s", peer, names)
         except Exception as exc:  # noqa: BLE001
             logger.warning("[%s] Failed to sync LIST line: %s", peer, exc)
@@ -614,7 +617,9 @@ async def _client_to_upstream(
                         try:
                             from gateway.state_db import get_or_create_folder
                             folder_id = await get_or_create_folder(
-                                session["folder"], db_path=db_path
+                                session["folder"],
+                                user_id=session.get("user_id"),
+                                db_path=db_path,
                             )
                             session["folder_id"] = folder_id
                         except Exception:
@@ -820,7 +825,9 @@ async def _upstream_to_client(
             if _exists_m and session.get("folder"):
                 try:
                     _pending = await get_pending_move_uids_for_folder(
-                        session["folder"], db_path=db_path
+                        session["folder"],
+                        agent_id=session.get("agent_id"),
+                        db_path=db_path,
                     )
                     if _pending:
                         _n = int(_exists_m.group(1))
@@ -840,7 +847,9 @@ async def _upstream_to_client(
             elif re.match(r"^\* SEARCH\b", line, re.IGNORECASE) and session.get("search_uid_mode") and session.get("folder"):
                 try:
                     _pending = await get_pending_move_uids_for_folder(
-                        session["folder"], db_path=db_path
+                        session["folder"],
+                        agent_id=session.get("agent_id"),
+                        db_path=db_path,
                     )
                     if _pending:
                         _parts = line.split()
@@ -949,7 +958,9 @@ async def _upstream_to_client(
                 if folder_name:
                     try:
                         pending_move_uids = await get_pending_move_uids_for_folder(
-                            folder_name, db_path=db_path
+                            folder_name,
+                            agent_id=session.get("agent_id"),
+                            db_path=db_path,
                         )
                         if pending_move_uids:
                             fetch_info = parse_fetch_line(line)
@@ -987,7 +998,10 @@ async def _upstream_to_client(
                         fetch_info = parse_fetch_line(line)
                         if fetch_info and fetch_info.uid is not None:
                             f_add, f_rem = await get_pending_flag_changes_for_uid(
-                                folder_name, fetch_info.uid, db_path=db_path
+                                folder_name,
+                                fetch_info.uid,
+                                agent_id=session.get("agent_id"),
+                                db_path=db_path,
                             )
                             if f_add or f_rem:
                                 # Merge: start from upstream flags, apply staged delta.
@@ -1456,6 +1470,7 @@ async def handle_client(
         "in_select": False,          # True while accumulating SELECT response lines
         "revert_trigger_tag": None,  # tag of last SELECT/NOOP/FETCH (triggers revert injection)
         "agent_id": credential["id"],  # agent_credentials.id for staging
+        "user_id": credential["user_id"],  # owning tenant; scopes the mailbox mirror (issue #73)
         "search_uid_mode": False,    # True if last SEARCH was UID SEARCH
         # Provider normalization
         "provider_profile": provider_profile,
