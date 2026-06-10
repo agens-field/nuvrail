@@ -67,6 +67,10 @@ class OperationResponse(BaseModel):
 class OperationListResponse(BaseModel):
     operations: List[OperationResponse]
     total: int
+    # batch_id → one-line human summary, for batches with 2+ operations in
+    # this response (gateway.batch_summary). The UI shows it as the batch
+    # card's header instead of "Batch — N operations".
+    batch_summaries: dict[str, str] = {}
 
 
 class ApproveResponse(BaseModel):

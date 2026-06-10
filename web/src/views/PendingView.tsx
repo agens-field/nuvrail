@@ -206,15 +206,32 @@ export default function PendingView() {
         <div className="flex flex-col gap-4">
           {displayGroups.map((group) =>
             group.batchId && group.ops.length > 1 ? (
-              // Batched group: show a container card with all ops inside
+              // Batched group: show a container card with all ops inside.
+              // Header: intent-aggregated summary from the API ("Inbox triage —
+              // 12 archived, 3 marked read"); urgent ops (deletes, sends)
+              // escalate the container styling.
               <div
                 key={group.batchId}
-                className="rounded-lg border border-indigo-700/50 bg-indigo-950/20 overflow-hidden"
+                className={`rounded-lg border overflow-hidden ${
+                  group.ops.some((o) => (o.is_urgent ?? 0) === 1)
+                    ? 'border-red-700/60 bg-red-950/15'
+                    : 'border-indigo-700/50 bg-indigo-950/20'
+                }`}
               >
-                <div className="flex items-center gap-2 px-4 py-2 border-b border-indigo-700/30 bg-indigo-900/20">
+                <div
+                  className={`flex items-center gap-2 px-4 py-2 border-b ${
+                    group.ops.some((o) => (o.is_urgent ?? 0) === 1)
+                      ? 'border-red-700/40 bg-red-900/20'
+                      : 'border-indigo-700/30 bg-indigo-900/20'
+                  }`}
+                >
                   <Layers className="w-3.5 h-3.5 text-accent" />
                   <span className="text-xs font-medium text-accent">
-                    Batch — {group.ops.length} operations
+                    {data?.batch_summaries?.[group.batchId] ??
+                      `Batch — ${group.ops.length} operations`}
+                  </span>
+                  <span className="text-xs text-fg-3">
+                    · {group.ops.length} operation{group.ops.length !== 1 ? 's' : ''}
                   </span>
                   <span className="ml-auto flex items-center gap-2">
                     <button

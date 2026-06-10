@@ -68,6 +68,7 @@ from api.models import (
     UndoResponse,
 )
 from gateway.audit import record_audit_event
+from gateway.batch_summary import build_batch_summary
 from gateway.execution import ExecutionError, execute_operation
 from gateway.staging import get_operation, list_operations, update_operation_status
 from gateway.state_db import DB_PATH, decode_json_list, insert_pending_reverts, restore_from_snapshot
@@ -302,7 +303,21 @@ async def list_ops(
         op = _row_to_response(r)
         op.message_previews = await _fetch_message_previews(r, db_path)
         ops.append(op)
-    return OperationListResponse(operations=ops, total=len(ops))
+
+    # One-line summaries for multi-op batches — the batch card's headline.
+    by_batch: dict[str, list[dict]] = {}
+    for r in rows:
+        if r.get("batch_id"):
+            by_batch.setdefault(r["batch_id"], []).append(r)
+    batch_summaries = {
+        batch_id: build_batch_summary(batch_rows)
+        for batch_id, batch_rows in by_batch.items()
+        if len(batch_rows) > 1
+    }
+
+    return OperationListResponse(
+        operations=ops, total=len(ops), batch_summaries=batch_summaries
+    )
 
 
 @router.post("/operations/batch/approve", response_model=BatchApproveResponse)
