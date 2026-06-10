@@ -652,6 +652,44 @@ async def upsert_folders_from_list(
                 await db.commit()
 
 
+async def find_message_by_message_id(
+    message_id: str,
+    *,
+    user_id: "int | None",
+    db_path: Path = DB_PATH,
+) -> "dict | None":
+    """Find a mirrored message by its RFC 5322 Message-ID, tenant-scoped.
+
+    Used to match an outgoing reply/forward (via its In-Reply-To/References
+    headers) back to the original message so the approval card can say
+    'Reply to "Invoice #1234" from billing@acme.com'.
+
+    Stored message_id values may or may not carry the surrounding angle
+    brackets depending on which sync path captured them, so both forms are
+    matched. Returns {uid, subject, sender, folder_name} or None.
+    """
+    if not message_id:
+        return None
+    bare = message_id.strip().strip("<>")
+    if not bare:
+        return None
+    bracketed = f"<{bare}>"
+    async with get_db(db_path) as db:
+        async with db.execute(
+            """
+            SELECT m.uid, m.subject, m.sender, f.name AS folder_name
+            FROM messages m
+            JOIN folders f ON m.folder_id = f.id
+            WHERE f.user_id IS ? AND m.message_id IN (?, ?)
+            ORDER BY m.last_updated DESC
+            LIMIT 1
+            """,
+            (user_id, bare, bracketed),
+        ) as cur:
+            row = await cur.fetchone()
+    return dict(row) if row is not None else None
+
+
 async def get_special_use_folders(
     *,
     user_id: "int | None",

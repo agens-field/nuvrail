@@ -39,6 +39,8 @@ const INTENT_LABELS: Record<string, string> = {
   save_draft: 'Draft',
   import_message: 'Import',
   mark_answered: 'Replied',
+  reply: 'Reply',
+  forward: 'Forward',
 }
 
 const INTENT_COLORS: Record<string, string> = {
@@ -48,6 +50,8 @@ const INTENT_COLORS: Record<string, string> = {
   not_spam: 'bg-emerald-900 text-emerald-200',
   restore_from_trash: 'bg-emerald-900 text-emerald-200',
   unarchive: 'bg-sky-900 text-sky-200',
+  reply: 'bg-violet-900 text-violet-200',
+  forward: 'bg-violet-900 text-violet-200',
 }
 
 function IntentPill({ intent }: { intent?: string | null }) {

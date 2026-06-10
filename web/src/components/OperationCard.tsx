@@ -29,6 +29,8 @@ const INTENT_BADGES: Record<string, { label: string; cls: string }> = {
   save_draft: { label: 'Draft', cls: 'bg-zinc-800/60 border-zinc-600/40 text-zinc-300' },
   import_message: { label: 'Import', cls: 'bg-zinc-800/60 border-zinc-600/40 text-zinc-300' },
   mark_answered: { label: 'Replied', cls: 'bg-zinc-800/60 border-zinc-600/40 text-zinc-300' },
+  reply: { label: 'Reply', cls: 'bg-violet-900/50 border-violet-600/40 text-violet-300' },
+  forward: { label: 'Forward', cls: 'bg-violet-900/50 border-violet-600/40 text-violet-300' },
 }
 
 function formatExpiry(expiresAt: number): string {
@@ -178,6 +180,19 @@ export default function OperationCard({ operation, selected, onToggleSelect }: O
                 &ldquo;{operation.smtp_envelope.subject}&rdquo;
               </span>
             </p>
+            {operation.smtp_envelope.original && (
+              <p>
+                <span className="text-fg-3">In reply to:</span>{' '}
+                <span className="text-fg-2">
+                  {operation.smtp_envelope.original.subject
+                    ? `“${operation.smtp_envelope.original.subject}”`
+                    : 'an earlier message'}
+                  {operation.smtp_envelope.original.sender
+                    ? ` from ${operation.smtp_envelope.original.sender}`
+                    : ''}
+                </span>
+              </p>
+            )}
           </div>
         )}
 

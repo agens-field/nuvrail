@@ -68,10 +68,11 @@ from dotenv import load_dotenv
 
 from gateway.agent_auth import decode_sasl_plain, verify_agent_login
 from gateway.credentials import fetch_credential
+from gateway.intent import derive_send_intent, extract_message_ids, strip_subject_prefixes
 from gateway.security_controls import build_auth_abuse_protector
 from gateway.extensions import load_plugins
 from gateway.staging import create_operation
-from gateway.state_db import get_db
+from gateway.state_db import find_message_by_message_id, get_db
 from logging_config import redact_protocol_line
 
 load_dotenv()
@@ -126,16 +127,84 @@ def _strip_starttls(lines: list[bytes]) -> list[bytes]:
     return filtered
 
 
+# Headers extracted from an outgoing message for staging/intent purposes.
+_SEND_HEADERS = ("subject", "in-reply-to", "references")
+
+
+def _extract_send_headers(body_lines: list[bytes]) -> dict[str, str]:
+    """Extract Subject / In-Reply-To / References from outgoing message lines.
+
+    Scans only the header block (stops at the first blank line) and unfolds
+    continuation lines (leading whitespace) so multi-line References headers
+    come back whole. Keys are lower-cased; absent headers are absent keys.
+    """
+    headers: dict[str, str] = {}
+    current_key: str | None = None
+    for raw in body_lines:
+        line = raw.decode("utf-8", errors="replace").rstrip("\r\n")
+        if not line.strip():
+            break  # end of headers
+        if line[:1] in (" ", "\t"):
+            if current_key is not None:
+                headers[current_key] += " " + line.strip()
+            continue
+        key, sep, value = line.partition(":")
+        if not sep:
+            current_key = None
+            continue
+        key_lower = key.strip().lower()
+        if key_lower in _SEND_HEADERS and key_lower not in headers:
+            headers[key_lower] = value.strip()
+            current_key = key_lower
+        else:
+            current_key = None
+    return headers
+
+
 def _extract_subject(body_lines: list[bytes]) -> str:
     """Extract the Subject header value from a list of message body lines."""
-    for line in body_lines:
-        decoded = line.decode("utf-8", errors="replace").rstrip("\r\n")
-        if decoded.lower().startswith("subject:"):
-            return decoded[8:].strip()
-        if not decoded.strip():
-            # Blank line marks end of headers
-            break
-    return "<no subject>"
+    return _extract_send_headers(body_lines).get("subject") or "<no subject>"
+
+
+def _build_send_description(
+    intent_label: Optional[str],
+    subject: str,
+    recipients: list[str],
+    original: Optional[dict],
+) -> str:
+    """Human description for a staged send, intent-aware.
+
+    Reply with the original found in the mirror:
+      'Reply to "Invoice #1234" from billing@acme.com'
+    Reply known only from the outgoing headers:
+      'Reply to "Invoice #1234"'  (subject with Re:/Fwd: prefixes stripped)
+    Forward:
+      'Forward "Invoice #1234" to bob@example.com'
+    Ordinary send (unchanged from before intent existed):
+      'Send email to bob@example.com — Subject: "Hello"'
+    """
+    to_list = ", ".join(recipients or ["<unknown>"])
+    base_subject = strip_subject_prefixes(subject)
+
+    if intent_label == "reply":
+        orig_subject = (original or {}).get("subject")
+        orig_sender = (original or {}).get("sender")
+        parts: list[str] = []
+        if orig_subject:
+            parts.append(f'"{orig_subject}"')
+        elif base_subject:
+            parts.append(f'"{base_subject}"')
+        if orig_sender:
+            parts.append(f"from {orig_sender}")
+        if parts:
+            return f"Reply to {' '.join(parts)}"
+        return f"Reply to {to_list}"
+
+    if intent_label == "forward":
+        quoted = f'"{base_subject}"' if base_subject else f'"{subject}"'
+        return f"Forward {quoted} to {to_list}"
+
+    return f'Send email to {to_list} — Subject: "{subject}"'
 
 
 # ---------------------------------------------------------------------------
@@ -655,8 +724,11 @@ async def handle_smtp_client(
                     body_lines.append(body_line)
                     byte_count += len(body_line)
 
-                # 5. Extract subject for logging
-                subject = _extract_subject(body_lines)
+                # 5. Extract headers for staging + reply/forward intent
+                send_headers = _extract_send_headers(body_lines)
+                subject = send_headers.get("subject") or "<no subject>"
+                in_reply_to = send_headers.get("in-reply-to")
+                references = send_headers.get("references")
                 logger.info(
                     "[%s] STAGED DATA: from=%s to=%s subject=%r bytes=%d",
                     peer_str,
@@ -668,25 +740,60 @@ async def handle_smtp_client(
 
                 # 6. Do NOT forward body or terminating "." to upstream
 
-                # 7. Create Operation record in staging engine
+                # 7. Create Operation record in staging engine.
+                #
+                # Reply/forward intent: the parent msg-id (In-Reply-To, or the
+                # last References entry — the direct parent per RFC 5322) is
+                # looked up in the mailbox mirror so the approval card can name
+                # the original message. A miss only lowers confidence; the
+                # intent still derives from the outgoing headers.
+                parent_ids = extract_message_ids(in_reply_to) or extract_message_ids(references)
+                original: Optional[dict] = None
+                if parent_ids and upstream_credential is not None:
+                    try:
+                        original = await find_message_by_message_id(
+                            parent_ids[-1],
+                            user_id=upstream_credential["user_id"],
+                            db_path=_db_path,
+                        )
+                    except Exception as _lookup_exc:  # noqa: BLE001
+                        logger.debug(
+                            "[%s] Original-message lookup failed (non-fatal): %s",
+                            peer_str, _lookup_exc,
+                        )
+                send_intent, send_intent_conf = derive_send_intent(
+                    subject, in_reply_to, references, original is not None
+                )
+                description = _build_send_description(
+                    send_intent, subject, recipients, original
+                )
+
                 body_text = b"".join(body_lines).decode("utf-8", errors="replace")
                 body_preview = body_text[:200]  # kept for quick-scan display only
+                envelope = {
+                    "from": sender or "",
+                    "to": recipients,
+                    "subject": subject,
+                    "body": body_text,       # full message body for approval
+                    "body_preview": body_preview,  # truncated for quick-scan display
+                }
+                if in_reply_to:
+                    envelope["in_reply_to"] = in_reply_to
+                if original is not None:
+                    # Original-message context for the approval card.
+                    envelope["original"] = {
+                        "subject": original.get("subject"),
+                        "sender": original.get("sender"),
+                    }
                 try:
                     op_id = await create_operation(
                         op_type="smtp_send",
                         protocol="smtp",
                         agent_id=upstream_credential["id"] if upstream_credential else None,
-                        description=(
-                            f"Send email to {', '.join(recipients or ['<unknown>'])} "
-                            f"— Subject: \"{subject}\""
-                        ),
-                        smtp_envelope={
-                            "from": sender or "",
-                            "to": recipients,
-                            "subject": subject,
-                            "body": body_text,       # full message body for approval
-                            "body_preview": body_preview,  # truncated for quick-scan display
-                        },
+                        description=description,
+                        smtp_envelope=envelope,
+                        intent_label=send_intent,
+                        intent_confidence=send_intent_conf,
                     )
                     staged_resp = (
                         f"250 OK [STAGED] Send queued for approval — ID: {op_id}\r\n"

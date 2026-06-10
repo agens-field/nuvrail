@@ -18,6 +18,8 @@ Intent labels (stored in staged_operations.intent_label):
   mark_answered      — STORE +FLAGS \\Answered (typically paired with a reply)
   save_draft         — APPEND into a drafts folder (or with the \\Draft flag)
   import_message     — APPEND into any other folder
+  reply              — SMTP send with In-Reply-To/References to a known thread
+  forward            — SMTP send with a Fwd:/FW: subject
 
 intent_confidence:
   1.0 — server-declared SPECIAL-USE attribute (RFC 6154), exact provider-
@@ -30,6 +32,7 @@ the op_type itself (mark_read, flag, copy, smtp_send, ...).
 """
 from __future__ import annotations
 
+import re
 from typing import Optional, Tuple
 
 from gateway.operation_parser import ParsedOperation
@@ -125,6 +128,72 @@ def classify_folder(
 
 def _normalised_flags(flags: list[str]) -> set[str]:
     return {f.lstrip("\\").lower() for f in flags}
+
+
+# ---------------------------------------------------------------------------
+# Outbound send intent (SMTP) — reply / forward detection
+# ---------------------------------------------------------------------------
+
+# RFC 5322 msg-id tokens, e.g. "<abc.123@mail.example.com>".
+_RE_MSGID = re.compile(r"<[^<>\s]+@[^<>\s]+>")
+
+# Leading reply/forward subject prefixes, including bracketed counters
+# ("Re[2]:") and common localisations (Sv/Aw/Antw reply; WG/VS forward).
+_RE_REPLY_PREFIX = re.compile(r"^\s*(re|sv|aw|antw)(\[\d+\])?\s*:", re.IGNORECASE)
+_RE_FORWARD_PREFIX = re.compile(r"^\s*(fwd?|wg|vs)(\[\d+\])?\s*:", re.IGNORECASE)
+_RE_ANY_PREFIX = re.compile(r"^\s*(re|sv|aw|antw|fwd?|wg|vs)(\[\d+\])?\s*:\s*", re.IGNORECASE)
+
+
+def extract_message_ids(header_value: Optional[str]) -> list[str]:
+    """Extract msg-id tokens from an In-Reply-To / References header value.
+
+    >>> extract_message_ids("<a@x> <b@y>")
+    ['<a@x>', '<b@y>']
+    >>> extract_message_ids(None)
+    []
+    """
+    return _RE_MSGID.findall(header_value or "")
+
+
+def strip_subject_prefixes(subject: Optional[str]) -> str:
+    """Strip leading Re:/Fwd:-style prefixes (repeatedly) from a subject.
+
+    >>> strip_subject_prefixes("Re: Fwd: Re: Invoice #1234")
+    'Invoice #1234'
+    """
+    s = (subject or "").strip()
+    while True:
+        m = _RE_ANY_PREFIX.match(s)
+        if not m:
+            return s
+        s = s[m.end():]
+
+
+def derive_send_intent(
+    subject: Optional[str],
+    in_reply_to: Optional[str],
+    references: Optional[str],
+    original_found: bool,
+) -> Tuple[Optional[str], Optional[float]]:
+    """Derive (intent_label, confidence) for an outbound SMTP send.
+
+    forward — Fwd:/FW: subject prefix. Checked first: a forwarded reply keeps
+              Re: deeper in the subject and often carries thread headers, but
+              the forward prefix is what states the sender's intent.
+    reply   — In-Reply-To present, or References plus a Re: subject prefix.
+
+    Confidence is 1.0 when ``original_found`` says the referenced message was
+    located in the local mailbox mirror, 0.8 when the claim rests on the
+    outgoing headers alone. (None, None) for an ordinary send.
+    """
+    subj = subject or ""
+    if _RE_FORWARD_PREFIX.match(subj):
+        return "forward", 1.0 if original_found else 0.8
+    if in_reply_to:
+        return "reply", 1.0 if original_found else 0.8
+    if references and _RE_REPLY_PREFIX.match(subj):
+        return "reply", 1.0 if original_found else 0.8
+    return None, None
 
 
 def derive_intent(

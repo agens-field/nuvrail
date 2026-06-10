@@ -452,6 +452,7 @@ async def _sync_upstream_line(
                 subject=info.subject,
                 sender=info.sender,
                 size=info.size,
+                message_id=info.message_id,
                 db_path=db_path,
             )
             logger.debug(
@@ -1093,13 +1094,16 @@ async def _upstream_to_client(
                     # Extract and store headers (non-fatal).
                     if folder_id is not None and _header_buf:
                         try:
-                            _sender, _subject = extract_headers_from_rfc822(_header_buf)
-                            if _sender or _subject:
+                            _sender, _subject, _message_id = extract_headers_from_rfc822(
+                                _header_buf
+                            )
+                            if _sender or _subject or _message_id:
                                 await upsert_message(
                                     folder_id,
                                     _lit_uid,
                                     sender=_sender,
                                     subject=_subject,
+                                    message_id=_message_id,
                                     db_path=db_path,
                                 )
                                 logger.debug(

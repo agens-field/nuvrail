@@ -183,6 +183,41 @@ async def test_plain_list_does_not_erase_special_use(db_path: Path) -> None:
     assert roles == {"papierkorb": "trash"}
 
 
+async def test_find_message_by_message_id(db_path: Path) -> None:
+    """Lookup matches with or without angle brackets, tenant-scoped."""
+    from gateway.state_db import find_message_by_message_id, upsert_message
+
+    folder_id = await get_or_create_folder("INBOX", user_id=1, db_path=db_path)
+    await upsert_message(
+        folder_id, 42,
+        subject="Invoice #1234", sender="billing@acme.com",
+        message_id="<abc.123@acme.com>",
+        db_path=db_path,
+    )
+
+    # Bracketed and bare forms both resolve
+    for query in ("<abc.123@acme.com>", "abc.123@acme.com"):
+        row = await find_message_by_message_id(query, user_id=1, db_path=db_path)
+        assert row is not None, f"lookup failed for {query!r}"
+        assert row["subject"] == "Invoice #1234"
+        assert row["sender"] == "billing@acme.com"
+        assert row["uid"] == 42
+        assert row["folder_name"] == "INBOX"
+
+    # Stored without brackets also resolves from a bracketed query
+    await upsert_message(
+        folder_id, 43, subject="Bare", message_id="bare.id@acme.com", db_path=db_path
+    )
+    row = await find_message_by_message_id("<bare.id@acme.com>", user_id=1, db_path=db_path)
+    assert row is not None and row["subject"] == "Bare"
+
+    # Other tenants see nothing
+    assert await find_message_by_message_id("<abc.123@acme.com>", user_id=2, db_path=db_path) is None
+    # Unknown / empty ids
+    assert await find_message_by_message_id("<nope@acme.com>", user_id=1, db_path=db_path) is None
+    assert await find_message_by_message_id("", user_id=1, db_path=db_path) is None
+
+
 async def test_special_use_is_tenant_scoped(db_path: Path) -> None:
     """One tenant's special-use roles are invisible to another."""
     from gateway.state_db import get_special_use_folders
