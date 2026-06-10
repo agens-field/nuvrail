@@ -19,6 +19,11 @@ from pathlib import Path
 
 import pytest
 
+import json
+import os
+
+import gateway.secret_store as ss
+from gateway import credentials as creds
 from gateway.audit import insert_audit_event
 from gateway.retention import find_purgeable_users, purge_expired_deleted_users
 from gateway.state_db import get_db, init_db
@@ -208,3 +213,98 @@ async def test_per_user_mailbox_mirror_is_purged(db_path: Path) -> None:
             assert (await cur.fetchone())[0] == 1
     # And the deleted user is gone.
     assert (await _counts_for_user(db_path, old_uid))["users"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Issue #72 — the hard-purge is the backstop: it tears down upstream secrets in
+# the external store + revokes the OAuth2 grant BEFORE deleting the row that
+# holds the references. Without this, the secret is orphaned in Secret Manager
+# forever (live mailbox access retained).
+# ---------------------------------------------------------------------------
+class _RecordingStore:
+    backend = "aws-sm"
+
+    def __init__(self) -> None:
+        self.data: dict[str, str] = {}
+        self.deleted: list[str] = []
+        self._n = 0
+
+    async def put(self, plaintext, *, ctx):
+        self._n += 1
+        ref = f"fakeref://{ctx.field}/{self._n}"
+        self.data[ref] = plaintext
+        return ref
+
+    async def get(self, ref):
+        return self.data[ref]
+
+    async def delete(self, ref):
+        self.deleted.append(ref)
+        self.data.pop(ref, None)
+
+
+async def test_purge_deletes_external_secrets_and_revokes_oauth2(
+    db_path: Path, monkeypatch
+) -> None:
+    """#72 backstop: past-window purge deletes every upstream secret ref from the
+    external store and revokes the Google grant before dropping the row."""
+    monkeypatch.setenv("NUVRAIL_SECRET_BACKEND", "aws-sm")
+    monkeypatch.setenv("NUVRAIL_MASTER_KEY", os.urandom(32).hex())
+    creds._cached_master_key = None
+    store = _RecordingStore()
+    ss.reset_secret_store_cache()
+    ss._stores["aws-sm"] = store
+
+    revoked: list[str] = []
+
+    async def _fake_revoke(refresh_token: str) -> bool:
+        revoked.append(refresh_token)
+        return True
+
+    monkeypatch.setattr(
+        "gateway.oauth2_tokens.revoke_google_refresh_token", _fake_revoke
+    )
+    try:
+        now = 1_000_000_000
+        uid = await _seed_user(
+            db_path, email="sec72@x.com", deleted_at=now - 400 * _DAY
+        )
+        # Replace the seeded agent's secret columns with v2 references.
+        refs: dict[str, str] = {}
+        stored: dict[str, str] = {}
+        for f in (
+            "upstream_password", "oauth2_refresh_token",
+            "oauth2_access_token", "oauth2_client_secret",
+        ):
+            s = await creds.store_credential(f"secret-{f}", field=f)
+            stored[f] = s
+            refs[f] = json.loads(s)["ref"]
+        async with get_db(db_path) as db:
+            await db.execute(
+                """UPDATE agent_credentials
+                   SET upstream_password = ?, oauth2_provider = 'google',
+                       oauth2_refresh_token = ?, oauth2_access_token = ?,
+                       oauth2_client_secret = ?
+                   WHERE user_id = ?""",
+                (
+                    stored["upstream_password"],
+                    stored["oauth2_refresh_token"],
+                    stored["oauth2_access_token"],
+                    stored["oauth2_client_secret"],
+                    uid,
+                ),
+            )
+            await db.commit()
+
+        purged = await purge_expired_deleted_users(db_path=db_path, now=now)
+        assert purged == 1
+
+        for f, ref in refs.items():
+            assert ref in store.deleted, f"{f} ref not deleted from store"
+        assert revoked == ["secret-oauth2_refresh_token"]
+        # Row is gone (references already consumed — no orphans left behind).
+        assert (await _counts_for_user(db_path, uid))["users"] == 0
+        assert (await _counts_for_user(db_path, uid))["agents"] == 0
+    finally:
+        ss.reset_secret_store_cache()
+        creds._cached_master_key = None

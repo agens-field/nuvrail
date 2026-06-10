@@ -289,3 +289,81 @@ async def delete_credential(stored: str | None) -> None:
     store = get_secret_store(env.get("backend"))
     if store is not None:
         await store.delete(env["ref"])
+
+
+# The four agent_credentials columns that may hold an upstream secret (a v2
+# reference into the external secret store in hosted mode, or a v1 AES envelope
+# / plaintext otherwise). delete_credential() is a safe no-op for the non-v2
+# forms, so it is correct to call it across all backends.
+UPSTREAM_SECRET_FIELDS = (
+    "upstream_password",
+    "oauth2_refresh_token",
+    "oauth2_access_token",
+    "oauth2_client_secret",
+)
+
+
+async def purge_agent_upstream_secrets(
+    agent_row: dict,
+    *,
+    revoke_oauth2: bool = True,
+) -> None:
+    """Best-effort teardown of one agent's upstream secrets on deletion (#72).
+
+    Both deletion paths (self-serve account deletion and the retention
+    hard-purge) MUST call this BEFORE nulling or deleting the credential
+    columns/row — otherwise the reference is destroyed first and the actual
+    secret is orphaned in the external secret store (Secret Manager) forever,
+    leaving Nuvrail with live access to a deleted user's mailbox.
+
+    For each stored secret field on the row this:
+      1. (OAuth2 refresh token, when ``revoke_oauth2`` and a Google provider)
+         revokes the grant at the provider so live access dies immediately,
+         not just whenever Google eventually expires the token; then
+      2. deletes the secret from the external store via delete_credential().
+
+    Every step is best-effort and independently guarded: a failure on one
+    field is logged and the rest still run, so deletion never blocks on an
+    external call. The retention purge is the backstop for anything that
+    fails here.
+
+    Order matters (#72):
+        purge_agent_upstream_secrets(row)
+              │
+              ├─ revoke_google_refresh_token(refresh)   (kills live access)
+              └─ delete_credential(ref) × every field    (frees the store)
+                    │
+            ... only THEN does the caller NULL / DELETE the columns/row
+    """
+    # 1. Revoke the OAuth2 grant at the provider first (kills live access).
+    if revoke_oauth2 and agent_row.get("oauth2_provider") == "google":
+        stored_refresh = agent_row.get("oauth2_refresh_token")
+        if stored_refresh:
+            try:
+                from gateway.oauth2_tokens import (  # noqa: PLC0415
+                    revoke_google_refresh_token,
+                )
+
+                plaintext_refresh = await fetch_credential(stored_refresh)
+                await revoke_google_refresh_token(plaintext_refresh)
+            except Exception:  # noqa: BLE001 - revoke is best-effort
+                logger.warning(
+                    "[credentials] Failed to revoke OAuth2 grant for agent %r "
+                    "on deletion; secret-store delete still proceeds",
+                    agent_row.get("id"),
+                )
+
+    # 2. Delete each stored secret from the external store.
+    for field in UPSTREAM_SECRET_FIELDS:
+        stored = agent_row.get(field)
+        if not stored:
+            continue
+        try:
+            await delete_credential(stored)
+        except Exception:  # noqa: BLE001 - per-field best-effort
+            logger.warning(
+                "[credentials] Failed to delete upstream secret %r for agent %r "
+                "on deletion; retention purge is the backstop",
+                field,
+                agent_row.get("id"),
+            )

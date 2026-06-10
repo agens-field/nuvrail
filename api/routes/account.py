@@ -29,6 +29,7 @@ from api.models import (
 )
 from api.routes.operations import get_db_path
 from gateway.audit import insert_audit_event
+from gateway.credentials import purge_agent_upstream_secrets
 from gateway.state_db import get_db
 
 router = APIRouter()
@@ -228,6 +229,10 @@ async def delete_account(
       1. Verify password (prevents accidental or CSRF-driven deletion).
       2. Revoke all agent credentials (revoked_at = now).
       3. Delete push subscriptions for this user's agents.
+      3b. Delete upstream secrets from the external secret store and revoke
+          OAuth2 grants (#72) — done BEFORE step 4 nulls the references, or the
+          secrets would be orphaned in Secret Manager (live mailbox access
+          retained). Best-effort; the retention purge is the backstop.
       4. Null out encrypted credential columns in agent_credentials.
       5. Pseudonymize the users row: replace email with a non-reversible
          tombstone, null display_name/password/tokens, set deleted_at = now.
@@ -248,9 +253,16 @@ async def delete_account(
     user_id: int = current_user["id"]
 
     async with get_db(db_path) as db:
-        # 1. Fetch agent IDs for this user
+        # 1. Fetch agent IDs + their stored upstream secrets for this user.
+        #    We need the secret columns BEFORE step 4 nulls them so #72's
+        #    external-store cleanup can resolve and delete each reference.
         async with db.execute(
-            "SELECT id FROM agent_credentials WHERE user_id = ?",
+            """
+            SELECT id, oauth2_provider,
+                   upstream_password, oauth2_refresh_token,
+                   oauth2_access_token, oauth2_client_secret
+            FROM agent_credentials WHERE user_id = ?
+            """,
             (user_id,),
         ) as cur:
             agent_id_rows = await cur.fetchall()
@@ -269,6 +281,13 @@ async def delete_account(
             "DELETE FROM push_subscriptions WHERE user_id = ?",
             (user_id,),
         )
+
+        # 3b. Tear down upstream secrets in the external store + revoke OAuth2
+        #     grants (#72), BEFORE step 4 nulls the reference columns. Each call
+        #     is best-effort; failures are logged inside the helper and the
+        #     retention hard-purge sweeps anything left behind.
+        for row in agent_id_rows:
+            await purge_agent_upstream_secrets(dict(row))
 
         # 4. Null out encrypted credential columns in agent_credentials
         if agent_ids:

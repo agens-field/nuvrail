@@ -431,3 +431,196 @@ async def test_delete_account_cancels_pending_ops(
             row = await cur.fetchone()
     assert row is not None
     assert row["status"] == "cancelled"
+
+
+# ---------------------------------------------------------------------------
+# Issue #72 — account deletion tears down upstream secrets in the external
+# secret store (and revokes OAuth2 grants) BEFORE nulling the reference columns.
+#
+#   register → seed agent with v2 secret refs (aws-sm) + google OAuth2
+#        │
+#   DELETE /account
+#        │
+#   delete_account() stage 3b: purge_agent_upstream_secrets(row)
+#        ├─ revoke_google_refresh_token(<resolved refresh>)
+#        └─ store.delete(ref) × each populated secret field
+#        │
+#   ...THEN stage 4 nulls the columns (refs already consumed)
+# ---------------------------------------------------------------------------
+import os as _os  # noqa: E402
+
+import gateway.secret_store as _ss  # noqa: E402
+from gateway import credentials as _creds  # noqa: E402
+
+
+class _RecordingStore:
+    """aws-sm fake backend that records every put/delete by ref."""
+
+    backend = "aws-sm"
+
+    def __init__(self) -> None:
+        self.data: dict[str, str] = {}
+        self.deleted: list[str] = []
+        self._n = 0
+
+    async def put(self, plaintext, *, ctx):
+        self._n += 1
+        ref = f"fakeref://{ctx.field}/{self._n}"
+        self.data[ref] = plaintext
+        return ref
+
+    async def get(self, ref):
+        return self.data[ref]
+
+    async def delete(self, ref):
+        self.deleted.append(ref)
+        self.data.pop(ref, None)
+
+
+async def _seed_agent_with_secrets(
+    db_path: Path, email: str, store, *, provider: str | None,
+) -> dict[str, str]:
+    """Insert one agent for the given user with v2 references in every secret
+    field. Returns {field: ref} so the test can assert each ref was deleted."""
+    refs: dict[str, str] = {}
+    fields = (
+        "upstream_password",
+        "oauth2_refresh_token",
+        "oauth2_access_token",
+        "oauth2_client_secret",
+    )
+    for f in fields:
+        stored = await _creds.store_credential(f"secret-{f}", field=f)
+        # stored is a v2 envelope {"v":2,"backend":"aws-sm","ref":...}
+        import json as _json
+
+        refs[f] = _json.loads(stored)["ref"]
+        refs.setdefault("_stored", {})  # type: ignore[arg-type]
+        refs[f + "::stored"] = stored
+    async with get_db(db_path) as db:
+        async with db.execute(
+            "SELECT id FROM users WHERE email = ?", (email,)
+        ) as cur:
+            user_id = (await cur.fetchone())["id"]
+        await db.execute(
+            """INSERT INTO agent_credentials
+               (user_id, label, agent_username, hashed_token, upstream_host,
+                upstream_imap_port, upstream_smtp_port, upstream_user,
+                upstream_password, oauth2_provider, oauth2_refresh_token,
+                oauth2_access_token, oauth2_client_secret, created_at)
+               VALUES (?, 'l', 'nuvrail_sec72', 'h', 'imap.example.com', 993,
+                       587, 'u@example.com', ?, ?, ?, ?, ?, 0)""",
+            (
+                user_id,
+                refs["upstream_password::stored"],
+                provider,
+                refs["oauth2_refresh_token::stored"],
+                refs["oauth2_access_token::stored"],
+                refs["oauth2_client_secret::stored"],
+            ),
+        )
+        await db.commit()
+    return refs
+
+
+async def test_delete_account_deletes_external_secrets_and_revokes_oauth2(
+    client: httpx.AsyncClient, db_path: Path, monkeypatch
+) -> None:
+    """#72: every populated upstream secret is deleted from the external store,
+    the Google OAuth2 grant is revoked, and the columns are nulled afterward."""
+    monkeypatch.setenv("NUVRAIL_SECRET_BACKEND", "aws-sm")
+    monkeypatch.setenv("NUVRAIL_MASTER_KEY", _os.urandom(32).hex())
+    _creds._cached_master_key = None
+    store = _RecordingStore()
+    _ss.reset_secret_store_cache()
+    _ss._stores["aws-sm"] = store
+
+    revoked: list[str] = []
+
+    async def _fake_revoke(refresh_token: str) -> bool:
+        revoked.append(refresh_token)
+        return True
+
+    monkeypatch.setattr(
+        "gateway.oauth2_tokens.revoke_google_refresh_token", _fake_revoke
+    )
+    try:
+        token, email = await _register_and_login(client)
+        refs = await _seed_agent_with_secrets(
+            db_path, email, store, provider="google"
+        )
+
+        resp = await client.request(
+            "DELETE", "/api/v1/account",
+            json={"password": "supersecurepass"}, headers=_auth(token),
+        )
+        assert resp.status_code == 200
+
+        # Each of the four secret refs was deleted from the external store.
+        for f in (
+            "upstream_password", "oauth2_refresh_token",
+            "oauth2_access_token", "oauth2_client_secret",
+        ):
+            assert refs[f] in store.deleted, f"{f} ref not deleted from store"
+
+        # The Google grant was revoked with the RESOLVED refresh token.
+        assert revoked == ["secret-oauth2_refresh_token"]
+
+        # Columns are nulled afterward (refs already consumed, no orphans).
+        async with get_db(db_path) as db:
+            async with db.execute(
+                "SELECT id FROM users WHERE email LIKE 'deleted+%@nuvrail.invalid'"
+            ) as cur:
+                assert await cur.fetchone() is not None
+    finally:
+        _ss.reset_secret_store_cache()
+        _creds._cached_master_key = None
+
+
+async def test_delete_account_local_backend_no_external_delete(
+    client: httpx.AsyncClient, db_path: Path, monkeypatch
+) -> None:
+    """#72: with the local AES backend there is no external secret to delete and
+    no provider revoke — deletion still succeeds (delete_credential is a no-op
+    for v1/plaintext). Guards against the cross-backend helper crashing."""
+    monkeypatch.delenv("NUVRAIL_SECRET_BACKEND", raising=False)
+    monkeypatch.setenv("NUVRAIL_MASTER_KEY", _os.urandom(32).hex())
+    _creds._cached_master_key = None
+
+    revoke_calls: list[str] = []
+
+    async def _fake_revoke(refresh_token: str) -> bool:  # pragma: no cover
+        revoke_calls.append(refresh_token)
+        return True
+
+    monkeypatch.setattr(
+        "gateway.oauth2_tokens.revoke_google_refresh_token", _fake_revoke
+    )
+    try:
+        token, email = await _register_and_login(client)
+        # local backend: store_credential returns a v1 AES envelope, not a ref
+        pw = await _creds.store_credential("pw", field="upstream_password")
+        async with get_db(db_path) as db:
+            async with db.execute(
+                "SELECT id FROM users WHERE email = ?", (email,)
+            ) as cur:
+                user_id = (await cur.fetchone())["id"]
+            await db.execute(
+                """INSERT INTO agent_credentials
+                   (user_id, label, agent_username, hashed_token, upstream_host,
+                    upstream_user, upstream_password, created_at)
+                   VALUES (?, 'l', 'nuvrail_loc72', 'h', 'imap.example.com',
+                           'u@example.com', ?, 0)""",
+                (user_id, pw),
+            )
+            await db.commit()
+
+        resp = await client.request(
+            "DELETE", "/api/v1/account",
+            json={"password": "supersecurepass"}, headers=_auth(token),
+        )
+        assert resp.status_code == 200
+        # No provider configured → no revoke attempted.
+        assert revoke_calls == []
+    finally:
+        _creds._cached_master_key = None
