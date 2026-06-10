@@ -20,8 +20,9 @@ Intent labels (stored in staged_operations.intent_label):
   import_message     — APPEND into any other folder
 
 intent_confidence:
-  1.0 — exact match against the provider profile, or mechanically certain
-        (e.g. STORE \\Deleted is always delete intent)
+  1.0 — server-declared SPECIAL-USE attribute (RFC 6154), exact provider-
+        profile match, or mechanically certain (e.g. STORE \\Deleted is
+        always delete intent)
   0.8 — matched by common folder-name heuristics only (no profile match)
 
 A NULL intent means "no semantics beyond op_type" — consumers fall back to
@@ -52,15 +53,47 @@ _NAME_ROLES = [
     ("drafts", _DRAFTS_NAMES),
 ]
 
+# RFC 6154 SPECIAL-USE attribute → folder role. \All is Gmail's All Mail
+# (its archive destination); \Flagged is a virtual mailbox and carries no
+# move semantics, so it is deliberately absent.
+_SPECIAL_USE_TO_ROLE = {
+    "\\archive": "archive",
+    "\\all": "archive",
+    "\\trash": "trash",
+    "\\junk": "junk",
+    "\\drafts": "drafts",
+    "\\sent": "sent",
+}
+
+
+def role_from_list_attributes(attributes: list[str]) -> Optional[str]:
+    """Map LIST mailbox attributes to a folder role, or None.
+
+    >>> role_from_list_attributes(["\\\\HasNoChildren", "\\\\Trash"])
+    'trash'
+    >>> role_from_list_attributes(["\\\\HasNoChildren"])
+    """
+    for attr in attributes:
+        role = _SPECIAL_USE_TO_ROLE.get(attr.lower())
+        if role:
+            return role
+    return None
+
 
 def classify_folder(
     folder: Optional[str],
     profile: Optional[ProviderProfile] = None,
+    special_use: Optional[dict] = None,
 ) -> Tuple[Optional[str], float]:
-    """Classify a folder into a role: inbox|archive|trash|junk|drafts|None.
+    """Classify a folder into a role: inbox|archive|trash|junk|drafts|sent|None.
 
-    Returns (role, confidence). Provider-profile matches are 1.0; common-name
-    heuristics are 0.8; unknown folders are (None, 0.0).
+    Returns (role, confidence). Server-declared SPECIAL-USE roles and
+    provider-profile matches are 1.0; common-name heuristics are 0.8;
+    unknown folders are (None, 0.0).
+
+    ``special_use`` maps lower-cased folder names to roles, as returned by
+    state_db.get_special_use_folders — captured from the upstream server's
+    own LIST attributes, so it outranks profile and name matching.
     """
     if not folder:
         return None, 0.0
@@ -69,6 +102,10 @@ def classify_folder(
         return None, 0.0
     if name == "inbox":
         return "inbox", PROFILE_CONFIDENCE
+    if special_use:
+        role = special_use.get(name)
+        if role:
+            return role, PROFILE_CONFIDENCE
     if profile is not None:
         if profile.archive_folder and name == profile.archive_folder.lower():
             return "archive", PROFILE_CONFIDENCE
@@ -94,11 +131,15 @@ def derive_intent(
     parsed_op: ParsedOperation,
     profile: Optional[ProviderProfile] = None,
     folder_from: Optional[str] = None,
+    special_use: Optional[dict] = None,
 ) -> Tuple[Optional[str], Optional[float]]:
     """Derive (intent_label, intent_confidence) for a parsed operation.
 
     ``folder_from`` is the currently-selected mailbox (the parser doesn't know
     it for STORE/MOVE); needed for direction-sensitive intents like not_spam.
+    ``special_use`` maps lower-cased folder names to server-declared RFC 6154
+    roles (see state_db.get_special_use_folders) and takes precedence over
+    profile/name matching in folder classification.
     Returns (None, None) when the op_type already says everything (mark_read,
     flag, copy, ...) or nothing semantic can be inferred.
     """
@@ -111,7 +152,7 @@ def derive_intent(
     if op_type == "append":
         if "draft" in _normalised_flags(parsed_op.flags_add):
             return "save_draft", 1.0
-        role, conf = classify_folder(parsed_op.folder_to, profile)
+        role, conf = classify_folder(parsed_op.folder_to, profile, special_use)
         if role == "drafts":
             return "save_draft", conf
         return "import_message", 1.0
@@ -125,8 +166,8 @@ def derive_intent(
 
     if op_type == "move":
         src = folder_from or parsed_op.folder_from
-        dest_role, dest_conf = classify_folder(parsed_op.folder_to, profile)
-        src_role, src_conf = classify_folder(src, profile)
+        dest_role, dest_conf = classify_folder(parsed_op.folder_to, profile, special_use)
+        src_role, src_conf = classify_folder(src, profile, special_use)
         if dest_role == "archive":
             return "archive", dest_conf
         if dest_role == "trash":

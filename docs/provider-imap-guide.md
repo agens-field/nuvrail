@@ -10,6 +10,10 @@ AI agents send standard RFC 3501 IMAP commands and must not need to know which m
 
 Provider detection is done at connection time by matching the agent credential's `upstream_host` against known hostname suffixes (see `gateway/provider_profiles.py`, `_DETECTION_TABLE`).
 
+### SPECIAL-USE folder roles (RFC 6154)
+
+Independently of hostname profiles, the proxy captures SPECIAL-USE mailbox attributes (`\Archive` `\All` `\Trash` `\Junk` `\Sent` `\Drafts`) from upstream LIST responses into `folders.special_use` (per tenant). Gmail and Dovecot include these in plain LIST responses; other servers include them for extended LIST. Intent derivation (`gateway/intent.py`) consults these server-declared roles **first**, at full confidence — so archive/delete/spam intents work on any compliant server, including localized folder names ("Papierkorb", "Spamverdacht") that hostname profiles and name heuristics cannot cover. Roles captured once are kept even if a later plain LIST omits the attributes.
+
 ---
 
 ## Gmail (`imap.gmail.com`, `smtp.gmail.com`)
