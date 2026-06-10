@@ -283,7 +283,7 @@ def _make_rfc822(from_: str, subject: str, body: str = "Hello") -> bytes:
 def test_extract_headers_plain() -> None:
     """Plain ASCII From/Subject are returned as-is."""
     data = _make_rfc822("Alice <alice@example.com>", "Hello there")
-    sender, subject = extract_headers_from_rfc822(data)
+    sender, subject, _msgid = extract_headers_from_rfc822(data)
     assert sender == "Alice <alice@example.com>"
     assert subject == "Hello there"
 
@@ -292,7 +292,7 @@ def test_extract_headers_encoded_subject() -> None:
     """RFC2047 encoded-word subjects are decoded."""
     # =?UTF-8?Q?Re=3A_Invoice?= decodes to "Re: Invoice"
     data = _make_rfc822("billing@acme.com", "=?UTF-8?Q?Re=3A_Invoice?=")
-    sender, subject = extract_headers_from_rfc822(data)
+    sender, subject, _msgid = extract_headers_from_rfc822(data)
     assert subject == "Re: Invoice"
     assert sender == "billing@acme.com"
 
@@ -300,7 +300,7 @@ def test_extract_headers_encoded_subject() -> None:
 def test_extract_headers_encoded_sender() -> None:
     """RFC2047 encoded-word display names in From are decoded."""
     data = _make_rfc822("=?UTF-8?Q?Alice_Smith?= <alice@example.com>", "Hi")
-    sender, subject = extract_headers_from_rfc822(data)
+    sender, subject, _msgid = extract_headers_from_rfc822(data)
     assert sender is not None
     assert "alice@example.com" in sender
 
@@ -308,7 +308,7 @@ def test_extract_headers_encoded_sender() -> None:
 def test_extract_headers_missing_fields() -> None:
     """Missing From/Subject returns None for each missing field."""
     data = b"Date: Mon, 1 Jan 2024 12:00:00 +0000\r\n\r\nBody"
-    sender, subject = extract_headers_from_rfc822(data)
+    sender, subject, _msgid = extract_headers_from_rfc822(data)
     assert sender is None
     assert subject is None
 
@@ -317,16 +317,51 @@ def test_extract_headers_truncated_no_blank_line() -> None:
     """Truncated input without blank line is handled gracefully."""
     # Simulate only reading first N bytes of a large message
     data = b"From: alice@example.com\r\nSubject: Test\r\n"
-    sender, subject = extract_headers_from_rfc822(data)
+    sender, subject, _msgid = extract_headers_from_rfc822(data)
     assert sender == "alice@example.com"
     assert subject == "Test"
 
 
 def test_extract_headers_empty_bytes() -> None:
     """Empty input returns (None, None) without raising."""
-    sender, subject = extract_headers_from_rfc822(b"")
+    sender, subject, _msgid = extract_headers_from_rfc822(b"")
     assert sender is None
     assert subject is None
+
+
+def test_extract_headers_message_id() -> None:
+    """Message-ID is extracted alongside sender/subject."""
+    data = (
+        b"From: alice@example.com\r\n"
+        b"Subject: Test\r\n"
+        b"Message-ID: <abc.123@mail.example.com>\r\n"
+        b"\r\n"
+        b"Body"
+    )
+    sender, subject, msgid = extract_headers_from_rfc822(data)
+    assert sender == "alice@example.com"
+    assert msgid == "<abc.123@mail.example.com>"
+
+
+def test_parse_fetch_envelope_message_id() -> None:
+    """The ENVELOPE's final msg-id string is captured as message_id."""
+    line = (
+        '* 3 FETCH (UID 77 ENVELOPE ("Mon, 1 Jan 2024 12:00:00 +0000" "Invoice #1234" '
+        '(("Billing" NIL "billing" "acme.com")) NIL NIL NIL NIL NIL '
+        '"<parent.1@acme.com>" "<msg.2@acme.com>"))'
+    )
+    info = parse_fetch_line(line)
+    assert info is not None
+    assert info.uid == 77
+    # in-reply-to precedes message-id in ENVELOPE — last match wins
+    assert info.message_id == "<msg.2@acme.com>"
+
+
+def test_parse_fetch_envelope_without_message_id() -> None:
+    line = '* 1 FETCH (UID 5 ENVELOPE ("date" "subject" NIL NIL NIL NIL NIL NIL NIL NIL))'
+    info = parse_fetch_line(line)
+    assert info is not None
+    assert info.message_id is None
 
 
 def test_extract_headers_multiline_subject() -> None:
@@ -338,7 +373,7 @@ def test_extract_headers_multiline_subject() -> None:
         b"\r\n"
         b"Body"
     )
-    sender, subject = extract_headers_from_rfc822(data)
+    sender, subject, _msgid = extract_headers_from_rfc822(data)
     assert subject is not None
     assert "long subject" in subject
     assert "wraps" in subject

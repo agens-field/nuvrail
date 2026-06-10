@@ -10,6 +10,8 @@ export interface SmtpEnvelope {
   to: string[]
   subject: string
   body_preview: string
+  in_reply_to?: string  // present when the outgoing message replies to a thread
+  original?: { subject?: string | null; sender?: string | null }  // matched original message (mailbox mirror)
 }
 
 export interface Operation {
@@ -35,7 +37,8 @@ export interface Operation {
   batch_id?: string | null
   // Semantic intent derived at staging time: 'archive' | 'delete' | 'mark_spam'
   // | 'not_spam' | 'restore_from_trash' | 'unarchive' | 'mark_answered'
-  // | 'save_draft' | 'import_message'. Null = op_type says everything.
+  // | 'save_draft' | 'import_message' | 'reply' | 'forward'.
+  // Null = op_type says everything.
   intent_label?: string | null
   intent_confidence?: number | null  // 1.0 = provider match, 0.8 = folder-name heuristic
 }

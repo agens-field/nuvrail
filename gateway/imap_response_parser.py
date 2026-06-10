@@ -118,9 +118,15 @@ _RE_FLAGS = re.compile(r"\bFLAGS \(([^)]*)\)", re.IGNORECASE)
 _RE_SIZE = re.compile(r"\bRFC822\.SIZE (\d+)\b", re.IGNORECASE)
 
 # ENVELOPE: ENVELOPE ("date" "subject" (from) (sender) ...)
-# We only try to extract date, subject, and from (sender).
+# We only try to extract date, subject, from (sender), and message-id.
 _RE_ENVELOPE = re.compile(r'\bENVELOPE\s+\(\s*"([^"]*)"', re.IGNORECASE)  # date
 _RE_ENV_SUBJECT = re.compile(r'\bENVELOPE\s+\("[^"]*"\s+"([^"]*)"', re.IGNORECASE)
+
+# Quoted RFC 5322 msg-id tokens inside ENVELOPE — the envelope's last two
+# string fields are in-reply-to then message-id, so the LAST match is the
+# message-id. Best-effort: a subject containing a quoted <x@y> could match
+# too, but a real message-id always follows it, so "last wins" stays correct.
+_RE_ENV_MSGID = re.compile(r'"(<[^">]+@[^">]+>)"')
 
 # Address struct: (("Name" NIL "user" "domain")) — capture first address
 _RE_ADDR_STRUCT = re.compile(
@@ -256,6 +262,12 @@ def parse_fetch_line(line: str) -> Optional[FetchInfo]:
                 info.sender = f"{display} <{email}>"
             else:
                 info.sender = email
+
+        # Message-ID — needed to match outgoing replies to mirrored messages.
+        if env_m:
+            msgid_matches = _RE_ENV_MSGID.findall(payload)
+            if msgid_matches:
+                info.message_id = msgid_matches[-1]
     except Exception as exc:  # noqa: BLE001
         logger.debug("parse_fetch_line: ENVELOPE parsing failed: %s", exc)
 
@@ -288,16 +300,18 @@ def _decode_header(raw: str) -> str:
         return raw.strip()
 
 
-def extract_headers_from_rfc822(data: bytes) -> Tuple[Optional[str], Optional[str]]:
-    """Extract (sender, subject) from the start of a raw RFC822 message.
+def extract_headers_from_rfc822(
+    data: bytes,
+) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+    """Extract (sender, subject, message_id) from the start of a raw RFC822 message.
 
     Parses only the header block (everything before the first blank line).
-    Returns (None, None) if headers cannot be extracted.
+    Returns (None, None, None) if headers cannot be extracted.
 
     Handles:
     - RFC2047 encoded-word subjects (=?UTF-8?Q?...?=)
     - Multi-line (folded) headers
-    - Both From: and Subject: in any order
+    - From:/Subject:/Message-ID: in any order
 
     Does NOT load the full message body — data may be a truncated prefix.
     """
@@ -313,11 +327,13 @@ def extract_headers_from_rfc822(data: bytes) -> Tuple[Optional[str], Optional[st
 
         raw_from = msg.get("From", "")
         raw_subject = msg.get("Subject", "")
+        raw_message_id = msg.get("Message-ID", "")
 
         sender = _decode_header(raw_from) if raw_from else None
         subject = _decode_header(raw_subject) if raw_subject else None
+        message_id = raw_message_id.strip() if raw_message_id else None
 
-        return sender or None, subject or None
+        return sender or None, subject or None, message_id or None
     except Exception as exc:  # noqa: BLE001
         logger.debug("extract_headers_from_rfc822: failed: %s", exc)
-        return None, None
+        return None, None, None

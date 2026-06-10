@@ -247,6 +247,108 @@ class TestClassifyFolderSpecialUse:
         assert classify_folder("Trash", None, {}) == ("trash", 0.8)
 
 
+class TestSendIntent:
+    """derive_send_intent — reply/forward detection for outbound SMTP sends."""
+
+    def test_in_reply_to_is_reply(self):
+        from gateway.intent import derive_send_intent
+
+        assert derive_send_intent(
+            "Re: Invoice", "<parent@acme.com>", None, original_found=True
+        ) == ("reply", 1.0)
+
+    def test_unmatched_reply_lower_confidence(self):
+        from gateway.intent import derive_send_intent
+
+        assert derive_send_intent(
+            "Re: Invoice", "<parent@acme.com>", None, original_found=False
+        ) == ("reply", 0.8)
+
+    def test_references_plus_re_prefix_is_reply(self):
+        from gateway.intent import derive_send_intent
+
+        assert derive_send_intent(
+            "Re: Hello", None, "<a@x> <b@y>", original_found=True
+        ) == ("reply", 1.0)
+
+    def test_references_without_re_prefix_not_reply(self):
+        from gateway.intent import derive_send_intent
+
+        # References alone (e.g. a client that threads everything) isn't enough
+        assert derive_send_intent("Hello", None, "<a@x>", original_found=False) == (
+            None,
+            None,
+        )
+
+    def test_fwd_prefix_is_forward(self):
+        from gateway.intent import derive_send_intent
+
+        assert derive_send_intent("Fwd: Invoice", None, None, original_found=False) == (
+            "forward",
+            0.8,
+        )
+        assert derive_send_intent("FW: Invoice", None, "<a@x>", original_found=True) == (
+            "forward",
+            1.0,
+        )
+
+    def test_forward_prefix_wins_over_reply_headers(self):
+        from gateway.intent import derive_send_intent
+
+        # Forwarding a reply: subject says Fwd, headers still reference the thread
+        assert derive_send_intent(
+            "Fwd: Re: Invoice", "<parent@acme.com>", None, original_found=False
+        ) == ("forward", 0.8)
+
+    def test_plain_send_no_intent(self):
+        from gateway.intent import derive_send_intent
+
+        assert derive_send_intent("Hello there", None, None, original_found=False) == (
+            None,
+            None,
+        )
+
+    def test_resend_subject_not_a_reply(self):
+        from gateway.intent import derive_send_intent
+
+        # "Regarding..." must not match the Re: prefix
+        assert derive_send_intent("Regarding the invoice", None, None, False) == (
+            None,
+            None,
+        )
+
+
+class TestSubjectPrefixStripping:
+    def test_strips_stacked_prefixes(self):
+        from gateway.intent import strip_subject_prefixes
+
+        assert strip_subject_prefixes("Re: Fwd: Re: Invoice #1234") == "Invoice #1234"
+
+    def test_strips_counter_form(self):
+        from gateway.intent import strip_subject_prefixes
+
+        assert strip_subject_prefixes("Re[2]: Invoice") == "Invoice"
+
+    def test_plain_subject_unchanged(self):
+        from gateway.intent import strip_subject_prefixes
+
+        assert strip_subject_prefixes("Regarding the invoice") == "Regarding the invoice"
+        assert strip_subject_prefixes(None) == ""
+
+
+class TestExtractMessageIds:
+    def test_multiple_ids(self):
+        from gateway.intent import extract_message_ids
+
+        assert extract_message_ids("<a@x> <b@y>") == ["<a@x>", "<b@y>"]
+
+    def test_none_and_garbage(self):
+        from gateway.intent import extract_message_ids
+
+        assert extract_message_ids(None) == []
+        assert extract_message_ids("not a message id") == []
+
+
 class TestDeriveIntentSpecialUse:
     def test_move_to_localized_trash_is_delete(self):
         roles = {"papierkorb": "trash"}
