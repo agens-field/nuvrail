@@ -44,13 +44,17 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import logging
 import time
 from pathlib import Path
 
 from gateway.credentials import fetch_credential
 from gateway.state_db import get_db
 
+logger = logging.getLogger(__name__)
+
 _GOOGLE_TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token"
+_GOOGLE_REVOKE_ENDPOINT = "https://oauth2.googleapis.com/revoke"
 
 # Refresh the cached token if it expires within this many seconds.
 _EXPIRY_BUFFER_SECONDS = 120
@@ -270,3 +274,59 @@ def _urllib_post(url: str, payload: dict) -> tuple[int, str]:
             return resp.status, resp.read().decode("utf-8")
     except urllib.error.HTTPError as exc:  # type: ignore[attr-defined]
         return exc.code, exc.read().decode("utf-8", errors="replace")
+
+
+async def revoke_google_refresh_token(refresh_token: str) -> bool:
+    """Best-effort revoke of a Google OAuth2 refresh token at the provider.
+
+    POSTs the (already-resolved, plaintext) refresh token to Google's revoke
+    endpoint. Revoking the refresh token invalidates the whole grant, so any
+    derived access tokens stop working too — this is what severs Nuvrail's live
+    Gmail access on account deletion (issue #72), independent of deleting the
+    secret from the secret store.
+
+    Returns True on success (HTTP 200). Returns False — never raises — on any
+    failure, so callers can treat revocation as best-effort cleanup that must
+    not block a user-facing deletion. Google treats an already-invalid token as
+    HTTP 200, so a double-revoke is harmless.
+
+    Never logs the token value.
+
+    Revoke flow (issue #72):
+        delete_account / retention purge
+              │  refresh token resolved from secret store (fetch_credential)
+              ▼
+        revoke_google_refresh_token(token)
+              │  POST https://oauth2.googleapis.com/revoke  token=<refresh>
+              ▼
+        grant invalidated at Google  →  derived access tokens die too
+    """
+    if not refresh_token:
+        return False
+    payload = {"token": refresh_token}
+    try:
+        try:
+            import httpx  # noqa: PLC0415
+            async with httpx.AsyncClient(timeout=15) as client:
+                resp = await client.post(_GOOGLE_REVOKE_ENDPOINT, data=payload)
+            status_code = resp.status_code
+        except ImportError:
+            status_code, _ = await asyncio.get_event_loop().run_in_executor(
+                None, _urllib_post, _GOOGLE_REVOKE_ENDPOINT, payload
+            )
+    except Exception as exc:  # noqa: BLE001 - revoke is best-effort
+        # Log the exception type only — never the token or response body.
+        logger.warning(
+            "[oauth2] Refresh-token revoke call failed (%s); "
+            "secret-store delete still proceeds",
+            type(exc).__name__,
+        )
+        return False
+    if status_code == 200:
+        return True
+    logger.warning(
+        "[oauth2] Refresh-token revoke returned HTTP %s; "
+        "secret-store delete still proceeds",
+        status_code,
+    )
+    return False

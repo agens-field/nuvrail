@@ -50,6 +50,7 @@ import os
 import time
 from pathlib import Path
 
+from gateway.credentials import purge_agent_upstream_secrets
 from gateway.state_db import DB_PATH, get_db
 
 logger = logging.getLogger(__name__)
@@ -91,10 +92,20 @@ async def _purge_user(user_id: int, db_path: Path) -> None:
     async with get_db(db_path) as db:
         # Resolve this user's agent ids + operation ids first (needed to reach
         # the agent_id/operation_id-scoped child tables, which have no user_id).
+        # We also pull each agent's stored upstream secrets here so we can tear
+        # them down in the external secret store (#72) BEFORE step 7 deletes the
+        # rows that hold the references.
         async with db.execute(
-            "SELECT id FROM agent_credentials WHERE user_id = ?", (user_id,)
+            """
+            SELECT id, oauth2_provider,
+                   upstream_password, oauth2_refresh_token,
+                   oauth2_access_token, oauth2_client_secret
+            FROM agent_credentials WHERE user_id = ?
+            """,
+            (user_id,),
         ) as cur:
-            agent_ids = [str(r["id"]) for r in await cur.fetchall()]
+            agent_rows = [dict(r) for r in await cur.fetchall()]
+        agent_ids = [str(r["id"]) for r in agent_rows]
 
         op_ids: list[str] = []
         if agent_ids:
@@ -146,6 +157,12 @@ async def _purge_user(user_id: int, db_path: Path) -> None:
                 folder_ids,
             )
         await db.execute("DELETE FROM folders WHERE user_id = ?", (user_id,))
+        # 6b. Tear down upstream secrets in the external store + revoke OAuth2
+        #     grants (#72) as a backstop for anything stage-1 deletion missed,
+        #     BEFORE step 7 deletes the rows holding the references. Best-effort;
+        #     failures are logged inside the helper and do not abort the purge.
+        for row in agent_rows:
+            await purge_agent_upstream_secrets(row)
         # 7. agent_credentials (child of users)
         await db.execute(
             "DELETE FROM agent_credentials WHERE user_id = ?", (user_id,)

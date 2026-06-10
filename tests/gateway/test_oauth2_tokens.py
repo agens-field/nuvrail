@@ -278,6 +278,48 @@ async def test_refresh_google_token_http_error() -> None:
 
 
 # ---------------------------------------------------------------------------
+# revoke_google_refresh_token — best-effort grant revocation on deletion (#72)
+# ---------------------------------------------------------------------------
+from gateway.oauth2_tokens import revoke_google_refresh_token  # noqa: E402
+
+
+def _mock_httpx(status_code: int):
+    fake_resp = MagicMock()
+    fake_resp.status_code = status_code
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    mock_client.post = AsyncMock(return_value=fake_resp)
+    return mock_client
+
+
+async def test_revoke_returns_true_on_200() -> None:
+    with patch("httpx.AsyncClient", return_value=_mock_httpx(200)):
+        assert await revoke_google_refresh_token("refresh") is True
+
+
+async def test_revoke_returns_false_on_non_200() -> None:
+    # A bad token / already-revoked etc. must NOT raise — deletion proceeds.
+    with patch("httpx.AsyncClient", return_value=_mock_httpx(400)):
+        assert await revoke_google_refresh_token("refresh") is False
+
+
+async def test_revoke_returns_false_on_exception() -> None:
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    mock_client.post = AsyncMock(side_effect=RuntimeError("network down"))
+    with patch("httpx.AsyncClient", return_value=mock_client):
+        assert await revoke_google_refresh_token("refresh") is False
+
+
+async def test_revoke_empty_token_is_noop_false() -> None:
+    # No network call for an empty token.
+    with patch("httpx.AsyncClient", side_effect=AssertionError("should not call")):
+        assert await revoke_google_refresh_token("") is False
+
+
+# ---------------------------------------------------------------------------
 # DB schema: oauth2 columns present after init_db
 # ---------------------------------------------------------------------------
 
