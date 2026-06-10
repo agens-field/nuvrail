@@ -107,6 +107,38 @@ async def test_list_operations_empty(client: httpx.AsyncClient) -> None:
     data = resp.json()
     assert data["total"] == 0
     assert data["operations"] == []
+    assert data["batch_summaries"] == {}
+
+
+async def test_list_operations_batch_summaries(
+    client: httpx.AsyncClient, db_path: Path
+) -> None:
+    """Multi-op batches get an intent-aggregated summary; singletons don't."""
+    await _create_op(
+        op_type="move", protocol="imap", description="Archive: 1:5",
+        message_ids=["1:5"], folder_from="INBOX", folder_to="[Gmail]/All Mail",
+        intent_label="archive", intent_confidence=1.0,
+        batch_id="batch_test1", db_path=db_path,
+    )
+    await _create_op(
+        op_type="mark_read", protocol="imap", description="Mark as read: 7,8",
+        message_ids=["7,8"], folder_from="INBOX",
+        batch_id="batch_test1", db_path=db_path,
+    )
+    # A second batch with only one op — no summary expected
+    await _create_op(
+        op_type="move", protocol="imap", description="Move 9 to Receipts",
+        message_ids=["9"], folder_from="INBOX", folder_to="Receipts",
+        batch_id="batch_solo", db_path=db_path,
+    )
+
+    resp = await client.get("/api/v1/operations?status=pending")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["batch_summaries"].keys() == {"batch_test1"}
+    assert data["batch_summaries"]["batch_test1"] == (
+        "Inbox triage — 5 archived, 2 marked read"
+    )
 
 
 async def test_list_operations_with_pending(

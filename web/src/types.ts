@@ -46,6 +46,9 @@ export interface Operation {
 export interface OperationsResponse {
   operations: Operation[]
   total: number
+  // batch_id → one-line summary for multi-op batches, e.g.
+  // "Inbox triage — 12 archived, 3 marked read"
+  batch_summaries?: Record<string, string>
 }
 
 export interface DecisionResponse {
