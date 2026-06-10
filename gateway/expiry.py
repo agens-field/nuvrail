@@ -94,17 +94,19 @@ async def _expire_one(op_id: str, db_path: Path) -> None:
             """,
             (now, op_id),
         )
-        # Fetch agent_id and op_type for the audit row (denormalized for fast queries).
+        # Fetch agent_id, op_type, intent for the audit row (denormalized for fast queries).
         async with db.execute(
-            "SELECT agent_id, op_type FROM staged_operations WHERE id = ?",
+            "SELECT agent_id, op_type, intent_label FROM staged_operations WHERE id = ?",
             (op_id,),
         ) as cur:
             op_row = await cur.fetchone()
         _agent_id = op_row["agent_id"] if op_row else None
         _op_type = op_row["op_type"] if op_row else None
+        _intent = op_row["intent_label"] if op_row else None
         await insert_audit_event(
             db, timestamp=now, event='expired', actor='system',
             operation_id=op_id, agent_id=_agent_id, op_type=_op_type,
+            intent_label=_intent,
         )
         await db.commit()
 

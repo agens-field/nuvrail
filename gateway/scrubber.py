@@ -67,7 +67,7 @@ async def find_scrubable_operations(db_path: Path = DB_PATH) -> list[dict]:
     async with get_db(db_path) as db:
         async with db.execute(
             f"""
-            SELECT id, smtp_envelope, append_message, agent_id, op_type
+            SELECT id, smtp_envelope, append_message, agent_id, op_type, intent_label
             FROM staged_operations
             WHERE status IN ({placeholders})
               AND (smtp_envelope IS NOT NULL OR append_message IS NOT NULL)
@@ -119,6 +119,7 @@ async def _scrub_one(op: dict, db_path: Path) -> None:
         await insert_audit_event(
             db, timestamp=now, event='body_scrubbed', actor='system',
             operation_id=op_id, agent_id=op.get('agent_id'), op_type=op.get('op_type'),
+            intent_label=op.get('intent_label'),
         )
         await db.commit()
 

@@ -151,6 +151,9 @@ class AuditEntry(BaseModel):
     op_protocol: Optional[str] = None
     op_status: Optional[str] = None
     undo_expires_at: Optional[int] = None  # null if not executed or undo window unknown
+    # Semantic intent (gateway.intent): denormalized on audit_log, falls back
+    # to the joined operation row for entries written before the column existed.
+    intent_label: Optional[str] = None
 
 
 class AuditListResponse(BaseModel):

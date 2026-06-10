@@ -126,6 +126,26 @@ async def test_create_operation_persists_intent(db_path: Path) -> None:
     assert row["intent_confidence"] == 1.0
 
 
+async def test_staged_audit_row_carries_intent(db_path: Path) -> None:
+    """The 'staged' audit_log entry is denormalized with the intent label."""
+    op_id = await create_operation(
+        op_type="move",
+        protocol="imap",
+        description="Archive: 1",
+        intent_label="archive",
+        intent_confidence=1.0,
+        db_path=db_path,
+    )
+    async with get_db(db_path) as db:
+        async with db.execute(
+            "SELECT intent_label FROM audit_log WHERE operation_id = ? AND event = 'staged'",
+            (op_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+    assert row is not None
+    assert row["intent_label"] == "archive"
+
+
 async def test_delete_intent_defaults_urgent(db_path: Path) -> None:
     """A MOVE with delete intent is urgent, same as a STORE \\Deleted trash op."""
     op_id = await create_operation(

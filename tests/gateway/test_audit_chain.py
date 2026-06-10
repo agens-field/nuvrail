@@ -303,3 +303,49 @@ async def test_record_audit_event_chains_with_insert(db_path: Path) -> None:
     await record_audit_event(db_path, timestamp=7200, event="executed", actor="human")
     ok, errors = await verify_audit_chain(db_path)
     assert ok is True, f"Chain should verify; errors: {errors}"
+
+
+# ---------------------------------------------------------------------------
+# intent_label — stored but excluded from the entry hash
+# ---------------------------------------------------------------------------
+
+
+async def test_intent_label_stored_and_chain_verifies(db_path: Path) -> None:
+    """Rows with intent_label persist it and still verify; mixing with
+    intent-less rows (the pre-existing format) keeps the chain intact."""
+    await record_audit_event(
+        db_path, timestamp=8000, event="staged", actor="ai_agent",
+        operation_id="op_int01", op_type="move", intent_label="archive",
+    )
+    await record_audit_event(db_path, timestamp=8100, event="executed", actor="human")
+    await record_audit_event(
+        db_path, timestamp=8200, event="rejected", actor="human",
+        operation_id="op_int02", op_type="trash", intent_label="delete",
+    )
+
+    async with get_db(db_path) as db:
+        async with db.execute(
+            "SELECT intent_label FROM audit_log WHERE operation_id = 'op_int01'"
+        ) as cur:
+            row = await cur.fetchone()
+    assert row["intent_label"] == "archive"
+
+    ok, errors = await verify_audit_chain(db_path)
+    assert ok is True, f"Chain should verify with intent_label rows; errors: {errors}"
+
+
+async def test_intent_label_does_not_affect_entry_hash(db_path: Path) -> None:
+    """Tampering with intent_label must not break the chain (it is informational
+    metadata excluded from the canonical hash payload — see gateway/audit.py),
+    while tampering with a hashed field still does."""
+    await record_audit_event(
+        db_path, timestamp=9000, event="staged", actor="ai_agent",
+        operation_id="op_int03", op_type="move", intent_label="archive",
+    )
+    async with get_db(db_path) as db:
+        await db.execute(
+            "UPDATE audit_log SET intent_label = 'delete' WHERE operation_id = 'op_int03'"
+        )
+        await db.commit()
+    ok, errors = await verify_audit_chain(db_path)
+    assert ok is True, f"intent_label is not hashed; chain must still verify: {errors}"

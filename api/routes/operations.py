@@ -257,6 +257,7 @@ async def _do_reject(op_id: str, row: dict, db_path: Path) -> RejectResponse:  #
     await record_audit_event(
         db_path, timestamp=int(time.time()), event='rejected', actor='human',
         operation_id=op_id, agent_id=row.get('agent_id'), op_type=row.get('op_type'),
+        intent_label=row.get('intent_label'),
     )
 
     # Restore local state DB from snapshot and queue unsolicited FETCH responses.

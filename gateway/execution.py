@@ -554,7 +554,7 @@ async def _record_execution_failure(
     await record_audit_event(
         db_path, timestamp=int(time.time()), event='execution_failed', actor='system',
         operation_id=op_id, agent_id=row.get('agent_id'), op_type=row.get('op_type'),
-        detail=json.dumps({'error': str(exc)}),
+        intent_label=row.get('intent_label'), detail=json.dumps({'error': str(exc)}),
     )
 
 
@@ -676,6 +676,7 @@ async def execute_operation(
                 db_path, timestamp=int(time.time()),
                 event='send_rate_exceeded', actor='system',
                 operation_id=op_id, agent_id=agent_id, op_type=row.get('op_type'),
+                intent_label=row.get('intent_label'),
                 detail=json.dumps({
                     'used': exc.used,
                     'requested': exc.requested,
@@ -766,7 +767,7 @@ async def execute_operation(
     await record_audit_event(
         db_path, timestamp=int(time.time()), event='executed', actor=actor,
         operation_id=op_id, agent_id=row.get('agent_id'), op_type=row.get('op_type'),
-        detail=executed_detail,
+        intent_label=row.get('intent_label'), detail=executed_detail,
     )
 
     updated = await get_operation(op_id, db_path=db_path)

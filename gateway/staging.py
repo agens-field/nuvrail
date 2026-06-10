@@ -106,6 +106,7 @@ async def _apply_auto_rule_decision(
     db_path: Path,
     agent_id: Optional[int] = None,
     op_type: Optional[str] = None,
+    intent_label: Optional[str] = None,
 ) -> None:
     """Apply a matched auto-rule decision.
 
@@ -141,7 +142,7 @@ async def _apply_auto_rule_decision(
         await record_audit_event(
             db_path, timestamp=now, event="rejected", actor="auto_rule",
             operation_id=op_id, agent_id=agent_id, op_type=op_type,
-            detail=json.dumps(detail_obj),
+            intent_label=intent_label, detail=json.dumps(detail_obj),
         )
         # Roll back optimistic local state immediately.
         try:
@@ -167,7 +168,7 @@ async def _apply_auto_rule_decision(
         await record_audit_event(
             db_path, timestamp=now, event="scheduled", actor="auto_rule",
             operation_id=op_id, agent_id=agent_id, op_type=op_type,
-            detail=json.dumps(detail_obj),
+            intent_label=intent_label, detail=json.dumps(detail_obj),
         )
         return
 
@@ -178,7 +179,7 @@ async def _apply_auto_rule_decision(
         await record_audit_event(
             db_path, timestamp=now, event="held", actor="auto_rule",
             operation_id=op_id, agent_id=agent_id, op_type=op_type,
-            detail=json.dumps(detail_obj),
+            intent_label=intent_label, detail=json.dumps(detail_obj),
         )
         return
 
@@ -192,7 +193,7 @@ async def _apply_auto_rule_decision(
     await record_audit_event(
         db_path, timestamp=now, event="approved", actor="auto_rule",
         operation_id=op_id, agent_id=agent_id, op_type=op_type,
-        detail=json.dumps(detail_obj),
+        intent_label=intent_label, detail=json.dumps(detail_obj),
     )
 
     row = await get_operation(op_id, db_path=db_path)
@@ -290,6 +291,7 @@ async def create_operation(
         await insert_audit_event(
             db, timestamp=now, event='staged', actor='ai_agent',
             operation_id=op_id, agent_id=agent_id, op_type=op_type,
+            intent_label=intent_label,
         )
         await db.commit()
 
@@ -326,7 +328,7 @@ async def create_operation(
     if decision is not None:
         await _apply_auto_rule_decision(
             op_id, decision, db_path,
-            agent_id=agent_id, op_type=op_type,
+            agent_id=agent_id, op_type=op_type, intent_label=intent_label,
         )
 
     # Notify unless the op was terminally decided. 'approve' executed it and
