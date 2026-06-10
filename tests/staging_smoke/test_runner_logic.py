@@ -89,3 +89,69 @@ def test_report_json_is_valid_and_has_summary():
     assert parsed["summary"] == {"passed": 1, "failed": 0, "skipped": 1}
     assert parsed["gateway_url"] == "g"
     assert len(parsed["checks"]) == 2
+
+
+# --------------------------------------------------------------------------
+# Credentialed-flow gating: with no secrets set, the two proxy checks must
+# degrade to skipped (never failed) and name the missing env vars so the
+# gap is actionable in every report. These never touch the network.
+# --------------------------------------------------------------------------
+
+
+def _clear_cred_env(monkeypatch):
+    # The module-level constants are what the checks read; null them directly.
+    monkeypatch.setattr(R, "MONITOR_IMAP_USER", None)
+    monkeypatch.setattr(R, "MONITOR_IMAP_PASSWORD", None)
+    monkeypatch.setattr(R, "MONITOR_API_TOKEN", None)
+    monkeypatch.setattr(R, "PROXY_SMTP_PORT", None)
+    monkeypatch.setattr(R, "PROXY_IMAP_PORT", None)
+
+
+def test_proxy_smtp_ready_lists_all_missing(monkeypatch):
+    _clear_cred_env(monkeypatch)
+    reason = R._proxy_smtp_ready()
+    assert reason is not None
+    for var in (
+        "NUVRAIL_STAGING_MONITOR_IMAP_USER",
+        "NUVRAIL_STAGING_MONITOR_IMAP_PASSWORD",
+        "NUVRAIL_STAGING_PROXY_SMTP_PORT",
+        "NUVRAIL_STAGING_MONITOR_API_TOKEN",
+    ):
+        assert var in reason
+    assert "#18" in reason
+
+
+def test_proxy_smtp_ready_passes_when_all_present(monkeypatch):
+    monkeypatch.setattr(R, "MONITOR_IMAP_USER", "mon@nuvrail.test")
+    monkeypatch.setattr(R, "MONITOR_IMAP_PASSWORD", "pw")
+    monkeypatch.setattr(R, "MONITOR_API_TOKEN", "tok")
+    monkeypatch.setattr(R, "PROXY_SMTP_PORT", "10587")
+    assert R._proxy_smtp_ready() is None
+
+
+def test_write_approve_deliver_skips_without_creds(monkeypatch):
+    _clear_cred_env(monkeypatch)
+    c = R.Check("proxy_write_approve_deliver")
+    R.check_proxy_write_approve_deliver(client=None, c=c)  # must not hit network
+    assert c.status == "skipped"
+    assert "#18" in c.detail
+
+
+def test_rejection_revert_skips_without_creds(monkeypatch):
+    _clear_cred_env(monkeypatch)
+    c = R.Check("rejection_revert")
+    R.check_rejection_revert(client=None, c=c)  # must not hit network
+    assert c.status == "skipped"
+
+
+def test_rejection_revert_skips_when_only_imap_port_missing(monkeypatch):
+    # SMTP creds present but no IMAP proxy port => still a clean skip, not a fail.
+    monkeypatch.setattr(R, "MONITOR_IMAP_USER", "mon@nuvrail.test")
+    monkeypatch.setattr(R, "MONITOR_IMAP_PASSWORD", "pw")
+    monkeypatch.setattr(R, "MONITOR_API_TOKEN", "tok")
+    monkeypatch.setattr(R, "PROXY_SMTP_PORT", "10587")
+    monkeypatch.setattr(R, "PROXY_IMAP_PORT", None)
+    c = R.Check("rejection_revert")
+    R.check_rejection_revert(client=None, c=c)
+    assert c.status == "skipped"
+    assert "PROXY_IMAP_PORT" in c.detail
