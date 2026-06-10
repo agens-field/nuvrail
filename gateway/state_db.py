@@ -100,6 +100,7 @@ CREATE TABLE IF NOT EXISTS folders (
     recent_count INTEGER,
     unseen_count INTEGER,
     last_synced  INTEGER,
+    special_use  TEXT,  -- RFC 6154 role from the server's LIST attributes: 'archive'|'trash'|'junk'|'drafts'|'sent' (NULL = none declared)
     -- Folder names are unique *within a tenant*, not globally. Two users each
     -- owning an "INBOX" must get distinct folder rows (and therefore distinct
     -- message rows, which key off folder_id) so their mailbox metadata can
@@ -457,6 +458,15 @@ async def init_db(path: Path = DB_PATH) -> None:
             "CREATE INDEX IF NOT EXISTS idx_folders_user_id ON folders(user_id)"
         )
 
+        # Migration: add special_use to folders — the server-declared RFC 6154
+        # role captured from LIST attributes, used for intent derivation.
+        # Re-query table_info: the per-user rebuild above may have just
+        # recreated the table (without this column).
+        async with db.execute("PRAGMA table_info(folders)") as cur:
+            folder_cols_now = {row["name"] for row in await cur.fetchall()}
+        if "special_use" not in folder_cols_now:
+            await db.execute("ALTER TABLE folders ADD COLUMN special_use TEXT")
+
         # Migration: drop NOT NULL from upstream_password to support OAuth2 agents.
         # SQLite has no ALTER COLUMN — we must rename, recreate, copy, and drop.
         # This is idempotent: the PRAGMA notnull flag is checked first.
@@ -611,15 +621,50 @@ async def upsert_folders_from_list(
     folder_names: "list[str]",
     *,
     user_id: "int | None",
+    special_use: "dict[str, str] | None" = None,
     db_path: Path = DB_PATH,
 ) -> None:
     """Create folder rows for all LIST names under the owning tenant. Idempotent.
 
     ``user_id`` is required (keyword-only) so a LIST never materialises folders
     under the wrong tenant — see issue #73.
+
+    ``special_use`` maps folder name → RFC 6154 role ('archive'|'trash'|...)
+    for folders whose LIST attributes declared one. A declared role is stored;
+    a folder *absent* from the mapping keeps any previously stored role —
+    plain LIST responses without SPECIAL-USE attributes must not erase
+    knowledge captured from an earlier extended LIST.
     """
     for name in folder_names:
-        await get_or_create_folder(name, user_id=user_id, db_path=db_path)
+        folder_id = await get_or_create_folder(name, user_id=user_id, db_path=db_path)
+        role = (special_use or {}).get(name)
+        if role:
+            async with get_db(db_path) as db:
+                await db.execute(
+                    "UPDATE folders SET special_use = ? WHERE id = ?",
+                    (role, folder_id),
+                )
+                await db.commit()
+
+
+async def get_special_use_folders(
+    *,
+    user_id: "int | None",
+    db_path: Path = DB_PATH,
+) -> "dict[str, str]":
+    """Return {lower-cased folder name: role} for the tenant's special-use folders.
+
+    The keys are lower-cased so the mapping can be passed directly to
+    gateway.intent.classify_folder / derive_intent.
+    """
+    async with get_db(db_path) as db:
+        async with db.execute(
+            "SELECT name, special_use FROM folders "
+            "WHERE user_id IS ? AND special_use IS NOT NULL",
+            (user_id,),
+        ) as cur:
+            rows = await cur.fetchall()
+    return {row["name"].lower(): row["special_use"] for row in rows}
 
 
 # ---------------------------------------------------------------------------

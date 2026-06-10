@@ -155,6 +155,46 @@ async def test_upsert_folders_from_list(db_path: Path) -> None:
     assert {"INBOX", "Sent", "Archive", "Trash"} <= names
 
 
+async def test_upsert_folders_stores_special_use(db_path: Path) -> None:
+    """Roles from LIST attributes are stored and retrievable, lower-cased keys."""
+    from gateway.state_db import get_special_use_folders
+
+    await upsert_folders_from_list(
+        ["INBOX", "Papierkorb", "[Gmail]/All Mail"],
+        user_id=None,
+        special_use={"Papierkorb": "trash", "[Gmail]/All Mail": "archive"},
+        db_path=db_path,
+    )
+    roles = await get_special_use_folders(user_id=None, db_path=db_path)
+    assert roles == {"papierkorb": "trash", "[gmail]/all mail": "archive"}
+
+
+async def test_plain_list_does_not_erase_special_use(db_path: Path) -> None:
+    """A later LIST without attributes keeps previously captured roles."""
+    from gateway.state_db import get_special_use_folders
+
+    await upsert_folders_from_list(
+        ["Papierkorb"], user_id=None,
+        special_use={"Papierkorb": "trash"}, db_path=db_path,
+    )
+    # Same folder listed again with no special-use info
+    await upsert_folders_from_list(["Papierkorb"], user_id=None, db_path=db_path)
+    roles = await get_special_use_folders(user_id=None, db_path=db_path)
+    assert roles == {"papierkorb": "trash"}
+
+
+async def test_special_use_is_tenant_scoped(db_path: Path) -> None:
+    """One tenant's special-use roles are invisible to another."""
+    from gateway.state_db import get_special_use_folders
+
+    await upsert_folders_from_list(
+        ["Trash"], user_id=1, special_use={"Trash": "trash"}, db_path=db_path
+    )
+    assert await get_special_use_folders(user_id=1, db_path=db_path) == {"trash": "trash"}
+    assert await get_special_use_folders(user_id=2, db_path=db_path) == {}
+    assert await get_special_use_folders(user_id=None, db_path=db_path) == {}
+
+
 # ---------------------------------------------------------------------------
 # Message sync tests
 # ---------------------------------------------------------------------------

@@ -103,6 +103,43 @@ def test_parse_list_skips_non_list_lines() -> None:
 
 
 # ---------------------------------------------------------------------------
+# parse_list_folders — names + mailbox attributes (RFC 6154 SPECIAL-USE)
+# ---------------------------------------------------------------------------
+
+
+def test_parse_list_folders_captures_attributes() -> None:
+    from gateway.imap_response_parser import parse_list_folders
+
+    lines = [
+        '* LIST (\\HasNoChildren \\Trash) "/" "[Gmail]/Trash"',
+        '* LIST (\\HasNoChildren \\All) "/" "[Gmail]/All Mail"',
+        '* LIST (\\HasNoChildren) "/" "INBOX"',
+    ]
+    folders = parse_list_folders(lines)
+    assert [(f.name, f.attributes) for f in folders] == [
+        ("[Gmail]/Trash", ["\\HasNoChildren", "\\Trash"]),
+        ("[Gmail]/All Mail", ["\\HasNoChildren", "\\All"]),
+        ("INBOX", ["\\HasNoChildren"]),
+    ]
+
+
+def test_parse_list_folders_empty_attributes() -> None:
+    from gateway.imap_response_parser import parse_list_folders
+
+    folders = parse_list_folders(['* LIST () "/" "Plain"'])
+    assert folders[0].name == "Plain"
+    assert folders[0].attributes == []
+
+
+def test_parse_list_folders_unquoted_name_with_attrs() -> None:
+    from gateway.imap_response_parser import parse_list_folders
+
+    folders = parse_list_folders(['* LIST (\\Junk) "." INBOX.Spam'])
+    assert folders[0].name == "INBOX.Spam"
+    assert folders[0].attributes == ["\\Junk"]
+
+
+# ---------------------------------------------------------------------------
 # parse_fetch_line
 # ---------------------------------------------------------------------------
 

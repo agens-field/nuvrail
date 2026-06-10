@@ -52,10 +52,10 @@ from gateway.imap_response_parser import (
     _RE_FETCH_LITERAL,
     extract_headers_from_rfc822,
     parse_fetch_line,
-    parse_list_response,
+    parse_list_folders,
     parse_select_response,
 )
-from gateway.intent import derive_intent
+from gateway.intent import derive_intent, role_from_list_attributes
 from gateway.operation_parser import ParsedOperation, build_rich_description, parse_append, parse_copy, parse_move, parse_store
 from gateway.provider_profiles import (
     PendingCopyIntent,
@@ -78,6 +78,7 @@ from gateway.state_db import (
     get_pending_reverts,
     init_db,
     get_message_metadata_by_uid_set,
+    get_special_use_folders,
     mark_reverts_delivered,
     remove_messages_from_folder,
     snapshot_messages,
@@ -140,6 +141,23 @@ def _build_parsed_op(parsed: ParsedCommand) -> Optional[ParsedOperation]:
     # APPEND is handled via the literal path; if it somehow reaches here, generic staging
     # CREATE, RENAME → return None (caller uses generic staging)
     return None
+
+
+async def _load_special_use(session: dict, db_path: Path, peer: str) -> dict:
+    """Return the tenant's {folder name: RFC 6154 role} mapping for intent derivation.
+
+    Roles are captured opportunistically from upstream LIST responses (see the
+    LIST handler in _sync_upstream_line); an empty dict simply means intent
+    falls back to provider-profile / name-heuristic classification. Never
+    raises — staging must not fail because a lookup did.
+    """
+    try:
+        return await get_special_use_folders(
+            user_id=session.get("user_id"), db_path=db_path
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("[%s] special-use lookup failed (non-fatal): %s", peer, exc)
+        return {}
 
 
 async def _inject_pending_reverts(
@@ -269,12 +287,26 @@ async def _sync_upstream_line(
     # ------------------------------------------------------------------
     if re.match(r"^\* LIST\b", stripped, re.IGNORECASE):
         try:
-            names = parse_list_response([stripped])
-            if names:
+            listed = parse_list_folders([stripped])
+            if listed:
+                # Capture server-declared SPECIAL-USE roles (RFC 6154) so
+                # intent derivation classifies folders with full confidence
+                # even without a provider profile (e.g. localized names).
+                roles = {
+                    f.name: role
+                    for f in listed
+                    if (role := role_from_list_attributes(f.attributes))
+                }
                 await upsert_folders_from_list(
-                    names, user_id=session.get("user_id"), db_path=db_path
+                    [f.name for f in listed],
+                    user_id=session.get("user_id"),
+                    special_use=roles or None,
+                    db_path=db_path,
                 )
-                logger.debug("[%s] LIST: upserted folders %s", peer, names)
+                logger.debug(
+                    "[%s] LIST: upserted folders %s (special-use: %s)",
+                    peer, [f.name for f in listed], roles or "none",
+                )
         except Exception as exc:  # noqa: BLE001
             logger.warning("[%s] Failed to sync LIST line: %s", peer, exc)
         return
@@ -391,7 +423,10 @@ async def _client_to_upstream(
                     )
                 else:
                     parsed_op = parse_append(tag, append_folder, append_flags, literal_size)
-                    _append_intent, _append_conf = derive_intent(parsed_op, _profile)
+                    _append_intent, _append_conf = derive_intent(
+                        parsed_op, _profile,
+                        special_use=await _load_special_use(session, db_path, peer),
+                    )
                     # Persist the raw message (base64) so the APPEND can actually
                     # be replayed upstream on approval. Oversized bodies were
                     # already dropped (logged) during the literal read above.
@@ -676,6 +711,7 @@ async def _client_to_upstream(
                     op_intent, op_intent_conf = derive_intent(
                         parsed_op, _profile,
                         folder_from=parsed_op.folder_from or session.get("folder"),
+                        special_use=await _load_special_use(session, db_path, peer),
                     )
                     op_description = build_rich_description(parsed_op, [], op_intent)
                     if folder_id is not None and parsed_op.message_ids:

@@ -55,6 +55,20 @@ class SelectInfo:
 
 
 @dataclass
+class ListedFolder:
+    """One folder from a LIST response: name + mailbox attributes.
+
+    ``attributes`` are the raw backslash-prefixed tokens from the parenthesised
+    list (e.g. ["\\HasNoChildren", "\\Trash"]). RFC 6154 SPECIAL-USE attributes
+    (\\Archive \\All \\Trash \\Junk \\Sent \\Drafts) appear here when the server
+    includes them — Gmail and Dovecot do so in plain LIST responses.
+    """
+
+    name: str
+    attributes: list[str] = field(default_factory=list)
+
+
+@dataclass
 class FetchInfo:
     seq_num: int
     uid: Optional[int] = None
@@ -79,8 +93,9 @@ _RE_UNSEEN = re.compile(r"^\* OK \[UNSEEN (\d+)\]", re.IGNORECASE)
 
 # LIST response
 # * LIST (\flags) "delim" "folder" or * LIST (\flags) "delim" folder
+# Group 1: the attribute list (e.g. "\HasNoChildren \Trash"), group 2: the name.
 _RE_LIST = re.compile(
-    r'^\* LIST\s+\([^)]*\)\s+"[^"]*"\s+(.+)$',
+    r'^\* LIST\s+\(([^)]*)\)\s+"[^"]*"\s+(.+)$',
     re.IGNORECASE,
 )
 
@@ -151,6 +166,29 @@ def parse_select_response(lines: list[str]) -> SelectInfo:
     return info
 
 
+def parse_list_folders(lines: list[str]) -> list[ListedFolder]:
+    """Parse untagged LIST response lines into ListedFolder records.
+
+    Input:  ["* LIST (\\HasNoChildren \\Trash) \\"/\\" \\"[Gmail]/Trash\\"", ...]
+    Output: [ListedFolder(name="[Gmail]/Trash", attributes=["\\HasNoChildren", "\\Trash"])]
+
+    Handles both quoted and unquoted folder names, and names with spaces.
+    """
+    folders: list[ListedFolder] = []
+    for line in lines:
+        m = _RE_LIST.match(line)
+        if not m:
+            logger.debug("parse_list_folders: no match for line: %r", line)
+            continue
+        attributes = m.group(1).split()
+        raw_name = m.group(2).strip()
+        # Strip surrounding quotes if present
+        if raw_name.startswith('"') and raw_name.endswith('"'):
+            raw_name = raw_name[1:-1]
+        folders.append(ListedFolder(name=raw_name, attributes=attributes))
+    return folders
+
+
 def parse_list_response(lines: list[str]) -> list[str]:
     """Parse untagged LIST response lines, return list of folder names.
 
@@ -159,18 +197,7 @@ def parse_list_response(lines: list[str]) -> list[str]:
 
     Handles both quoted and unquoted folder names, and names with spaces.
     """
-    folders: list[str] = []
-    for line in lines:
-        m = _RE_LIST.match(line)
-        if not m:
-            logger.debug("parse_list_response: no match for line: %r", line)
-            continue
-        raw_name = m.group(1).strip()
-        # Strip surrounding quotes if present
-        if raw_name.startswith('"') and raw_name.endswith('"'):
-            raw_name = raw_name[1:-1]
-        folders.append(raw_name)
-    return folders
+    return [f.name for f in parse_list_folders(lines)]
 
 
 def parse_fetch_line(line: str) -> Optional[FetchInfo]:

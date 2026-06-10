@@ -186,3 +186,94 @@ class TestDeriveIntentNone:
     def test_copy_has_no_intent(self):
         op = parse_copy("A1", "42", "[Gmail]/All Mail")
         assert derive_intent(op, GMAIL_PROFILE, folder_from="INBOX") == (None, None)
+
+
+# ---------------------------------------------------------------------------
+# SPECIAL-USE (RFC 6154) — server-declared folder roles
+# ---------------------------------------------------------------------------
+
+
+class TestRoleFromListAttributes:
+    def test_standard_attributes(self):
+        from gateway.intent import role_from_list_attributes
+
+        assert role_from_list_attributes(["\\HasNoChildren", "\\Trash"]) == "trash"
+        assert role_from_list_attributes(["\\Archive"]) == "archive"
+        assert role_from_list_attributes(["\\Junk"]) == "junk"
+        assert role_from_list_attributes(["\\Drafts"]) == "drafts"
+        assert role_from_list_attributes(["\\Sent"]) == "sent"
+
+    def test_gmail_all_maps_to_archive(self):
+        from gateway.intent import role_from_list_attributes
+
+        assert role_from_list_attributes(["\\HasNoChildren", "\\All"]) == "archive"
+
+    def test_case_insensitive(self):
+        from gateway.intent import role_from_list_attributes
+
+        assert role_from_list_attributes(["\\TRASH"]) == "trash"
+
+    def test_no_special_use(self):
+        from gateway.intent import role_from_list_attributes
+
+        assert role_from_list_attributes(["\\HasNoChildren", "\\NoSelect"]) is None
+        assert role_from_list_attributes([]) is None
+
+    def test_flagged_virtual_mailbox_ignored(self):
+        from gateway.intent import role_from_list_attributes
+
+        assert role_from_list_attributes(["\\Flagged"]) is None
+
+
+class TestClassifyFolderSpecialUse:
+    def test_special_use_classifies_localized_names(self):
+        # German Trash folder no heuristic would catch
+        roles = {"papierkorb": "trash"}
+        assert classify_folder("Papierkorb", None, roles) == ("trash", 1.0)
+
+    def test_special_use_full_confidence_without_profile(self):
+        roles = {"my archive 2024": "archive"}
+        assert classify_folder("My Archive 2024", GENERIC_PROFILE, roles) == ("archive", 1.0)
+
+    def test_special_use_outranks_name_heuristic(self):
+        # Server says a folder literally named "Archive" is actually Junk
+        roles = {"archive": "junk"}
+        assert classify_folder("Archive", None, roles) == ("junk", 1.0)
+
+    def test_inbox_still_wins(self):
+        assert classify_folder("INBOX", None, {"inbox": "archive"}) == ("inbox", 1.0)
+
+    def test_no_mapping_falls_back_to_heuristics(self):
+        assert classify_folder("Trash", None, {}) == ("trash", 0.8)
+
+
+class TestDeriveIntentSpecialUse:
+    def test_move_to_localized_trash_is_delete(self):
+        roles = {"papierkorb": "trash"}
+        op = parse_move("A1", "42", "Papierkorb")
+        assert derive_intent(op, None, folder_from="INBOX", special_use=roles) == (
+            "delete",
+            1.0,
+        )
+
+    def test_move_from_localized_junk_to_inbox_is_not_spam(self):
+        roles = {"spamverdacht": "junk"}
+        op = parse_move("A1", "42", "INBOX")
+        assert derive_intent(op, None, folder_from="Spamverdacht", special_use=roles) == (
+            "not_spam",
+            1.0,
+        )
+
+    def test_append_to_special_use_drafts(self):
+        roles = {"entwürfe": "drafts"}
+        op = parse_append("A1", "Entwürfe", [], 512)
+        assert derive_intent(op, None, special_use=roles) == ("save_draft", 1.0)
+
+    def test_move_to_special_use_sent_has_no_intent(self):
+        # 'sent' is stored but carries no move semantics
+        roles = {"gesendet": "sent"}
+        op = parse_move("A1", "42", "Gesendet")
+        assert derive_intent(op, None, folder_from="INBOX", special_use=roles) == (
+            None,
+            None,
+        )
