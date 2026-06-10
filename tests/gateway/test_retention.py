@@ -154,25 +154,57 @@ async def test_find_purgeable_respects_cutoff(db_path: Path) -> None:
     assert purgeable == [old]
 
 
-async def test_global_messages_folders_not_touched(db_path: Path) -> None:
-    """The shared IMAP state mirror is NOT a given user's data — never purged."""
+async def test_per_user_mailbox_mirror_is_purged(db_path: Path) -> None:
+    """Issue #73: the deleted user's per-user mirror is purged; other tenants' survive.
+
+    The mirror is now tenant-scoped (folders.user_id), so it IS the deleted
+    user's personal data and must go. A second user with an identically-named
+    'INBOX' must keep their folder + message rows untouched.
+    """
     now = 1_000_000_000
-    uid = await _seed_user(db_path, email="old2@x.com", deleted_at=now - 400 * _DAY)
+    old_uid = await _seed_user(db_path, email="old2@x.com", deleted_at=now - 400 * _DAY)
+    keep_uid = await _seed_user(db_path, email="keep@x.com", deleted_at=None)
+
     async with get_db(db_path) as db:
-        await db.execute(
-            "INSERT INTO folders (name, uidvalidity) VALUES ('INBOX', 1)"
+        # Each user owns an 'INBOX' with one message — same names, distinct rows.
+        old_f = await db.execute(
+            "INSERT INTO folders (user_id, name, uidvalidity) VALUES (?, 'INBOX', 1)",
+            (old_uid,),
+        )
+        keep_f = await db.execute(
+            "INSERT INTO folders (user_id, name, uidvalidity) VALUES (?, 'INBOX', 1)",
+            (keep_uid,),
         )
         await db.execute(
-            "INSERT INTO messages (folder_id, uid, flags) VALUES (1, 1, '[]')"
+            "INSERT INTO messages (folder_id, uid, flags, subject) VALUES (?, 1, '[]', 'old secret')",
+            (old_f.lastrowid,),
+        )
+        await db.execute(
+            "INSERT INTO messages (folder_id, uid, flags, subject) VALUES (?, 1, '[]', 'keep secret')",
+            (keep_f.lastrowid,),
         )
         await db.commit()
 
     await purge_expired_deleted_users(db_path=db_path, now=now)
 
     async with get_db(db_path) as db:
-        async with db.execute("SELECT COUNT(*) FROM folders") as cur:
+        # Deleted user's mirror is gone.
+        async with db.execute(
+            "SELECT COUNT(*) FROM folders WHERE user_id = ?", (old_uid,)
+        ) as cur:
+            assert (await cur.fetchone())[0] == 0
+        async with db.execute(
+            "SELECT COUNT(*) FROM messages WHERE subject = 'old secret'"
+        ) as cur:
+            assert (await cur.fetchone())[0] == 0
+        # Surviving user's mirror is intact.
+        async with db.execute(
+            "SELECT COUNT(*) FROM folders WHERE user_id = ?", (keep_uid,)
+        ) as cur:
             assert (await cur.fetchone())[0] == 1
-        async with db.execute("SELECT COUNT(*) FROM messages") as cur:
+        async with db.execute(
+            "SELECT COUNT(*) FROM messages WHERE subject = 'keep secret'"
+        ) as cur:
             assert (await cur.fetchone())[0] == 1
-    # And the user is gone.
-    assert (await _counts_for_user(db_path, uid))["users"] == 0
+    # And the deleted user is gone.
+    assert (await _counts_for_user(db_path, old_uid))["users"] == 0

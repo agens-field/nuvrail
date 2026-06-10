@@ -31,11 +31,12 @@ storage-limitation principle. The window is configurable via
 Scope note — what is and is NOT purged:
   PURGED (user-scoped data):
     users, agent_credentials, auto_approval_rules, push_subscriptions,
-    audit_log (user_id), staged_operations (via agent), pending_reverts (via op).
-  NOT purged:
-    folders / messages — the local IMAP state mirror is GLOBAL (single-tenant
-    Phase 0), not per-user, so it is not a given user's personal data to delete
-    here. (Revisit if/when that mirror becomes tenant-scoped.)
+    audit_log (user_id), staged_operations (via agent), pending_reverts (via op),
+    folders + messages (the per-user IMAP state mirror).
+  NOTE (issue #73): the mailbox mirror is now tenant-scoped (folders.user_id +
+    UNIQUE(user_id, name)), so it IS the deleted user's personal data and must
+    be purged here. This reverses the earlier R5 single-tenant assumption that
+    the mirror was global and out of scope for per-user deletion.
 
 This module provides:
   purge_expired_deleted_users(db_path) — run once, purge all past-window accounts
@@ -129,11 +130,27 @@ async def _purge_user(user_id: int, db_path: Path) -> None:
         await db.execute(
             "DELETE FROM push_subscriptions WHERE user_id = ?", (user_id,)
         )
-        # 6. agent_credentials (child of users)
+        # 6. mailbox mirror (issue #73): messages first (child of folders via
+        #    folder_id), then folders (now user-scoped). Deleting the user's
+        #    folder rows then their messages removes all mirrored mail metadata
+        #    (subject/sender/message_id/flags) — required per-user data now that
+        #    the mirror is tenant-scoped.
+        async with db.execute(
+            "SELECT id FROM folders WHERE user_id = ?", (user_id,)
+        ) as cur:
+            folder_ids = [str(r["id"]) for r in await cur.fetchall()]
+        if folder_ids:
+            ph_f = ",".join("?" * len(folder_ids))
+            await db.execute(
+                f"DELETE FROM messages WHERE folder_id IN ({ph_f})",  # noqa: S608
+                folder_ids,
+            )
+        await db.execute("DELETE FROM folders WHERE user_id = ?", (user_id,))
+        # 7. agent_credentials (child of users)
         await db.execute(
             "DELETE FROM agent_credentials WHERE user_id = ?", (user_id,)
         )
-        # 7. users (parent) — last
+        # 8. users (parent) — last
         await db.execute("DELETE FROM users WHERE id = ?", (user_id,))
 
         await db.commit()

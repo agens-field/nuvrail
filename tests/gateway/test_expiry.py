@@ -150,7 +150,7 @@ async def test_expire_stale_sets_decided_at(db_path: Path) -> None:
 async def test_expire_stale_reverts_snapshot(db_path: Path) -> None:
     """expire_stale_operations restores flags and queues pending_reverts when snapshot exists."""
 
-    folder_id = await get_or_create_folder("INBOX", db_path=db_path)
+    folder_id = await get_or_create_folder("INBOX", user_id=None, db_path=db_path)
     await upsert_message(folder_id, 42, seq_num=1, flags=[], db_path=db_path)
 
     # Create op with snapshot capturing pre-op state (empty flags)

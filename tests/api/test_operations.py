@@ -454,7 +454,7 @@ async def test_reject_restores_snapshot_and_queues_pending_reverts(
     )
 
     # Set up: folder + message with no flags
-    folder_id = await get_or_create_folder("INBOX", db_path=db_path)
+    folder_id = await get_or_create_folder("INBOX", user_id=None, db_path=db_path)
     await upsert_message(folder_id, 99, seq_num=1, flags=[], db_path=db_path)
 
     # Stage the op with a snapshot of the pre-op state

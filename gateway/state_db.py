@@ -9,6 +9,26 @@ State transitions:
   write interception      → optimistic update (proposed state)
   rejection               → revert to snapshot
 
+Tenancy (issue #73) — the mirror is shared across ALL tenants on the hosted
+gateway (one app, one volume, one SQLite file). Folders are therefore scoped
+by owning user; messages inherit that scope through folder_id:
+
+     users(id)
+        │ 1
+        │        UNIQUE(user_id, name)  ← two tenants may both own "INBOX"
+        ▼ *
+     folders(id, user_id, name, …)
+        │ 1
+        │        UNIQUE(folder_id, uid)
+        ▼ *
+     messages(id, folder_id, uid, subject, sender, …)
+
+  get_or_create_folder(name, user_id=…)  ← the single scope chokepoint; every
+  folder lookup/insert passes the connected agent's owning user_id, so a row
+  (and all messages keyed off it) can never collide or leak across tenants.
+  Pending-op lookups against staged_operations are scoped by agent_id for the
+  same reason (folder name alone is no longer globally unique).
+
 Sub-milestone: 0.4 (mailbox mirror tables)
 Sub-milestone: 1.0 (staged_operations + audit_log tables)
 """
@@ -72,13 +92,19 @@ async def _apply_connection_pragmas(db: "aiosqlite.Connection") -> None:
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS folders (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
-    name         TEXT NOT NULL UNIQUE,
+    user_id      INTEGER REFERENCES users(id),  -- owning user; the mailbox mirror is per-tenant (issue #73)
+    name         TEXT NOT NULL,
     uidvalidity  INTEGER,
     uidnext      INTEGER,
     exists_count INTEGER,
     recent_count INTEGER,
     unseen_count INTEGER,
-    last_synced  INTEGER
+    last_synced  INTEGER,
+    -- Folder names are unique *within a tenant*, not globally. Two users each
+    -- owning an "INBOX" must get distinct folder rows (and therefore distinct
+    -- message rows, which key off folder_id) so their mailbox metadata can
+    -- never collide or leak across the shared hosted SQLite DB. See issue #73.
+    UNIQUE(user_id, name)
 );
 
 CREATE TABLE IF NOT EXISTS messages (
@@ -376,6 +402,50 @@ async def init_db(path: Path = DB_PATH) -> None:
             " ON push_subscriptions(user_id)"
         )
 
+        # Migration: scope the mailbox mirror per-user (issue #73).
+        #
+        # The legacy `folders` table had `name TEXT NOT NULL UNIQUE` and no
+        # owner column. On a shared hosted DB with open registration that is a
+        # cross-tenant leak: two users each connecting an "INBOX" collide on the
+        # global UNIQUE(name) and intermingle the message metadata that keys off
+        # folder_id. We rebuild the table with `user_id` + `UNIQUE(user_id, name)`.
+        #
+        #   detect old shape ──► rename ──► CREATE new ──► (wipe) ──► drop old
+        #
+        # We deliberately do NOT backfill a user_id onto pre-existing rows: the
+        # mirror is a *cache* that the proxy repopulates on the next SELECT/LIST
+        # per connection, and the old rows have no trustworthy owner (a globally
+        # shared "INBOX" row cannot be safely attributed to one tenant). Wiping
+        # the un-owned mirror is the only fail-closed option — a wrong
+        # attribution would re-create the very leak we are closing. The orphaned
+        # message rows are removed with it so no row outlives its folder.
+        async with db.execute("PRAGMA table_info(folders)") as cur:
+            folder_cols = {row["name"] for row in await cur.fetchall()}
+        if "user_id" not in folder_cols:
+            await db.execute("ALTER TABLE folders RENAME TO folders_legacy_unscoped")
+            await db.execute("""
+                CREATE TABLE folders (
+                    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id      INTEGER REFERENCES users(id),
+                    name         TEXT NOT NULL,
+                    uidvalidity  INTEGER,
+                    uidnext      INTEGER,
+                    exists_count INTEGER,
+                    recent_count INTEGER,
+                    unseen_count INTEGER,
+                    last_synced  INTEGER,
+                    UNIQUE(user_id, name)
+                )
+            """)
+            # Drop the legacy table and any message rows that referenced it. The
+            # mirror re-syncs per-user on next connection; nothing is lost that
+            # the upstream server is not the system of record for.
+            await db.execute("DROP TABLE folders_legacy_unscoped")
+            await db.execute("DELETE FROM messages")
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_folders_user_id ON folders(user_id)"
+        )
+
         # Migration: drop NOT NULL from upstream_password to support OAuth2 agents.
         # SQLite has no ALTER COLUMN — we must rename, recreate, copy, and drop.
         # This is idempotent: the PRAGMA notnull flag is checked first.
@@ -446,18 +516,36 @@ async def get_db(path: Path = DB_PATH) -> AsyncGenerator[aiosqlite.Connection, N
 # ---------------------------------------------------------------------------
 
 
-async def get_or_create_folder(name: str, db_path: Path = DB_PATH) -> int:
-    """Return folder_id, creating a row if it doesn't exist."""
+async def get_or_create_folder(
+    name: str,
+    *,
+    user_id: "int | None",
+    db_path: Path = DB_PATH,
+) -> int:
+    """Return folder_id for (user_id, name), creating a row if it doesn't exist.
+
+    ``user_id`` is the owning tenant and is **required** (keyword-only) so the
+    mailbox mirror is always scoped — see issue #73. It is passed explicitly
+    rather than defaulted for the same reason ``db_path`` is: a forgotten scope
+    is a cross-tenant leak, so call sites must supply it deliberately. It may be
+    None only in genuinely single-tenant/legacy callers (e.g. tests), in which
+    case all such rows share the NULL-owner namespace.
+
+    Lookup and insert are both scoped by user_id, so two tenants each owning a
+    folder named "INBOX" get distinct rows (and distinct message rows, which
+    key off folder_id).
+    """
     async with get_db(db_path) as db:
         async with db.execute(
-            "SELECT id FROM folders WHERE name = ?", (name,)
+            "SELECT id FROM folders WHERE user_id IS ? AND name = ?",
+            (user_id, name),
         ) as cur:
             row = await cur.fetchone()
         if row is not None:
             return int(row["id"])
         cur = await db.execute(
-            "INSERT INTO folders (name, last_synced) VALUES (?, ?)",
-            (name, int(time.time())),
+            "INSERT INTO folders (user_id, name, last_synced) VALUES (?, ?, ?)",
+            (user_id, name, int(time.time())),
         )
         await db.commit()
         return cur.lastrowid  # type: ignore[return-value]
@@ -466,6 +554,7 @@ async def get_or_create_folder(name: str, db_path: Path = DB_PATH) -> int:
 async def update_folder_stats(
     name: str,
     *,
+    user_id: "int | None",
     exists_count: "int | None" = None,
     recent_count: "int | None" = None,
     uidvalidity: "int | None" = None,
@@ -473,8 +562,12 @@ async def update_folder_stats(
     unseen_count: "int | None" = None,
     db_path: Path = DB_PATH,
 ) -> int:
-    """Upsert folder stats. Returns folder_id."""
-    folder_id = await get_or_create_folder(name, db_path=db_path)
+    """Upsert folder stats for the owning tenant. Returns folder_id.
+
+    ``user_id`` is required (keyword-only) so stats land on the caller's own
+    folder row and never the wrong tenant's — see issue #73.
+    """
+    folder_id = await get_or_create_folder(name, user_id=user_id, db_path=db_path)
 
     # Build UPDATE only for non-None fields
     updates: "list[tuple[str, object]]" = [("last_synced", int(time.time()))]
@@ -505,11 +598,17 @@ async def update_folder_stats(
 
 async def upsert_folders_from_list(
     folder_names: "list[str]",
+    *,
+    user_id: "int | None",
     db_path: Path = DB_PATH,
 ) -> None:
-    """Create folder rows for all names returned by LIST. Idempotent."""
+    """Create folder rows for all LIST names under the owning tenant. Idempotent.
+
+    ``user_id`` is required (keyword-only) so a LIST never materialises folders
+    under the wrong tenant — see issue #73.
+    """
     for name in folder_names:
-        await get_or_create_folder(name, db_path=db_path)
+        await get_or_create_folder(name, user_id=user_id, db_path=db_path)
 
 
 # ---------------------------------------------------------------------------
@@ -708,19 +807,27 @@ async def get_message_metadata_by_uid_set(
 
 async def get_pending_move_uids_for_folder(
     folder_name: str,
+    *,
+    agent_id: "str | int | None",
     db_path: Path = DB_PATH,
 ) -> "set[int]":
-    """Return UIDs that are pending MOVE out of the given folder.
+    """Return UIDs that are pending MOVE out of the given folder, for one agent.
 
     Used by the u2c pump to filter FETCH responses — if a UID is pending
     move from the current folder, the proxy suppresses that FETCH line so
     the agent sees a consistent view without waiting for human approval.
+
+    ``agent_id`` scopes the query to the connected agent's own staged ops so a
+    pending move in one tenant's identically-named folder can never suppress
+    another tenant's FETCH lines (issue #73). Folder names are not globally
+    unique once the mirror is per-user, so name alone is not a safe key.
     """
     async with get_db(db_path) as db:
         async with db.execute(
             """SELECT message_ids FROM staged_operations
-               WHERE status = 'pending' AND op_type = 'move' AND folder_from = ?""",
-            (folder_name,),
+               WHERE status = 'pending' AND op_type = 'move'
+                 AND folder_from = ? AND agent_id IS ?""",
+            (folder_name, agent_id),
         ) as cur:
             rows = await cur.fetchall()
 
@@ -751,23 +858,30 @@ async def get_pending_move_uids_for_folder(
 async def get_pending_flag_changes_for_uid(
     folder_name: str,
     uid: int,
+    *,
+    agent_id: "str | int | None",
     db_path: Path = DB_PATH,
 ) -> "tuple[list[str], list[str]]":
     """Return (flags_to_add, flags_to_remove) aggregated from all pending STORE ops
-    that affect the given UID in folder_name.
+    that affect the given UID in folder_name, for one agent.
 
     Used by the u2c pump to patch FLAGS in upstream FETCH responses so the agent
     sees the staged flag state immediately without waiting for human approval.
     Only considers ops whose op_type indicates a flag mutation (store, trash,
     mark_read, mark_unread, flag, unflag).
+
+    ``agent_id`` scopes the query to the connected agent's own staged ops so one
+    tenant's pending flag change can never bleed into another tenant's FETCH
+    view of an identically-named folder (issue #73).
     """
     FLAG_OP_TYPES = ("store", "trash", "mark_read", "mark_unread", "flag", "unflag")
     placeholders = ",".join("?" * len(FLAG_OP_TYPES))
     async with get_db(db_path) as db:
         async with db.execute(
             f"SELECT message_ids, flags_add, flags_remove FROM staged_operations "  # noqa: S608
-            f"WHERE status = 'pending' AND op_type IN ({placeholders}) AND folder_from = ?",
-            (*FLAG_OP_TYPES, folder_name),
+            f"WHERE status = 'pending' AND op_type IN ({placeholders}) "
+            f"AND folder_from = ? AND agent_id IS ?",
+            (*FLAG_OP_TYPES, folder_name, agent_id),
         ) as cur:
             rows = await cur.fetchall()
 

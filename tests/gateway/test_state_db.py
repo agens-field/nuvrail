@@ -99,15 +99,15 @@ async def test_concurrent_writers_do_not_lock(db_path: Path) -> None:
 
 async def test_get_or_create_folder_creates_new(db_path: Path) -> None:
     """A new folder row is created and its id returned."""
-    folder_id = await get_or_create_folder("INBOX", db_path=db_path)
+    folder_id = await get_or_create_folder("INBOX", user_id=None, db_path=db_path)
     assert isinstance(folder_id, int)
     assert folder_id > 0
 
 
 async def test_get_or_create_folder_idempotent(db_path: Path) -> None:
     """Calling twice returns the same id."""
-    id1 = await get_or_create_folder("INBOX", db_path=db_path)
-    id2 = await get_or_create_folder("INBOX", db_path=db_path)
+    id1 = await get_or_create_folder("INBOX", user_id=None, db_path=db_path)
+    id2 = await get_or_create_folder("INBOX", user_id=None, db_path=db_path)
     assert id1 == id2
 
 
@@ -115,6 +115,7 @@ async def test_update_folder_stats(db_path: Path) -> None:
     """EXISTS, UIDVALIDITY etc. are stored correctly."""
     folder_id = await update_folder_stats(
         "INBOX",
+        user_id=None,
         exists_count=47,
         recent_count=2,
         uidvalidity=1234567890,
@@ -141,8 +142,8 @@ async def test_update_folder_stats(db_path: Path) -> None:
 
 async def test_upsert_folders_from_list(db_path: Path) -> None:
     """Multiple folders are created idempotently."""
-    await upsert_folders_from_list(["INBOX", "Sent", "Archive"], db_path=db_path)
-    await upsert_folders_from_list(["INBOX", "Trash"], db_path=db_path)  # idempotent
+    await upsert_folders_from_list(["INBOX", "Sent", "Archive"], user_id=None, db_path=db_path)
+    await upsert_folders_from_list(["INBOX", "Trash"], user_id=None, db_path=db_path)  # idempotent
 
     from gateway.state_db import get_db
 
@@ -160,7 +161,7 @@ async def test_upsert_folders_from_list(db_path: Path) -> None:
 
 
 async def _setup_folder(db_path: Path, name: str = "INBOX") -> int:
-    return await get_or_create_folder(name, db_path=db_path)
+    return await get_or_create_folder(name, user_id=None, db_path=db_path)
 
 
 async def test_upsert_message_creates_row(db_path: Path) -> None:
@@ -278,7 +279,7 @@ async def test_get_messages_by_uid_set_mixed(db_path: Path) -> None:
 
 async def test_snapshot_messages_captures_flags(db_path: Path) -> None:
     """snapshot_messages returns current flags for matching UIDs."""
-    folder_id = await get_or_create_folder("INBOX", db_path=db_path)
+    folder_id = await get_or_create_folder("INBOX", user_id=None, db_path=db_path)
     await upsert_message(folder_id, 10, seq_num=1, flags=[r"\Seen"], db_path=db_path)
     await upsert_message(folder_id, 11, seq_num=2, flags=[], db_path=db_path)
 
@@ -293,14 +294,14 @@ async def test_snapshot_messages_captures_flags(db_path: Path) -> None:
 
 async def test_snapshot_messages_empty_uid_set(db_path: Path) -> None:
     """snapshot_messages returns empty dict when no messages match."""
-    folder_id = await get_or_create_folder("INBOX", db_path=db_path)
+    folder_id = await get_or_create_folder("INBOX", user_id=None, db_path=db_path)
     snap = await snapshot_messages(folder_id, "999", db_path=db_path)
     assert snap == {}
 
 
 async def test_snapshot_messages_range(db_path: Path) -> None:
     """snapshot_messages handles range uid_set_str."""
-    folder_id = await get_or_create_folder("INBOX", db_path=db_path)
+    folder_id = await get_or_create_folder("INBOX", user_id=None, db_path=db_path)
     for uid in [1, 2, 3]:
         await upsert_message(folder_id, uid, seq_num=uid, flags=[r"\Seen"], db_path=db_path)
 
@@ -311,7 +312,7 @@ async def test_snapshot_messages_range(db_path: Path) -> None:
 
 async def test_apply_optimistic_flag_update_adds_flags(db_path: Path) -> None:
     """apply_optimistic_flag_update adds flags to existing messages."""
-    folder_id = await get_or_create_folder("INBOX", db_path=db_path)
+    folder_id = await get_or_create_folder("INBOX", user_id=None, db_path=db_path)
     await upsert_message(folder_id, 42, seq_num=1, flags=[], db_path=db_path)
 
     await apply_optimistic_flag_update(
@@ -326,7 +327,7 @@ async def test_apply_optimistic_flag_update_adds_flags(db_path: Path) -> None:
 
 async def test_apply_optimistic_flag_update_removes_flags(db_path: Path) -> None:
     """apply_optimistic_flag_update removes flags from existing messages."""
-    folder_id = await get_or_create_folder("INBOX", db_path=db_path)
+    folder_id = await get_or_create_folder("INBOX", user_id=None, db_path=db_path)
     await upsert_message(folder_id, 42, seq_num=1, flags=[r"\Seen", r"\Flagged"], db_path=db_path)
 
     await apply_optimistic_flag_update(
@@ -342,7 +343,7 @@ async def test_apply_optimistic_flag_update_removes_flags(db_path: Path) -> None
 
 async def test_apply_optimistic_flag_update_no_op_for_unknown_uid(db_path: Path) -> None:
     """apply_optimistic_flag_update silently skips UIDs not in the DB."""
-    folder_id = await get_or_create_folder("INBOX", db_path=db_path)
+    folder_id = await get_or_create_folder("INBOX", user_id=None, db_path=db_path)
     # Should not raise even with no matching messages
     await apply_optimistic_flag_update(
         folder_id, "999", flags_add=[r"\Seen"], flags_remove=[], db_path=db_path
@@ -351,7 +352,7 @@ async def test_apply_optimistic_flag_update_no_op_for_unknown_uid(db_path: Path)
 
 async def test_snapshot_preserves_seq_num(db_path: Path) -> None:
     """snapshot includes seq_num for each UID."""
-    folder_id = await get_or_create_folder("INBOX", db_path=db_path)
+    folder_id = await get_or_create_folder("INBOX", user_id=None, db_path=db_path)
     await upsert_message(folder_id, 7, seq_num=3, flags=[r"\Seen"], db_path=db_path)
 
     snap = await snapshot_messages(folder_id, "7", db_path=db_path)
@@ -368,7 +369,7 @@ async def test_restore_from_snapshot_restores_flags(db_path: Path) -> None:
     import json
     from gateway.staging import create_operation
 
-    folder_id = await get_or_create_folder("INBOX", db_path=db_path)
+    folder_id = await get_or_create_folder("INBOX", user_id=None, db_path=db_path)
     # Message starts with no flags
     await upsert_message(folder_id, 42, seq_num=1, flags=[], db_path=db_path)
 
@@ -416,7 +417,7 @@ async def test_insert_and_get_pending_reverts(db_path: Path) -> None:
     from gateway.staging import create_operation
     from gateway.state_db import get_pending_reverts, insert_pending_reverts
 
-    folder_id = await get_or_create_folder("INBOX", db_path=db_path)
+    folder_id = await get_or_create_folder("INBOX", user_id=None, db_path=db_path)
     op_id = await create_operation(
         op_type="mark_read", protocol="imap", description="x", db_path=db_path
     )
@@ -441,7 +442,7 @@ async def test_mark_reverts_delivered(db_path: Path) -> None:
     from gateway.staging import create_operation
     from gateway.state_db import get_pending_reverts, insert_pending_reverts, mark_reverts_delivered
 
-    folder_id = await get_or_create_folder("INBOX", db_path=db_path)
+    folder_id = await get_or_create_folder("INBOX", user_id=None, db_path=db_path)
     op_id = await create_operation(
         op_type="mark_read", protocol="imap", description="x", db_path=db_path
     )
@@ -466,8 +467,8 @@ async def test_get_pending_reverts_different_folder_not_returned(db_path: Path) 
     from gateway.staging import create_operation
     from gateway.state_db import get_pending_reverts, insert_pending_reverts
 
-    inbox_id = await get_or_create_folder("INBOX", db_path=db_path)
-    sent_id = await get_or_create_folder("Sent", db_path=db_path)
+    inbox_id = await get_or_create_folder("INBOX", user_id=None, db_path=db_path)
+    sent_id = await get_or_create_folder("Sent", user_id=None, db_path=db_path)
 
     op_id = await create_operation(
         op_type="mark_read", protocol="imap", description="x", db_path=db_path
@@ -640,10 +641,10 @@ async def test_get_pending_move_uids_for_folder_single(db_path: Path) -> None:
         db_path=db_path,
     )
 
-    uids = await get_pending_move_uids_for_folder("INBOX", db_path=db_path)
+    uids = await get_pending_move_uids_for_folder("INBOX", agent_id=None, db_path=db_path)
     assert 377 in uids
 
-    other = await get_pending_move_uids_for_folder("Sent", db_path=db_path)
+    other = await get_pending_move_uids_for_folder("Sent", agent_id=None, db_path=db_path)
     assert 377 not in other
 
 
@@ -661,7 +662,7 @@ async def test_get_pending_move_uids_excludes_approved(db_path: Path) -> None:
     )
     await update_operation_status(op_id, "approved", db_path=db_path)
 
-    uids = await get_pending_move_uids_for_folder("INBOX", db_path=db_path)
+    uids = await get_pending_move_uids_for_folder("INBOX", agent_id=None, db_path=db_path)
     assert 50 not in uids
 
 
@@ -716,7 +717,7 @@ async def test_message_previews_fallback_to_snapshot(db_path: Path) -> None:
 
 async def test_get_message_metadata_single_uid(db_path: Path) -> None:
     """Returns sender and subject for a single known UID."""
-    folder_id = await get_or_create_folder("INBOX", db_path=db_path)
+    folder_id = await get_or_create_folder("INBOX", user_id=None, db_path=db_path)
     await upsert_message(
         folder_id, uid=10, seq_num=1,
         sender="alice@example.com", subject="Hello there",
@@ -731,7 +732,7 @@ async def test_get_message_metadata_single_uid(db_path: Path) -> None:
 
 async def test_get_message_metadata_multiple_uids(db_path: Path) -> None:
     """Returns a row for each UID in the set that exists in the DB."""
-    folder_id = await get_or_create_folder("INBOX", db_path=db_path)
+    folder_id = await get_or_create_folder("INBOX", user_id=None, db_path=db_path)
     for uid, sender, subject in [
         (1, "a@a.com", "First"),
         (2, "b@b.com", "Second"),
@@ -750,7 +751,7 @@ async def test_get_message_metadata_multiple_uids(db_path: Path) -> None:
 
 async def test_get_message_metadata_uid_range(db_path: Path) -> None:
     """UID range (N:M) expands correctly."""
-    folder_id = await get_or_create_folder("INBOX", db_path=db_path)
+    folder_id = await get_or_create_folder("INBOX", user_id=None, db_path=db_path)
     for uid in range(10, 14):  # 10, 11, 12, 13
         await upsert_message(
             folder_id, uid=uid, seq_num=uid,
@@ -764,14 +765,14 @@ async def test_get_message_metadata_uid_range(db_path: Path) -> None:
 
 async def test_get_message_metadata_unknown_uid_returns_empty(db_path: Path) -> None:
     """UIDs not in the state DB return an empty list (message not yet FETCH'd)."""
-    folder_id = await get_or_create_folder("INBOX", db_path=db_path)
+    folder_id = await get_or_create_folder("INBOX", user_id=None, db_path=db_path)
     result = await get_message_metadata_by_uid_set(folder_id, "999", db_path=db_path)
     assert result == []
 
 
 async def test_get_message_metadata_partial_hit(db_path: Path) -> None:
     """Only returns rows for UIDs that exist; unknown UIDs are silently absent."""
-    folder_id = await get_or_create_folder("INBOX", db_path=db_path)
+    folder_id = await get_or_create_folder("INBOX", user_id=None, db_path=db_path)
     await upsert_message(
         folder_id, uid=5, seq_num=1,
         sender="known@example.com", subject="Known",
@@ -785,7 +786,7 @@ async def test_get_message_metadata_partial_hit(db_path: Path) -> None:
 
 async def test_get_message_metadata_null_sender_and_subject(db_path: Path) -> None:
     """Messages with null sender/subject return rows with None values."""
-    folder_id = await get_or_create_folder("INBOX", db_path=db_path)
+    folder_id = await get_or_create_folder("INBOX", user_id=None, db_path=db_path)
     await upsert_message(folder_id, uid=20, seq_num=1, db_path=db_path)
     result = await get_message_metadata_by_uid_set(folder_id, "20", db_path=db_path)
     assert len(result) == 1
@@ -817,7 +818,9 @@ async def test_get_pending_flag_changes_single_uid(db_path: Path) -> None:
     )
     assert op_id
 
-    flags_add, flags_remove = await get_pending_flag_changes_for_uid("INBOX", 42, db_path=db_path)
+    flags_add, flags_remove = await get_pending_flag_changes_for_uid(
+        "INBOX", 42, agent_id="agent-1", db_path=db_path
+    )
     assert "\\Deleted" in flags_add
     assert flags_remove == []
 
@@ -840,7 +843,9 @@ async def test_get_pending_flag_changes_wrong_uid(db_path: Path) -> None:
         db_path=db_path,
     )
 
-    flags_add, flags_remove = await get_pending_flag_changes_for_uid("INBOX", 1, db_path=db_path)
+    flags_add, flags_remove = await get_pending_flag_changes_for_uid(
+        "INBOX", 1, agent_id="agent-2", db_path=db_path
+    )
     assert flags_add == []
     assert flags_remove == []
 
@@ -863,7 +868,9 @@ async def test_get_pending_flag_changes_wrong_folder(db_path: Path) -> None:
         db_path=db_path,
     )
 
-    flags_add, flags_remove = await get_pending_flag_changes_for_uid("INBOX", 7, db_path=db_path)
+    flags_add, flags_remove = await get_pending_flag_changes_for_uid(
+        "INBOX", 7, agent_id="agent-3", db_path=db_path
+    )
     assert flags_add == []
 
 
@@ -885,11 +892,15 @@ async def test_get_pending_flag_changes_uid_range(db_path: Path) -> None:
         db_path=db_path,
     )
 
-    flags_add, flags_remove = await get_pending_flag_changes_for_uid("INBOX", 5, db_path=db_path)
+    flags_add, flags_remove = await get_pending_flag_changes_for_uid(
+        "INBOX", 5, agent_id="agent-4", db_path=db_path
+    )
     assert "\\Flagged" in flags_add
 
     # UID outside range — no match
-    flags_add2, _ = await get_pending_flag_changes_for_uid("INBOX", 8, db_path=db_path)
+    flags_add2, _ = await get_pending_flag_changes_for_uid(
+        "INBOX", 8, agent_id="agent-4", db_path=db_path
+    )
     assert "\\Flagged" not in flags_add2
 
 
@@ -911,6 +922,116 @@ async def test_get_pending_flag_changes_excludes_move_ops(db_path: Path) -> None
         db_path=db_path,
     )
 
-    flags_add, flags_remove = await get_pending_flag_changes_for_uid("INBOX", 55, db_path=db_path)
+    flags_add, flags_remove = await get_pending_flag_changes_for_uid(
+        "INBOX", 55, agent_id="agent-5", db_path=db_path
+    )
     assert flags_add == []
     assert flags_remove == []
+
+
+# ---------------------------------------------------------------------------
+# Per-user mailbox-mirror isolation (issue #73)
+#
+# The mirror is a shared SQLite DB across all tenants on the hosted gateway.
+# Folders are scoped by user_id with UNIQUE(user_id, name); messages key off
+# folder_id and so inherit that scope. These tests prove two tenants who each
+# own an identically-named folder ("INBOX") cannot read or clobber each other's
+# folder rows or message metadata, and that pending-op lookups are agent-scoped.
+#
+#   user A ── folder "INBOX" (id=fa) ── msg uid=1 "A's secret"
+#   user B ── folder "INBOX" (id=fb) ── msg uid=1 "B's secret"
+#   fa != fb  ⇒  no collision, no leak
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_folders_are_scoped_per_user(db_path: Path) -> None:
+    """Two users' identically-named folders get distinct rows (no UNIQUE collision)."""
+    fa = await get_or_create_folder("INBOX", user_id=1, db_path=db_path)
+    fb = await get_or_create_folder("INBOX", user_id=2, db_path=db_path)
+    assert fa != fb
+
+    # Idempotent within a tenant.
+    fa2 = await get_or_create_folder("INBOX", user_id=1, db_path=db_path)
+    assert fa == fa2
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_messages_do_not_leak_across_tenants(db_path: Path) -> None:
+    """A message in user A's INBOX is invisible through user B's INBOX folder_id."""
+    fa = await get_or_create_folder("INBOX", user_id=1, db_path=db_path)
+    fb = await get_or_create_folder("INBOX", user_id=2, db_path=db_path)
+
+    await upsert_message(fa, 1, subject="A's secret", sender="a@x.com", db_path=db_path)
+    await upsert_message(fb, 1, subject="B's secret", sender="b@x.com", db_path=db_path)
+
+    a_msg = await get_message(fa, 1, db_path=db_path)
+    b_msg = await get_message(fb, 1, db_path=db_path)
+    assert a_msg is not None and a_msg["subject"] == "A's secret"
+    assert b_msg is not None and b_msg["subject"] == "B's secret"
+
+    # Same UID, same folder name, totally different rows — no clobber, no leak.
+    a_rows = await get_messages_by_uid_set(fa, "1", db_path=db_path)
+    assert [r["subject"] for r in a_rows] == ["A's secret"]
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_null_owner_namespace_isolated_from_real_users(db_path: Path) -> None:
+    """Legacy NULL-owner folders share their own namespace, distinct from owned ones."""
+    f_null = await get_or_create_folder("INBOX", user_id=None, db_path=db_path)
+    f_user = await get_or_create_folder("INBOX", user_id=7, db_path=db_path)
+    assert f_null != f_user
+    # NULL lookup is itself idempotent (uses IS, not =, so NULL matches NULL).
+    assert f_null == await get_or_create_folder("INBOX", user_id=None, db_path=db_path)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_pending_move_uids_scoped_per_agent(db_path: Path) -> None:
+    """One agent's pending move in 'INBOX' must not surface for another agent."""
+    from gateway.staging import create_operation
+
+    await create_operation(
+        op_type="move",
+        protocol="imap",
+        agent_id="agent-A",
+        description="A moves 10",
+        imap_command="UID MOVE 10 Archive",
+        message_ids=["10"],
+        folder_from="INBOX",
+        folder_to="Archive",
+        db_path=db_path,
+    )
+
+    # Agent A sees its own pending move; agent B (same folder name) sees nothing.
+    a = await get_pending_move_uids_for_folder("INBOX", agent_id="agent-A", db_path=db_path)
+    b = await get_pending_move_uids_for_folder("INBOX", agent_id="agent-B", db_path=db_path)
+    assert a == {10}
+    assert b == set()
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_pending_flag_changes_scoped_per_agent(db_path: Path) -> None:
+    """One agent's pending flag change in 'INBOX' must not surface for another agent."""
+    from gateway.state_db import get_pending_flag_changes_for_uid
+    from gateway.staging import create_operation
+
+    await create_operation(
+        op_type="flag",
+        protocol="imap",
+        agent_id="agent-A",
+        description="A flags 22",
+        imap_command="UID STORE 22 +FLAGS \\Flagged",
+        message_ids=["22"],
+        folder_from="INBOX",
+        flags_add=["\\Flagged"],
+        db_path=db_path,
+    )
+
+    a_add, _ = await get_pending_flag_changes_for_uid(
+        "INBOX", 22, agent_id="agent-A", db_path=db_path
+    )
+    b_add, _ = await get_pending_flag_changes_for_uid(
+        "INBOX", 22, agent_id="agent-B", db_path=db_path
+    )
+    assert "\\Flagged" in a_add
+    assert b_add == []
