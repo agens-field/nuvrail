@@ -15,6 +15,21 @@ interface OperationCardProps {
 }
 
 const WARN_OP_TYPES = new Set(['smtp_send', 'trash'])
+const WARN_INTENTS = new Set(['delete', 'mark_spam'])
+
+// Badge text + styling per semantic intent (intent_label from the API).
+// Unlisted intents simply render no badge.
+const INTENT_BADGES: Record<string, { label: string; cls: string }> = {
+  archive: { label: 'Archive', cls: 'bg-sky-900/50 border-sky-600/40 text-sky-300' },
+  delete: { label: 'Delete', cls: 'bg-red-900/50 border-red-600/40 text-red-300' },
+  mark_spam: { label: 'Spam', cls: 'bg-orange-900/50 border-orange-600/40 text-orange-300' },
+  not_spam: { label: 'Not spam', cls: 'bg-emerald-900/50 border-emerald-600/40 text-emerald-300' },
+  restore_from_trash: { label: 'Restore', cls: 'bg-emerald-900/50 border-emerald-600/40 text-emerald-300' },
+  unarchive: { label: 'To Inbox', cls: 'bg-sky-900/50 border-sky-600/40 text-sky-300' },
+  save_draft: { label: 'Draft', cls: 'bg-zinc-800/60 border-zinc-600/40 text-zinc-300' },
+  import_message: { label: 'Import', cls: 'bg-zinc-800/60 border-zinc-600/40 text-zinc-300' },
+  mark_answered: { label: 'Replied', cls: 'bg-zinc-800/60 border-zinc-600/40 text-zinc-300' },
+}
 
 function formatExpiry(expiresAt: number): string {
   const now = Date.now()
@@ -37,7 +52,14 @@ export default function OperationCard({ operation, selected, onToggleSelect }: O
   const [showConfirm, setShowConfirm] = useState(false)
 
   const isSmtp = operation.protocol.toLowerCase() === 'smtp'
-  const isWarn = WARN_OP_TYPES.has(operation.op_type)
+  const isWarn =
+    WARN_OP_TYPES.has(operation.op_type) ||
+    WARN_INTENTS.has(operation.intent_label ?? '')
+  const intentBadge = operation.intent_label
+    ? INTENT_BADGES[operation.intent_label]
+    : undefined
+  const intentInferred =
+    operation.intent_confidence != null && operation.intent_confidence < 1
   const isUrgent = (operation.is_urgent ?? 0) === 1
   // A cool-down (approve_after) op is pending but stamped with a deadline; it
   // will auto-execute then unless the user cancels (reject) or sends now (approve).
@@ -122,6 +144,19 @@ export default function OperationCard({ operation, selected, onToggleSelect }: O
             </span>
           )}
           <ProtocolBadge protocol={operation.protocol} />
+          {intentBadge && (
+            <span
+              className={`px-1.5 py-0.5 rounded border text-xs font-semibold uppercase tracking-wide flex-shrink-0 ${intentBadge.cls}`}
+              title={
+                intentInferred
+                  ? `Inferred from folder name (${Math.round((operation.intent_confidence ?? 0) * 100)}% confidence)`
+                  : undefined
+              }
+            >
+              {intentBadge.label}
+              {intentInferred && '?'}
+            </span>
+          )}
           {isWarn && !isUrgent && (
             <AlertTriangle className="w-4 h-4 text-orange-400 flex-shrink-0 mt-0.5" />
           )}

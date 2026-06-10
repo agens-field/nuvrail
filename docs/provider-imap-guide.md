@@ -26,7 +26,7 @@ UID STORE {uids} +FLAGS (\Deleted)
 UID EXPUNGE {uids}   # blocked by proxy
 ```
 
-**Normalization:** The proxy detects COPY-to-All-Mail immediately followed by STORE `\Deleted` for the same UIDs and rewrites both as a single staged `UID MOVE {uids} [Gmail]/All Mail`. Logged as: `"archive: rewrote COPY+DELETE to UID MOVE — UIDs {n} → [Gmail]/All Mail (Gmail provider normalization)"`.
+**Normalization:** The proxy detects COPY-to-All-Mail immediately followed by STORE `\Deleted` for the same UIDs and rewrites both as a single staged `UID MOVE {uids} [Gmail]/All Mail`. The staged operation carries `intent_label="archive"` (see `gateway/intent.py`) and is described to the user as an Archive (e.g. `Archive 5 messages from news@example.com`), not as a raw MOVE. The rewrite itself is logged as `"REWRITE archive: COPY+STORE(\Deleted) → UID MOVE ..."`.
 
 ### Delete to Trash
 
@@ -36,7 +36,11 @@ UID STORE {uids} +FLAGS (\Deleted)
 UID EXPUNGE {uids}   # blocked by proxy
 ```
 
-**Normalization:** Same as archive, rewritten as `UID MOVE {uids} [Gmail]/Trash`. Logged with `"delete:"` prefix.
+**Normalization:** Same as archive, rewritten as `UID MOVE {uids} [Gmail]/Trash` with `intent_label="delete"`. Delete-intent operations are marked urgent in the approval UI, the same as `STORE \Deleted` trash ops.
+
+### Mark as spam
+
+A COPY to `[Gmail]/Spam` followed by STORE `\Deleted` is recognized the same way and rewritten as `UID MOVE {uids} [Gmail]/Spam` with `intent_label="mark_spam"`. A direct `UID MOVE` to the spam folder gets the same label; moving a message out of `[Gmail]/Spam` back to `INBOX` is labeled `not_spam`.
 
 ### Sent Mail deduplication
 

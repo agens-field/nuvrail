@@ -40,6 +40,10 @@ class OperationResponse(BaseModel):
     error: Optional[str] = None
     message_previews: List[MessagePreview] = []
     batch_id: Optional[str] = None
+    # Semantic intent derived at staging time (gateway.intent): 'archive',
+    # 'delete', 'mark_spam', ... None = the op_type already says everything.
+    intent_label: Optional[str] = None
+    intent_confidence: Optional[float] = None
 
     @field_validator("smtp_envelope", mode="before")
     @classmethod

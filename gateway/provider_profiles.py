@@ -51,6 +51,9 @@ class ProviderProfile:
         Folder name for explicit delete-to-trash.  If set, STORE \\Deleted
         without a preceding COPY is rewritten to UID MOVE → trash_folder.
         None means use the standard \\Trash flag approach (current behaviour).
+    junk_folder : str | None
+        Folder name for spam/junk.  Used to recognise mark-as-spam intent
+        (MOVE/COPY into it) and not-spam intent (MOVE out of it to INBOX).
     sent_suppress_folders : list[str]
         APPEND commands targeting any of these folders are silently suppressed.
         Gmail auto-adds to [Gmail]/Sent Mail after every SMTP send; APPENDing
@@ -68,6 +71,7 @@ class ProviderProfile:
     name: str
     archive_folder: Optional[str] = None
     trash_folder: Optional[str] = None
+    junk_folder: Optional[str] = None
     sent_suppress_folders: list[str] = field(default_factory=list)
     sent_folder: Optional[str] = None
     move_capable: bool = True
@@ -81,6 +85,7 @@ GMAIL_PROFILE = ProviderProfile(
     name="Gmail",
     archive_folder="[Gmail]/All Mail",
     trash_folder="[Gmail]/Trash",
+    junk_folder="[Gmail]/Spam",
     sent_suppress_folders=["[Gmail]/Sent Mail"],
     sent_folder=None,   # Gmail auto-saves to [Gmail]/Sent Mail on every SMTP relay
     move_capable=True,
@@ -90,6 +95,7 @@ ICLOUD_PROFILE = ProviderProfile(
     name="iCloud Mail",
     archive_folder="Archive",
     trash_folder="Deleted Messages",
+    junk_folder="Junk",
     # Suppress agent APPENDs to Sent Messages — Nuvrail handles this save after relay.
     sent_suppress_folders=["Sent Messages"],
     sent_folder="Sent Messages",  # iCloud does NOT auto-save via SMTP relay; we APPEND
@@ -100,6 +106,7 @@ OUTLOOK_PROFILE = ProviderProfile(
     name="Outlook/Microsoft 365",
     archive_folder=None,          # Outlook uses standard Junk/Archive folders
     trash_folder="Deleted Items",
+    junk_folder="Junk Email",
     sent_suppress_folders=["Sent Items", "Sent"],
     sent_folder=None,   # Outlook auto-saves to Sent Items on every SMTP relay
     move_capable=True,
@@ -109,6 +116,7 @@ GENERIC_PROFILE = ProviderProfile(
     name="Generic IMAP",
     archive_folder=None,
     trash_folder=None,            # leave to standard \\Trash flag
+    junk_folder=None,
     sent_suppress_folders=[],
     sent_folder="Sent",           # most generic servers use "Sent"; APPEND is non-fatal if missing
     move_capable=False,           # conservative default: don't assume MOVE
@@ -204,11 +212,11 @@ def copy_archive_intent(
     copy_destination: str,
     profile: ProviderProfile,
 ) -> Optional[str]:
-    """Return the normalized MOVE destination if this COPY represents archive/delete intent.
+    """Return the normalized MOVE destination if this COPY represents archive/delete/spam intent.
 
-    For Gmail, both COPY-to-All-Mail (archive) and COPY-to-Trash (delete) are
-    recognized.  Returns the destination folder as-is so the caller can rewrite
-    the staged operation description correctly.
+    For Gmail, COPY-to-All-Mail (archive), COPY-to-Trash (delete) and
+    COPY-to-Spam (mark as spam) are recognized.  Returns the destination folder
+    as-is so the caller can rewrite the staged operation description correctly.
 
     Returns None if this COPY should be staged normally (e.g. COPY to a user folder).
 
@@ -216,13 +224,12 @@ def copy_archive_intent(
     '[Gmail]/All Mail'
     >>> copy_archive_intent("[Gmail]/Trash", GMAIL_PROFILE)
     '[Gmail]/Trash'
+    >>> copy_archive_intent("[Gmail]/Spam", GMAIL_PROFILE)
+    '[Gmail]/Spam'
     >>> copy_archive_intent("Work", GMAIL_PROFILE)
     """
-    if not profile.archive_folder and not profile.trash_folder:
-        return None
     dest_lower = copy_destination.lower()
-    if profile.archive_folder and dest_lower == profile.archive_folder.lower():
-        return profile.archive_folder
-    if profile.trash_folder and dest_lower == profile.trash_folder.lower():
-        return profile.trash_folder
+    for special in (profile.archive_folder, profile.trash_folder, profile.junk_folder):
+        if special and dest_lower == special.lower():
+            return special
     return None
