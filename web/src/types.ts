@@ -33,6 +33,11 @@ export interface Operation {
   is_urgent?: number   // 1 = urgent (smtp_send, trash); show at top with red styling
   error?: string
   batch_id?: string | null
+  // Semantic intent derived at staging time: 'archive' | 'delete' | 'mark_spam'
+  // | 'not_spam' | 'restore_from_trash' | 'unarchive' | 'mark_answered'
+  // | 'save_draft' | 'import_message'. Null = op_type says everything.
+  intent_label?: string | null
+  intent_confidence?: number | null  // 1.0 = provider match, 0.8 = folder-name heuristic
 }
 
 export interface OperationsResponse {

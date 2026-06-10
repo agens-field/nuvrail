@@ -192,3 +192,157 @@ class TestBuildRichDescriptionNonMessageOps:
         )
         result = build_rich_description(op, [])
         assert result == "Rename Old → New"
+
+
+# ---------------------------------------------------------------------------
+# parse_store — compound flags and \Answered (#5)
+# ---------------------------------------------------------------------------
+
+
+class TestParseStoreCompoundFlags:
+    def test_add_seen_and_flagged_describes_both(self):
+        op = parse_store(
+            "A1", uid_mode=True, uid_set="42", flags_op="+FLAGS",
+            flags=["\\Seen", "\\Flagged"],
+        )
+        assert op.op_type == "mark_read"  # first recognised flag wins op_type
+        assert op.description == "Mark as read and star: 42"
+        assert op.flags_add == ["\\Seen", "\\Flagged"]
+
+    def test_remove_seen_and_flagged_describes_both(self):
+        op = parse_store(
+            "A1", uid_mode=True, uid_set="42", flags_op="-FLAGS",
+            flags=["\\Seen", "\\Flagged"],
+        )
+        assert op.op_type == "mark_unread"
+        assert op.description == "Mark as unread and unstar: 42"
+        assert op.flags_remove == ["\\Seen", "\\Flagged"]
+
+    def test_deleted_dominates_compound(self):
+        op = parse_store(
+            "A1", uid_mode=True, uid_set="42", flags_op="+FLAGS",
+            flags=["\\Seen", "\\Deleted"],
+        )
+        assert op.op_type == "trash"
+        assert op.description == "Move to Trash: 42"
+
+    def test_add_answered_is_mark_as_replied(self):
+        op = parse_store(
+            "A1", uid_mode=True, uid_set="42", flags_op="+FLAGS",
+            flags=["\\Answered"],
+        )
+        # No dedicated op_type — executes as a generic flag replay
+        assert op.op_type == "store"
+        assert op.description == "Mark as replied: 42"
+        assert op.flags_add == ["\\Answered"]
+
+    def test_single_flag_behaviour_unchanged(self):
+        op = parse_store("A1", uid_mode=True, uid_set="9", flags_op="+FLAGS", flags=["\\Seen"])
+        assert op.op_type == "mark_read"
+        assert op.description == "Mark as read: 9"
+
+    def test_unknown_flag_falls_back_to_generic(self):
+        op = parse_store("A1", uid_mode=True, uid_set="9", flags_op="+FLAGS", flags=["$Label1"])
+        assert op.op_type == "store"
+        assert op.description == "Flag update on 9: +FLAGS ($Label1)"
+
+    def test_compound_verb_used_in_rich_description(self):
+        op = parse_store(
+            "A1", uid_mode=True, uid_set="42", flags_op="+FLAGS",
+            flags=["\\Seen", "\\Flagged"],
+        )
+        meta = [{"uid": 42, "sender": "boss@company.com", "subject": "Action required"}]
+        assert build_rich_description(op, meta) == (
+            'Mark as read and star: "Action required" from boss@company.com'
+        )
+
+
+# ---------------------------------------------------------------------------
+# parse_append — draft vs import (#4)
+# ---------------------------------------------------------------------------
+
+
+class TestParseAppend:
+    def test_append_to_drafts_is_save_draft(self):
+        from gateway.operation_parser import parse_append
+        op = parse_append("A1", "Drafts", [], 512)
+        assert op.description == "Save draft to Drafts (512 bytes)"
+
+    def test_append_to_gmail_drafts_is_save_draft(self):
+        from gateway.operation_parser import parse_append
+        op = parse_append("A1", "[Gmail]/Drafts", [], 512)
+        assert op.description == "Save draft to [Gmail]/Drafts (512 bytes)"
+
+    def test_append_with_draft_flag_is_save_draft(self):
+        from gateway.operation_parser import parse_append
+        op = parse_append("A1", "Pending", ["\\Draft"], 512)
+        assert op.description == "Save draft to Pending (512 bytes)"
+
+    def test_append_to_other_folder_is_add_message(self):
+        from gateway.operation_parser import parse_append
+        op = parse_append("A1", "Receipts", [], 2048)
+        assert op.description == "Add message to Receipts (2048 bytes)"
+
+
+# ---------------------------------------------------------------------------
+# build_rich_description — intent-aware verbs (#1/#2/#3)
+# ---------------------------------------------------------------------------
+
+
+class TestBuildRichDescriptionWithIntent:
+    def test_archive_intent_replaces_move_verb_and_drops_destination(self):
+        op = parse_move("A1", "42", "[Gmail]/All Mail")
+        meta = [{"uid": 42, "sender": "billing@acme.com", "subject": "Invoice #1234"}]
+        assert build_rich_description(op, meta, "archive") == (
+            'Archive: "Invoice #1234" from billing@acme.com'
+        )
+
+    def test_delete_intent_on_move_reads_as_trash(self):
+        op = parse_move("A1", "7", "[Gmail]/Trash")
+        meta = [{"uid": 7, "sender": "spam@evil.com", "subject": "You won!"}]
+        assert build_rich_description(op, meta, "delete") == (
+            'Move to Trash: "You won!" from spam@evil.com'
+        )
+
+    def test_mark_spam_intent(self):
+        op = parse_move("A1", "7", "Junk Email")
+        meta = [{"uid": 7, "sender": "spam@evil.com", "subject": "You won!"}]
+        assert build_rich_description(op, meta, "mark_spam") == (
+            'Mark as spam: "You won!" from spam@evil.com'
+        )
+
+    def test_archive_intent_multi_common_sender(self):
+        op = parse_move("A1", "1:5", "[Gmail]/All Mail")
+        meta = [
+            {"uid": 1, "sender": "news@x.com", "subject": "A"},
+            {"uid": 2, "sender": "news@x.com", "subject": "B"},
+            {"uid": 3, "sender": "news@x.com", "subject": "C"},
+        ]
+        assert build_rich_description(op, meta, "archive") == (
+            "Archive 3 messages from news@x.com"
+        )
+
+    def test_intent_fallback_when_no_metadata(self):
+        op = parse_move("A1", "1:5", "[Gmail]/All Mail")
+        assert build_rich_description(op, [], "archive") == "Archive: 1:5"
+
+    def test_restore_keeps_destination_unless_inbox(self):
+        op = parse_move("A1", "42", "Receipts")
+        meta = [{"uid": 42, "sender": "shop@x.com", "subject": "Order"}]
+        assert build_rich_description(op, meta, "restore_from_trash") == (
+            'Restore from Trash: "Order" from shop@x.com to Receipts'
+        )
+
+    def test_restore_to_inbox_drops_destination(self):
+        op = parse_move("A1", "42", "INBOX")
+        meta = [{"uid": 42, "sender": "shop@x.com", "subject": "Order"}]
+        assert build_rich_description(op, meta, "restore_from_trash") == (
+            'Restore from Trash: "Order" from shop@x.com'
+        )
+
+    def test_no_intent_preserves_existing_behaviour(self):
+        op = parse_move("A1", "42", "Archive")
+        meta = [{"uid": 42, "sender": "billing@acme.com", "subject": "Invoice #1234"}]
+        assert build_rich_description(op, meta, None) == (
+            'Move: "Invoice #1234" from billing@acme.com to Archive'
+        )

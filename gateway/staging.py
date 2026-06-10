@@ -42,6 +42,9 @@ def _generate_op_id() -> str:
 
 
 _URGENT_OP_TYPES = {"smtp_send", "trash"}
+# Intent labels that make an op urgent regardless of mechanism: a UID MOVE to
+# the trash folder is the same delete the user would see from STORE \Deleted.
+_URGENT_INTENTS = {"delete"}
 _logger = logging.getLogger(__name__)
 
 
@@ -228,20 +231,27 @@ async def create_operation(
     is_urgent: Optional[int] = None,
     batch_id: Optional[str] = None,
     append_message: Optional[str] = None,
+    intent_label: Optional[str] = None,
+    intent_confidence: Optional[float] = None,
     db_path: Path = DB_PATH,
 ) -> str:
     """Insert a staged_operations row + audit_log entry. Returns operation ID.
 
     snapshot:   pre-op state dict for rejection revert (milestone 1.2).
     is_urgent:  1 = show at top of Pending view with urgent styling.
-                Defaults to 1 for smtp_send and trash ops, 0 otherwise.
+                Defaults to 1 for smtp_send and trash ops, and for any op
+                with delete intent (e.g. MOVE to the trash folder).
                 Pass explicitly to override.
+    intent_label / intent_confidence: semantic intent derived at staging time
+                (gateway.intent.derive_intent). NULL when op_type says it all.
     """
     op_id = _generate_op_id()
     now = int(time.time())
     expires_at = now + 48 * 3600
     if is_urgent is None:
-        is_urgent = 1 if op_type in _URGENT_OP_TYPES else 0
+        is_urgent = (
+            1 if (op_type in _URGENT_OP_TYPES or intent_label in _URGENT_INTENTS) else 0
+        )
 
     async with get_db(db_path) as db:
         await db.execute(
@@ -250,8 +260,9 @@ async def create_operation(
                 id, created_at, expires_at, status, op_type, protocol,
                 imap_command, smtp_envelope, description, agent_id,
                 message_ids, folder_from, folder_to, flags_add, flags_remove,
-                snapshot, append_message, is_urgent, batch_id
-            ) VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                snapshot, append_message, is_urgent, batch_id,
+                intent_label, intent_confidence
+            ) VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 op_id,
@@ -272,6 +283,8 @@ async def create_operation(
                 append_message,
                 is_urgent,
                 batch_id,
+                intent_label,
+                intent_confidence,
             ),
         )
         await insert_audit_event(
@@ -305,6 +318,8 @@ async def create_operation(
         "message_ids": message_ids,
         "agent_id": agent_id,
         "snapshot": snapshot,
+        "intent_label": intent_label,
+        "intent_confidence": intent_confidence,
     }
     decision = await run_auto_decision(rule_op, db_path=db_path, user_id=rule_user_id)
     auto_action = decision["action"] if decision else None

@@ -184,6 +184,33 @@ class TestCopyArchiveIntent:
     def test_outlook_regular_folder_none(self) -> None:
         assert copy_archive_intent("Work/Projects", OUTLOOK_PROFILE) is None
 
+    def test_gmail_spam_folder_recognized(self) -> None:
+        # COPY to Spam + STORE \Deleted is the Gmail mark-as-spam pattern —
+        # held and rewritten to a MOVE just like archive/delete.
+        assert copy_archive_intent("[Gmail]/Spam", GMAIL_PROFILE) == "[Gmail]/Spam"
+
+    def test_outlook_junk_folder_recognized(self) -> None:
+        assert copy_archive_intent("Junk Email", OUTLOOK_PROFILE) == "Junk Email"
+
+
+# ---------------------------------------------------------------------------
+# junk_folder profile field
+# ---------------------------------------------------------------------------
+
+
+class TestJunkFolder:
+    def test_gmail_junk_folder(self) -> None:
+        assert GMAIL_PROFILE.junk_folder == "[Gmail]/Spam"
+
+    def test_outlook_junk_folder(self) -> None:
+        assert OUTLOOK_PROFILE.junk_folder == "Junk Email"
+
+    def test_icloud_junk_folder(self) -> None:
+        assert ICLOUD_PROFILE.junk_folder == "Junk"
+
+    def test_generic_no_junk_folder(self) -> None:
+        assert GENERIC_PROFILE.junk_folder is None
+
 
 # ---------------------------------------------------------------------------
 # PendingCopyIntent dataclass

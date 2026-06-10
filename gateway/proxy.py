@@ -55,6 +55,7 @@ from gateway.imap_response_parser import (
     parse_list_response,
     parse_select_response,
 )
+from gateway.intent import derive_intent
 from gateway.operation_parser import ParsedOperation, build_rich_description, parse_append, parse_copy, parse_move, parse_store
 from gateway.provider_profiles import (
     PendingCopyIntent,
@@ -390,6 +391,7 @@ async def _client_to_upstream(
                     )
                 else:
                     parsed_op = parse_append(tag, append_folder, append_flags, literal_size)
+                    _append_intent, _append_conf = derive_intent(parsed_op, _profile)
                     # Persist the raw message (base64) so the APPEND can actually
                     # be replayed upstream on approval. Oversized bodies were
                     # already dropped (logged) during the literal read above.
@@ -411,6 +413,8 @@ async def _client_to_upstream(
                         flags_add=parsed_op.flags_add,
                         append_message=_append_b64,
                         batch_id=_append_batch_id,
+                        intent_label=_append_intent,
+                        intent_confidence=_append_conf,
                         db_path=db_path,
                     )
                     resp = f"{tag} OK [STAGED] Operation queued — ID: {op_id}\r\n"
@@ -580,18 +584,17 @@ async def _client_to_upstream(
                     and parsed.args
                     and parsed.args[0] == _pending_now.uid_set
                 ):
-                    _folder_label = (
-                        "archive"
-                        if _pending_now.destination == (_profile.archive_folder if _profile else None)
-                        else "delete"
-                    )
+                    if _profile and _pending_now.destination == _profile.archive_folder:
+                        _folder_label = "archive"
+                    elif _profile and _pending_now.destination == _profile.junk_folder:
+                        _folder_label = "spam"
+                    else:
+                        _folder_label = "delete"
+                    # The human-facing description is rebuilt below via
+                    # derive_intent + build_rich_description — the MOVE
+                    # destination classifies as archive/delete/spam intent.
                     parsed_op = parse_move(
                         parsed.tag, _pending_now.uid_set, _pending_now.destination
-                    )
-                    parsed_op.description = (
-                        f"{_folder_label}: rewrote COPY+DELETE to UID MOVE — "
-                        f"UIDs {_pending_now.uid_set} → {_pending_now.destination} "
-                        f"({(_profile.name if _profile else 'unknown')} provider normalization)"
                     )
                     session["pending_copy_intent"] = None
                     logger.info(
@@ -663,18 +666,27 @@ async def _client_to_upstream(
                             )
                             op_snapshot = None
 
-                    # Enrich description with sender/subject from state DB.
-                    # Must happen BEFORE the MOVE optimistic update below, which
-                    # deletes message rows from the state DB — after that point
-                    # the metadata is gone. Non-fatal if lookup fails.
-                    op_description = parsed_op.description
+                    # Derive the semantic intent (archive/delete/mark_spam/...)
+                    # from the op's folders + flags under the active provider
+                    # profile, then enrich the description with sender/subject
+                    # from the state DB. Must happen BEFORE the MOVE optimistic
+                    # update below, which deletes message rows from the state
+                    # DB — after that point the metadata is gone. Non-fatal if
+                    # lookup fails.
+                    op_intent, op_intent_conf = derive_intent(
+                        parsed_op, _profile,
+                        folder_from=parsed_op.folder_from or session.get("folder"),
+                    )
+                    op_description = build_rich_description(parsed_op, [], op_intent)
                     if folder_id is not None and parsed_op.message_ids:
                         uid_set_for_meta = parsed_op.message_ids[0]
                         try:
                             msg_meta = await get_message_metadata_by_uid_set(
                                 folder_id, uid_set_for_meta, db_path=db_path
                             )
-                            op_description = build_rich_description(parsed_op, msg_meta)
+                            op_description = build_rich_description(
+                                parsed_op, msg_meta, op_intent
+                            )
                         except Exception as meta_exc:  # noqa: BLE001
                             logger.debug(
                                 "[%s] Metadata lookup for rich description failed (non-fatal): %s",
@@ -731,6 +743,8 @@ async def _client_to_upstream(
                         flags_remove=parsed_op.flags_remove if parsed_op.flags_remove else None,
                         snapshot=op_snapshot,
                         batch_id=_write_batch_id,
+                        intent_label=op_intent,
+                        intent_confidence=op_intent_conf,
                         db_path=db_path,
                     )
                     resp = f"{parsed.tag} OK [STAGED] Operation queued — ID: {op_id}\r\n"

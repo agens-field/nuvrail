@@ -166,6 +166,8 @@ CREATE TABLE IF NOT EXISTS staged_operations (
     snapshot        TEXT,                   -- JSON {uid: {flags, seq_num, folder_id}} pre-op state
     append_message  TEXT,                   -- base64 of the raw RFC822 body for APPEND ops (NULL otherwise)
     is_urgent       INTEGER NOT NULL DEFAULT 0,  -- 1 for smtp_send and trash ops (always show at top)
+    intent_label    TEXT,                   -- semantic intent: 'archive'|'delete'|'mark_spam'|... (see gateway.intent); NULL = op_type says it all
+    intent_confidence REAL,                 -- 1.0 = provider-profile/mechanical match, 0.8 = folder-name heuristic
     decided_at      INTEGER,
     decided_by      TEXT,
     executed_at     INTEGER,
@@ -299,6 +301,15 @@ async def init_db(path: Path = DB_PATH) -> None:
         if "append_message" not in staged_cols:
             await db.execute(
                 "ALTER TABLE staged_operations ADD COLUMN append_message TEXT"
+            )
+        # Migration: semantic intent labels (gateway.intent) derived at staging time.
+        if "intent_label" not in staged_cols:
+            await db.execute(
+                "ALTER TABLE staged_operations ADD COLUMN intent_label TEXT"
+            )
+        if "intent_confidence" not in staged_cols:
+            await db.execute(
+                "ALTER TABLE staged_operations ADD COLUMN intent_confidence REAL"
             )
 
         new_columns = [

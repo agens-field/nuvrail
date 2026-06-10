@@ -108,6 +108,65 @@ async def test_list_operations_filter_by_status(db_path: Path) -> None:
     assert executed_id in all_ids
 
 
+async def test_create_operation_persists_intent(db_path: Path) -> None:
+    """intent_label / intent_confidence are stored on the staged row."""
+    op_id = await create_operation(
+        op_type="move",
+        protocol="imap",
+        description="Archive: 1",
+        message_ids=["1"],
+        folder_from="INBOX",
+        folder_to="[Gmail]/All Mail",
+        intent_label="archive",
+        intent_confidence=1.0,
+        db_path=db_path,
+    )
+    row = await get_operation(op_id, db_path=db_path)
+    assert row["intent_label"] == "archive"
+    assert row["intent_confidence"] == 1.0
+
+
+async def test_delete_intent_defaults_urgent(db_path: Path) -> None:
+    """A MOVE with delete intent is urgent, same as a STORE \\Deleted trash op."""
+    op_id = await create_operation(
+        op_type="move",
+        protocol="imap",
+        description="Move to Trash: 1",
+        folder_to="[Gmail]/Trash",
+        intent_label="delete",
+        intent_confidence=1.0,
+        db_path=db_path,
+    )
+    row = await get_operation(op_id, db_path=db_path)
+    assert row["is_urgent"] == 1
+
+
+async def test_archive_intent_not_urgent(db_path: Path) -> None:
+    op_id = await create_operation(
+        op_type="move",
+        protocol="imap",
+        description="Archive: 1",
+        folder_to="[Gmail]/All Mail",
+        intent_label="archive",
+        intent_confidence=1.0,
+        db_path=db_path,
+    )
+    row = await get_operation(op_id, db_path=db_path)
+    assert row["is_urgent"] == 0
+
+
+async def test_no_intent_defaults_null(db_path: Path) -> None:
+    op_id = await create_operation(
+        op_type="mark_read",
+        protocol="imap",
+        description="Mark as read: 1",
+        db_path=db_path,
+    )
+    row = await get_operation(op_id, db_path=db_path)
+    assert row["intent_label"] is None
+    assert row["intent_confidence"] is None
+
+
 async def test_get_operation_not_found(db_path: Path) -> None:
     """get_operation returns None for a non-existent ID."""
     result = await get_operation("op_000000", db_path=db_path)
