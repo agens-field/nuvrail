@@ -155,6 +155,7 @@ async def undo_operation(operation_id: str, db_path: Path) -> dict[str, Any]:
         operation_id=operation_id,
         agent_id=str(agent_id) if agent_id else None,
         op_type=op_type,
+        intent_label=row.get('intent_label'),
         detail=json.dumps({'description': description}),
     )
 

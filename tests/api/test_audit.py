@@ -98,6 +98,36 @@ async def test_audit_list_empty_returns_empty(client: httpx.AsyncClient) -> None
     assert isinstance(data["entries"], list)
 
 
+async def test_audit_intent_label_exposed_and_filterable(
+    client: httpx.AsyncClient, db_path: Path
+) -> None:
+    """intent_label flows into audit entries and ?intent= filters on it."""
+    op_id = await create_operation(
+        op_type="move",
+        protocol="imap",
+        agent_id=_FAKE_AGENT_ID,
+        description="Archive: 42",
+        folder_to="[Gmail]/All Mail",
+        intent_label="archive",
+        intent_confidence=1.0,
+        db_path=db_path,
+    )
+
+    resp = await client.get("/api/v1/audit?intent=archive")
+    assert resp.status_code == 200
+    entries = resp.json()["entries"]
+    matching = [e for e in entries if e.get("operation_id") == op_id]
+    assert matching, "Archive-intent entry should match ?intent=archive"
+    assert matching[0]["intent_label"] == "archive"
+
+    resp = await client.get("/api/v1/audit?intent=delete")
+    assert resp.status_code == 200
+    entries = resp.json()["entries"]
+    assert not [e for e in entries if e.get("operation_id") == op_id], (
+        "Archive-intent entry must not match ?intent=delete"
+    )
+
+
 async def test_audit_list_returns_staged_entry(
     client: httpx.AsyncClient, db_path: Path
 ) -> None:

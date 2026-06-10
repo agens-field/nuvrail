@@ -59,6 +59,7 @@ def _row_to_entry(row: dict) -> AuditEntry:
         op_protocol=row.get("op_protocol"),
         op_status=row.get("op_status"),
         undo_expires_at=row.get("undo_expires_at"),
+        intent_label=row.get("intent_label"),
     )
 
 
@@ -70,6 +71,7 @@ async def list_audit(
     actor: Optional[str] = Query(default=None),
     agent_id: Optional[int] = Query(default=None, ge=1),
     op_type: Optional[str] = Query(default=None, description="Filter by operation type (move, trash, smtp_send, …)"),
+    intent: Optional[str] = Query(default=None, description="Filter by semantic intent (archive, delete, mark_spam, …)"),
     since: Optional[int] = Query(default=None, description="Unix timestamp — only entries at or after this time"),
     until: Optional[int] = Query(default=None, description="Unix timestamp — only entries at or before this time"),
     search: Optional[str] = Query(default=None, description="Case-insensitive substring match on operation description"),
@@ -108,6 +110,9 @@ async def list_audit(
     if op_type is not None:
         conditions.append("COALESCE(a.op_type, op.op_type) = ?")
         params.append(op_type)
+    if intent is not None:
+        conditions.append("COALESCE(a.intent_label, op.intent_label) = ?")
+        params.append(intent)
     if since is not None:
         conditions.append("a.timestamp >= ?")
         params.append(since)
@@ -144,7 +149,8 @@ async def list_audit(
             op.op_type       AS op_type,
             op.protocol      AS op_protocol,
             op.status        AS op_status,
-            op.undo_expires_at AS undo_expires_at
+            op.undo_expires_at AS undo_expires_at,
+            COALESCE(a.intent_label, op.intent_label) AS intent_label
         {join_clause}
         {where}
         ORDER BY a.id DESC
@@ -222,7 +228,8 @@ async def get_agent_audit(
             op.op_type       AS op_type,
             op.protocol      AS op_protocol,
             op.status        AS op_status,
-            op.undo_expires_at AS undo_expires_at
+            op.undo_expires_at AS undo_expires_at,
+            COALESCE(a.intent_label, op.intent_label) AS intent_label
         {join_clause}
         {where}
         ORDER BY a.id DESC
@@ -281,7 +288,8 @@ async def export_audit(
             op.op_type       AS op_type,
             op.protocol      AS op_protocol,
             op.status        AS op_status,
-            op.undo_expires_at AS undo_expires_at
+            op.undo_expires_at AS undo_expires_at,
+            COALESCE(a.intent_label, op.intent_label) AS intent_label
         FROM audit_log a
         LEFT JOIN staged_operations op ON a.operation_id = op.id
         LEFT JOIN agent_credentials ac ON a.agent_id = ac.id
@@ -322,7 +330,8 @@ async def get_audit_entry(
             op.op_type       AS op_type,
             op.protocol      AS op_protocol,
             op.status        AS op_status,
-            op.undo_expires_at AS undo_expires_at
+            op.undo_expires_at AS undo_expires_at,
+            COALESCE(a.intent_label, op.intent_label) AS intent_label
         FROM audit_log a
         LEFT JOIN staged_operations op ON a.operation_id = op.id
         LEFT JOIN agent_credentials ac ON a.agent_id = ac.id

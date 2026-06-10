@@ -14,6 +14,13 @@ The genesis row (first ever inserted) uses prev_hash = "0" * 64.
 An asyncio.Lock serialises all insertions so two concurrent coroutines
 can never read the same prev_hash.
 
+``intent_label`` (added later) is stored on the row but deliberately NOT part
+of the entry_hash: the canonical hash payload is fixed — extending it would
+invalidate the hash of every previously chained row. The field is derived,
+informational metadata for filtering; its authoritative copy lives on
+staged_operations (reachable via operation_id), which is what the chain
+already covers through op_type/detail.
+
 Chain integrity:
   ┌──────────┐    prev_hash        ┌──────────┐    prev_hash        ┌──────────┐
   │  row 1   │ ─────────────────▶  │  row 2   │ ─────────────────▶  │  row 3   │
@@ -89,6 +96,7 @@ async def insert_audit_event(
     op_type: Optional[str] = None,
     detail: Optional[str] = None,
     user_id: Optional[int] = None,
+    intent_label: Optional[str] = None,
 ) -> None:
     """Insert a single audit_log row with cryptographic hash chaining.
 
@@ -105,6 +113,9 @@ async def insert_audit_event(
         op_type:      Operation type string (or None).
         detail:       JSON string with extra context (or None).
         user_id:      FK to users.id (or None).
+        intent_label: Denormalized semantic intent (gateway.intent) — stored
+                      for filtering but NOT included in entry_hash (see module
+                      docstring).
     """
     async with _AUDIT_LOCK:
         # Read the entry_hash of the most recently inserted hashed row.
@@ -125,11 +136,11 @@ async def insert_audit_event(
             """
             INSERT INTO audit_log
                 (timestamp, operation_id, event, actor, agent_id, op_type, detail,
-                 user_id, prev_hash, entry_hash)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+                 user_id, intent_label, prev_hash, entry_hash)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
             """,
             (timestamp, operation_id, event, actor, agent_id, op_type, detail,
-             user_id, prev_hash),
+             user_id, intent_label, prev_hash),
         )
         row_id: int = cursor.lastrowid  # type: ignore[assignment]
 
@@ -165,6 +176,7 @@ async def record_audit_event(
     op_type: Optional[str] = None,
     detail: Optional[str] = None,
     user_id: Optional[int] = None,
+    intent_label: Optional[str] = None,
 ) -> None:
     """Open a connection, append one audit_log row, and commit.
 
@@ -187,6 +199,7 @@ async def record_audit_event(
             op_type=op_type,
             detail=detail,
             user_id=user_id,
+            intent_label=intent_label,
         )
         await db.commit()
 

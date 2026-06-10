@@ -146,18 +146,130 @@ def _build_parsed_op(parsed: ParsedCommand) -> Optional[ParsedOperation]:
 async def _load_special_use(session: dict, db_path: Path, peer: str) -> dict:
     """Return the tenant's {folder name: RFC 6154 role} mapping for intent derivation.
 
-    Roles are captured opportunistically from upstream LIST responses (see the
-    LIST handler in _sync_upstream_line); an empty dict simply means intent
-    falls back to provider-profile / name-heuristic classification. Never
-    raises — staging must not fail because a lookup did.
+    The session cache is seeded at connection time (proactive discovery in
+    handle_client + a DB load) and kept current by the LIST sync handler, so
+    the common path is a dict lookup. The DB fallback only fires for sessions
+    constructed without the cache (tests, future call sites). An empty dict
+    simply means intent falls back to provider-profile / name-heuristic
+    classification. Never raises — staging must not fail because a lookup did.
     """
+    cached = session.get("special_use")
+    if cached is not None:
+        return cached
     try:
-        return await get_special_use_folders(
+        loaded = await get_special_use_folders(
             user_id=session.get("user_id"), db_path=db_path
         )
+        session["special_use"] = loaded
+        return loaded
     except Exception as exc:  # noqa: BLE001
         logger.debug("[%s] special-use lookup failed (non-fatal): %s", peer, exc)
         return {}
+
+
+# Budget for the proxy-issued SPECIAL-USE discovery exchange at connect time.
+# The line cap is far above any realistic folder count; in practice it only
+# fires on a misbehaving server.
+_DISCOVERY_TIMEOUT_SECONDS = float(os.environ.get("NUVRAIL_SPECIAL_USE_DISCOVERY_TIMEOUT", "10"))
+_DISCOVERY_MAX_LINES = 2000
+
+
+async def _read_upstream_until_tagged(
+    upstream_reader: asyncio.StreamReader,
+    tag: bytes,
+    peer: str,
+) -> Optional[list[str]]:
+    """Collect upstream response lines until the tagged completion for ``tag``.
+
+    Returns the untagged lines (decoded, CRLF-stripped), or None on timeout /
+    line-cap overflow / EOF. A None return means the exchange did not complete
+    cleanly and leftover response lines may still be in flight — callers must
+    abort the discovery (the stray lines would then surface to the client as
+    unsolicited responses, which IMAP clients are required to tolerate).
+    """
+    lines: list[str] = []
+    loop = asyncio.get_event_loop()
+    deadline = loop.time() + _DISCOVERY_TIMEOUT_SECONDS
+    tag_prefix = tag + b" "
+    while len(lines) < _DISCOVERY_MAX_LINES:
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            break
+        try:
+            line = await asyncio.wait_for(upstream_reader.readline(), timeout=remaining)
+        except asyncio.TimeoutError:
+            break
+        if not line:
+            break
+        if line.startswith(tag_prefix):
+            return lines
+        lines.append(line.decode("utf-8", errors="replace").rstrip("\r\n"))
+    logger.warning(
+        "[%s] SPECIAL-USE discovery: no tagged completion for %r (%d lines read)",
+        peer, tag.decode(), len(lines),
+    )
+    return None
+
+
+async def _discover_special_use(
+    upstream_reader: asyncio.StreamReader,
+    upstream_writer: asyncio.StreamWriter,
+    known_caps: str,
+    *,
+    user_id: Optional[int],
+    db_path: Path,
+    peer: str,
+) -> None:
+    """Proactively capture SPECIAL-USE folder roles with one proxy-issued LIST.
+
+    Opportunistic capture (the LIST sync handler) only works if the agent
+    happens to issue a LIST; an agent that goes straight to SELECT/MOVE would
+    leave intent derivation on name heuristics. This runs once per connection,
+    after upstream auth and BEFORE the byte pumps start, so the proxy has
+    exclusive use of the upstream stream and can consume the responses without
+    leaking them to the client.
+
+    ``known_caps`` is any capability text already seen during the auth
+    exchange; an explicit CAPABILITY round-trip is only made when it doesn't
+    mention SPECIAL-USE. Servers that don't advertise SPECIAL-USE are skipped
+    entirely. Failures are non-fatal — the connection proceeds either way.
+    """
+    caps = known_caps or ""
+    if "SPECIAL-USE" not in caps.upper():
+        upstream_writer.write(b"nuvcap0 CAPABILITY\r\n")
+        await upstream_writer.drain()
+        cap_lines = await _read_upstream_until_tagged(upstream_reader, b"nuvcap0", peer)
+        if cap_lines is None:
+            return
+        caps = " ".join(cap_lines)
+    if "SPECIAL-USE" not in caps.upper():
+        logger.debug("[%s] upstream does not advertise SPECIAL-USE — discovery skipped", peer)
+        return
+
+    upstream_writer.write(b'nuvlist0 LIST "" "*" RETURN (SPECIAL-USE)\r\n')
+    await upstream_writer.drain()
+    list_lines = await _read_upstream_until_tagged(upstream_reader, b"nuvlist0", peer)
+    if list_lines is None:
+        return
+    listed = parse_list_folders(
+        [line for line in list_lines if line.upper().startswith("* LIST")]
+    )
+    roles: dict[str, str] = {}
+    for f in listed:
+        role = role_from_list_attributes(f.attributes)
+        if role:
+            roles[f.name] = role
+    if listed:
+        await upsert_folders_from_list(
+            [f.name for f in listed],
+            user_id=user_id,
+            special_use=roles or None,
+            db_path=db_path,
+        )
+    logger.info(
+        "[%s] SPECIAL-USE discovery: %d folders listed, roles: %s",
+        peer, len(listed), roles or "none",
+    )
 
 
 async def _inject_pending_reverts(
@@ -303,6 +415,13 @@ async def _sync_upstream_line(
                     special_use=roles or None,
                     db_path=db_path,
                 )
+                # Keep the session's intent-derivation cache current.
+                if roles:
+                    cache = session.get("special_use")
+                    if cache is None:
+                        cache = {}
+                        session["special_use"] = cache
+                    cache.update({name.lower(): role for name, role in roles.items()})
                 logger.debug(
                     "[%s] LIST: upserted folders %s (special-use: %s)",
                     peer, [f.name for f in listed], roles or "none",
@@ -1414,6 +1533,7 @@ async def handle_client(
     # see the tagged completion or a SASL '+' challenge.  Reading only one
     # line mistakes the CAPABILITY response for an auth failure.
     _login_tag_prefix = (login_tag + " ").encode()
+    _upstream_caps = ""  # capability text seen during the auth exchange (for SPECIAL-USE discovery)
     try:
         login_resp = b""
         while True:
@@ -1424,6 +1544,8 @@ async def handle_client(
                 # SASL challenge or tagged completion — stop here.
                 login_resp = line
                 break
+            if b"CAPABILITY" in line.upper():
+                _upstream_caps += " " + line.decode("utf-8", errors="replace")
             # Untagged response (e.g. * CAPABILITY) — forward to client and keep reading.
             try:
                 client_writer.write(line)
@@ -1512,6 +1634,31 @@ async def handle_client(
         peer_str, provider_profile.name, upstream_host,
     )
 
+    # Proactive SPECIAL-USE discovery (RFC 6154) — one proxy-issued LIST so
+    # intent derivation has server-declared folder roles even if the agent
+    # never sends a LIST itself. Must run before the byte pumps start (the
+    # responses are consumed here, not forwarded). Only after successful auth;
+    # the tagged OK may also carry [CAPABILITY ...], so include it in the
+    # already-seen capability text.
+    if b" OK " in login_resp.upper():
+        try:
+            await _discover_special_use(
+                upstream_reader, upstream_writer,
+                _upstream_caps + " " + login_resp.decode("utf-8", errors="replace"),
+                user_id=credential["user_id"], db_path=_db_path, peer=peer_str,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[%s] SPECIAL-USE discovery failed (non-fatal): %s", peer_str, exc)
+
+    # Seed the session's intent-derivation cache from the DB — includes roles
+    # from the discovery above and from any previous connections.
+    try:
+        _session_special_use: Optional[dict] = await get_special_use_folders(
+            user_id=credential["user_id"], db_path=_db_path
+        )
+    except Exception:  # noqa: BLE001
+        _session_special_use = None  # None → _load_special_use falls back to the DB
+
     # Per-connection state shared between c2u (tracks SELECT) and u2c (syncs responses).
     session: dict = {
         "folder": None,              # currently selected folder name
@@ -1525,6 +1672,9 @@ async def handle_client(
         # Provider normalization
         "provider_profile": provider_profile,
         "pending_copy_intent": None,  # PendingCopyIntent | None — held COPY awaiting STORE \Deleted
+        # {lower-cased folder name: RFC 6154 role} for intent derivation —
+        # seeded above, kept current by the LIST sync handler.
+        "special_use": _session_special_use,
     }
     c2u = asyncio.create_task(
         _client_to_upstream(client_reader, upstream_writer, client_writer, session, peer_str, _db_path)

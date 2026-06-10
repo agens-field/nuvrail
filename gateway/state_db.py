@@ -185,6 +185,7 @@ CREATE TABLE IF NOT EXISTS audit_log (
     event        TEXT NOT NULL,             -- 'staged'|'approved'|'rejected'|'executed'|'execution_failed'
     actor        TEXT,                      -- 'ai_agent'|'human'|'system'
     agent_id     TEXT,
+    intent_label TEXT,                      -- denormalized semantic intent (gateway.intent); NOT part of entry_hash
     detail       TEXT                       -- JSON
 );
 
@@ -359,6 +360,10 @@ async def init_db(path: Path = DB_PATH) -> None:
             ("op_type",    "TEXT"),       # denormalized from staged_operations
             ("prev_hash",  "TEXT"),       # hash chain: entry_hash of preceding row
             ("entry_hash", "TEXT"),       # SHA-256 of this row's fields
+            # Denormalized like op_type so audit history keeps its semantics
+            # after the operation row is retention-purged. NOT part of
+            # entry_hash — see gateway/audit.py.
+            ("intent_label", "TEXT"),
         ]:
             if col_name not in audit_cols:
                 await db.execute(

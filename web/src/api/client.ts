@@ -291,6 +291,7 @@ export async function fetchAuditLog(
     actor?: string
     agent_id?: number
     op_type?: string
+    intent?: string
     since?: number
     until?: number
     search?: string
@@ -303,6 +304,7 @@ export async function fetchAuditLog(
   if (params.actor) qs.set('actor', params.actor)
   if (params.agent_id !== undefined) qs.set('agent_id', String(params.agent_id))
   if (params.op_type) qs.set('op_type', params.op_type)
+  if (params.intent) qs.set('intent', params.intent)
   if (params.since !== undefined) qs.set('since', String(params.since))
   if (params.until !== undefined) qs.set('until', String(params.until))
   if (params.search) qs.set('search', params.search)

@@ -92,6 +92,7 @@ export interface AuditEntry {
   op_protocol?: string
   op_status?: string
   undo_expires_at?: number | null
+  intent_label?: string | null  // semantic intent (archive, delete, mark_spam, …)
 }
 
 export interface UndoResponse {

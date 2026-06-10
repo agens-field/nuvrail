@@ -28,6 +28,40 @@ const ACTOR_LABELS: Record<string, string> = {
   system:   'System',
 }
 
+// Human labels for semantic intents (intent_label from the API).
+const INTENT_LABELS: Record<string, string> = {
+  archive: 'Archive',
+  delete: 'Delete',
+  mark_spam: 'Spam',
+  not_spam: 'Not spam',
+  restore_from_trash: 'Restore',
+  unarchive: 'To Inbox',
+  save_draft: 'Draft',
+  import_message: 'Import',
+  mark_answered: 'Replied',
+}
+
+const INTENT_COLORS: Record<string, string> = {
+  archive: 'bg-sky-900 text-sky-200',
+  delete: 'bg-red-900 text-red-200',
+  mark_spam: 'bg-orange-900 text-orange-200',
+  not_spam: 'bg-emerald-900 text-emerald-200',
+  restore_from_trash: 'bg-emerald-900 text-emerald-200',
+  unarchive: 'bg-sky-900 text-sky-200',
+}
+
+function IntentPill({ intent }: { intent?: string | null }) {
+  if (!intent) return null
+  const label = INTENT_LABELS[intent]
+  if (!label) return null
+  const cls = INTENT_COLORS[intent] ?? 'bg-surface-hi text-fg-2'
+  return (
+    <span className={`inline-block px-2 py-0.5 rounded text-xs font-medium ${cls}`}>
+      {label}
+    </span>
+  )
+}
+
 const EVENT_FILTERS = [
   { label: 'All',      value: undefined },
   { label: 'Staged',   value: 'staged' },
@@ -123,6 +157,7 @@ function AuditRow({ entry }: { entry: AuditEntry }) {
           <div className="flex items-center gap-2 flex-wrap">
             <ProtocolBadge protocol={entry.op_protocol ?? undefined} />
             <EventPill event={entry.event} />
+            <IntentPill intent={entry.intent_label} />
           </div>
         </td>
 
@@ -164,6 +199,11 @@ function AuditRow({ entry }: { entry: AuditEntry }) {
                 <div>
                   <span className="text-fg-3">Op type: </span>
                   <span className="text-fg-2">{entry.op_type}</span>
+                  {entry.intent_label && (
+                    <span className="ml-2 text-fg-3">
+                      · Intent: <span className="text-fg-2">{entry.intent_label}</span>
+                    </span>
+                  )}
                 </div>
               )}
               {entry.detail && (
@@ -238,6 +278,7 @@ export default function AuditView() {
   const [eventFilter, setEventFilter] = useState<string | undefined>(undefined)
   const [agentFilter, setAgentFilter] = useState<number | undefined>(undefined)
   const [opTypeFilter, setOpTypeFilter] = useState<string | undefined>(undefined)
+  const [intentFilter, setIntentFilter] = useState<string | undefined>(undefined)
   const [searchText, setSearchText] = useState('')
   const [sinceDate, setSinceDate] = useState('')   // ISO date string 'YYYY-MM-DD'
   const [untilDate, setUntilDate] = useState('')
@@ -247,6 +288,7 @@ export default function AuditView() {
     setEventFilter(undefined)
     setAgentFilter(undefined)
     setOpTypeFilter(undefined)
+    setIntentFilter(undefined)
     setSearchText('')
     setSinceDate('')
     setUntilDate('')
@@ -254,7 +296,7 @@ export default function AuditView() {
   }
 
   const activeFilterCount = [
-    eventFilter, agentFilter, opTypeFilter,
+    eventFilter, agentFilter, opTypeFilter, intentFilter,
     searchText || undefined,
     sinceDate || undefined,
     untilDate || undefined,
@@ -270,13 +312,14 @@ export default function AuditView() {
   const untilTs = untilDate ? Math.floor(new Date(untilDate + 'T23:59:59').getTime() / 1000) : undefined
 
   const { data, isLoading, isError, refetch, isFetching } = useQuery({
-    queryKey: ['audit', page, eventFilter, agentFilter, opTypeFilter, searchText, sinceDate, untilDate],
+    queryKey: ['audit', page, eventFilter, agentFilter, opTypeFilter, intentFilter, searchText, sinceDate, untilDate],
     queryFn: () => fetchAuditLog({
       limit: PAGE_SIZE,
       offset: page * PAGE_SIZE,
       event: eventFilter,
       agent_id: agentFilter,
       op_type: opTypeFilter,
+      intent: intentFilter,
       since: sinceTs,
       until: untilTs,
       search: searchText || undefined,
@@ -356,6 +399,17 @@ export default function AuditView() {
           {['move', 'trash', 'archive', 'copy', 'mark_read', 'mark_unread',
             'star', 'unstar', 'append', 'smtp_send'].map(t => (
             <option key={t} value={t}>{t}</option>
+          ))}
+        </select>
+
+        <select
+          value={intentFilter ?? ''}
+          onChange={(e) => { setIntentFilter(e.target.value || undefined); setPage(0) }}
+          className="px-3 py-1.5 rounded-md bg-surface-hi text-sm text-fg-2 border border-edge hover:bg-edge"
+        >
+          <option value="">All intents</option>
+          {Object.entries(INTENT_LABELS).map(([value, label]) => (
+            <option key={value} value={value}>{label}</option>
           ))}
         </select>
 
