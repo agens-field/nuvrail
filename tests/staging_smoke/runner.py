@@ -39,21 +39,36 @@ Design constraints (KC):
     a Check result; the runner just sequences them and aggregates.
 
 Proxy-level IMAP/SMTP write→stage→approve→deliver and rejection/revert
-checks require the staging gateway to expose its 993/587 proxy ports AND
-a dedicated monitor mailbox credential. Those land with the enterprise
-deploy/ops wiring (the proxy port exposure + monitor secret live there).
-Until then they report status="skipped" with a clear reason so the gap
-is visible in every report rather than silently absent.
+checks are FULLY IMPLEMENTED here (see check_proxy_write_approve_deliver /
+check_rejection_revert). They require the staging gateway to expose its
+proxy ports AND a dedicated monitor mailbox credential, which land with
+the enterprise deploy/ops wiring (proxy port exposure + monitor secret
+live there). Until those env vars are present the two checks report
+status="skipped" with the exact missing-variable list, so the gap is
+visible in every report rather than silently absent; the moment the
+wiring exists the real flow runs with no further code change.
+
+Required env for the credentialed flows (GitHub Actions secrets):
+  NUVRAIL_STAGING_MONITOR_IMAP_USER       monitor mailbox address
+  NUVRAIL_STAGING_MONITOR_IMAP_PASSWORD   monitor mailbox password
+  NUVRAIL_STAGING_MONITOR_API_TOKEN       bearer token owning the monitor agent
+  NUVRAIL_STAGING_PROXY_SMTP_PORT         deployed SMTP proxy port
+  NUVRAIL_STAGING_PROXY_IMAP_PORT         deployed IMAP proxy port (reject test)
+  NUVRAIL_STAGING_PROXY_HOST (optional)   defaults to the gateway host
+  NUVRAIL_STAGING_UPSTREAM_IMAP_HOST/PORT ground-truth delivery verification
 """
 from __future__ import annotations
 
+import asyncio
+import base64
 import json
 import os
+import re
 import sys
 import time
 import uuid
 from dataclasses import dataclass, field, asdict
-from typing import Callable
+from typing import Callable, Optional
 
 import httpx
 
@@ -75,6 +90,37 @@ PROD_ORIGIN = os.environ.get(
 HTTP_TIMEOUT = float(os.environ.get("NUVRAIL_STAGING_HTTP_TIMEOUT", "30"))
 
 API = f"{GATEWAY_URL}/api/v1"
+
+# --------------------------------------------------------------------------
+# Credentialed proxy-flow configuration (all optional; absent => skip).
+#
+# These point the monitor at the DEPLOYED gateway's proxy listeners and a
+# dedicated throwaway monitor mailbox. The values live as GitHub Actions
+# secrets, injected at run time — never in the repo (KC: NO secrets in repo).
+# The proxy host defaults to the gateway host (proxy + REST are the same fly
+# app) but is overridable for split deployments.
+# --------------------------------------------------------------------------
+
+
+def _proxy_host_default() -> str:
+    # Strip scheme from the gateway URL to get a bare host for raw TCP.
+    return re.sub(r"^https?://", "", GATEWAY_URL).split("/")[0]
+
+
+PROXY_HOST = os.environ.get("NUVRAIL_STAGING_PROXY_HOST", _proxy_host_default())
+MONITOR_IMAP_USER = os.environ.get("NUVRAIL_STAGING_MONITOR_IMAP_USER")
+MONITOR_IMAP_PASSWORD = os.environ.get("NUVRAIL_STAGING_MONITOR_IMAP_PASSWORD")
+PROXY_IMAP_PORT = os.environ.get("NUVRAIL_STAGING_PROXY_IMAP_PORT")
+PROXY_SMTP_PORT = os.environ.get("NUVRAIL_STAGING_PROXY_SMTP_PORT")
+# Bearer token for the approval REST API account that owns the monitor agent
+# (so the monitor can list + approve/reject its own staged operations).
+MONITOR_API_TOKEN = os.environ.get("NUVRAIL_STAGING_MONITOR_API_TOKEN")
+# Direct (non-proxy) upstream IMAP for ground-truth delivery verification.
+UPSTREAM_IMAP_HOST = os.environ.get("NUVRAIL_STAGING_UPSTREAM_IMAP_HOST")
+UPSTREAM_IMAP_PORT = int(os.environ.get("NUVRAIL_STAGING_UPSTREAM_IMAP_PORT", "993"))
+
+# How long to wait for an approved message to land / a rejection to revert.
+FLOW_TIMEOUT = float(os.environ.get("NUVRAIL_STAGING_FLOW_TIMEOUT", "25"))
 
 
 @dataclass
@@ -266,32 +312,314 @@ def check_account_lifecycle(client: httpx.Client, c: Check) -> None:
 
 
 # --------------------------------------------------------------------------
-# Checks — credentialed proxy flow (skipped until enterprise wiring lands)
+# Low-level proxy clients for the credentialed flows
+#
+# The deployed proxy speaks plain TCP (TLS terminates upstream), exactly like
+# the in-process e2e proxy, so we reuse the same SMTP dialogue + op_id parse
+# as tests/e2e/test_send_and_verify.py rather than depending on its fixtures
+# (those patch an in-process server and are unusable against a live host).
+# --------------------------------------------------------------------------
+
+_OP_ID_RE = re.compile(r"(op_[A-Za-z0-9]+)")
+
+
+def _auth_plain_b64(user: str, password: str) -> str:
+    return base64.b64encode(f"\x00{user}\x00{password}".encode()).decode()
+
+
+async def _read_smtp_response(reader: asyncio.StreamReader, timeout: float) -> list[str]:
+    """Read a complete (possibly multi-line) SMTP response."""
+    lines: list[str] = []
+    deadline = asyncio.get_event_loop().time() + timeout
+    while True:
+        remaining = deadline - asyncio.get_event_loop().time()
+        if remaining <= 0:
+            raise TimeoutError("timed out reading SMTP response")
+        raw = await asyncio.wait_for(reader.readline(), timeout=remaining)
+        if not raw:
+            break
+        decoded = raw.decode("utf-8", errors="replace").rstrip("\r\n")
+        lines.append(decoded)
+        if len(decoded) < 4 or decoded[3] != "-":
+            break
+    return lines
+
+
+async def _smtp_stage_via_proxy(subject: str) -> str:
+    """Run a full SMTP session against the deployed proxy and return the
+    op_id from the 250 [STAGED] response. Raises on any protocol failure."""
+    user, password = MONITOR_IMAP_USER, MONITOR_IMAP_PASSWORD
+    reader, writer = await asyncio.wait_for(
+        asyncio.open_connection(PROXY_HOST, int(PROXY_SMTP_PORT)), timeout=FLOW_TIMEOUT
+    )
+    try:
+        await asyncio.wait_for(reader.readline(), timeout=FLOW_TIMEOUT)  # greeting
+
+        async def cmd(text: str) -> list[str]:
+            writer.write(text.encode())
+            await writer.drain()
+            return await _read_smtp_response(reader, FLOW_TIMEOUT)
+
+        await cmd("EHLO staging-monitor\r\n")
+        auth = await cmd(f"AUTH PLAIN {_auth_plain_b64(user, password)}\r\n")
+        if not auth[-1].startswith("235"):
+            raise AssertionError(f"AUTH rejected by proxy: {auth!r}")
+        await cmd(f"MAIL FROM:<{user}>\r\n")
+        await cmd(f"RCPT TO:<{user}>\r\n")
+        go = await cmd("DATA\r\n")
+        if not go[-1].startswith("354"):
+            raise AssertionError(f"expected 354 after DATA, got {go!r}")
+        body = (
+            f"From: {user}\r\nTo: {user}\r\nSubject: {subject}\r\n\r\n"
+            f"staging monitor probe {subject}\r\n.\r\n"
+        )
+        staged = await cmd(body)
+        line = staged[-1]
+        if not line.startswith("250") or "STAGED" not in line.upper():
+            raise AssertionError(f"expected 250 [STAGED], got {staged!r}")
+        m = _OP_ID_RE.search(" ".join(staged))
+        if not m:
+            raise AssertionError(f"no op_id in STAGED response: {staged!r}")
+        await cmd("QUIT\r\n")
+        return m.group(1)
+    finally:
+        try:
+            writer.close()
+            await writer.wait_closed()
+        except OSError:
+            pass
+
+
+async def _imap_search_subject(subject: str) -> Optional[int]:
+    """Direct (non-proxy) IMAP poll of the monitor mailbox for a subject.
+    Returns the UID if found within FLOW_TIMEOUT, else None."""
+    import aioimaplib  # local import: only needed on credentialed runs
+
+    host = UPSTREAM_IMAP_HOST or PROXY_HOST
+    deadline = time.monotonic() + FLOW_TIMEOUT
+    while time.monotonic() < deadline:
+        client = aioimaplib.IMAP4_SSL(host=host, port=UPSTREAM_IMAP_PORT)
+        try:
+            await client.wait_hello_from_server()
+            await client.login(MONITOR_IMAP_USER, MONITOR_IMAP_PASSWORD)
+            await client.select("INBOX")
+            status, data = await client.uid_search(f'HEADER SUBJECT "{subject}"')
+            if status == "OK" and data and data[0]:
+                uids = data[0].decode().split()
+                if uids:
+                    return int(uids[-1])
+        except Exception:  # noqa: BLE001 — keep polling, monitor must not crash
+            pass
+        finally:
+            try:
+                await client.logout()
+            except Exception:
+                pass
+        await asyncio.sleep(2.0)
+    return None
+
+
+async def _imap_delete_uid(uid: int) -> None:
+    """Best-effort cleanup of a delivered probe message (direct IMAP)."""
+    import aioimaplib
+
+    host = UPSTREAM_IMAP_HOST or PROXY_HOST
+    client = aioimaplib.IMAP4_SSL(host=host, port=UPSTREAM_IMAP_PORT)
+    try:
+        await client.wait_hello_from_server()
+        await client.login(MONITOR_IMAP_USER, MONITOR_IMAP_PASSWORD)
+        await client.select("INBOX")
+        await client.uid("store", str(uid), "+FLAGS", r"(\Deleted)")
+        await client.expunge()
+    except Exception:  # noqa: BLE001
+        pass
+    finally:
+        try:
+            await client.logout()
+        except Exception:
+            pass
+
+
+async def _imap_stage_flag_via_proxy(uid_target_subject: str) -> tuple[str, int]:
+    """Connect to the deployed IMAP proxy, select INBOX, and stage a write
+    (\\Flagged on the newest message) so we can exercise reject/revert.
+    Returns (op_id, uid). Raises on protocol failure.
+
+    The proxy returns OK [STAGED op_...] on the tagged write response; we
+    parse the op_id out of the server's tagged/untagged lines.
+    """
+    import aioimaplib
+
+    client = aioimaplib.IMAP4(host=PROXY_HOST, port=int(PROXY_IMAP_PORT))
+    try:
+        await asyncio.wait_for(client.wait_hello_from_server(), timeout=FLOW_TIMEOUT)
+        await client.login(MONITOR_IMAP_USER, MONITOR_IMAP_PASSWORD)
+        await client.select("INBOX")
+        status, data = await client.uid_search(f'HEADER SUBJECT "{uid_target_subject}"')
+        if status != "OK" or not data or not data[0]:
+            raise AssertionError("probe message not visible via proxy for reject test")
+        uid = int(data[0].decode().split()[-1])
+        resp = await client.uid("store", str(uid), "+FLAGS", r"(\Flagged)")
+        text = " ".join(
+            bytes(x).decode("utf-8", "replace") if isinstance(x, (bytes, bytearray)) else str(x)
+            for x in ([resp.result] + list(resp.lines))
+        )
+        m = _OP_ID_RE.search(text)
+        if not m:
+            raise AssertionError(f"no op_id in STAGE response for flag write: {text!r}")
+        return m.group(1), uid
+    finally:
+        try:
+            await client.logout()
+        except Exception:
+            pass
+
+
+# --------------------------------------------------------------------------
+# Checks — credentialed proxy flow
+#
+# Fully implemented. They self-skip (graceful degradation) until the
+# enterprise deploy/ops wiring exposes the proxy ports + provisions the
+# monitor mailbox secret; the instant those env vars are present, the real
+# flow runs with no further code change. Tracking: #18 follow-on.
 # --------------------------------------------------------------------------
 
 
+def _proxy_smtp_ready() -> Optional[str]:
+    """Return None if the SMTP write->approve->deliver flow can run, else a
+    human-readable reason it must be skipped."""
+    missing = [
+        n
+        for n, v in (
+            ("NUVRAIL_STAGING_MONITOR_IMAP_USER", MONITOR_IMAP_USER),
+            ("NUVRAIL_STAGING_MONITOR_IMAP_PASSWORD", MONITOR_IMAP_PASSWORD),
+            ("NUVRAIL_STAGING_PROXY_SMTP_PORT", PROXY_SMTP_PORT),
+            ("NUVRAIL_STAGING_MONITOR_API_TOKEN", MONITOR_API_TOKEN),
+        )
+        if not v
+    ]
+    if missing:
+        return (
+            "credentialed SMTP flow not wired yet — missing "
+            + ", ".join(missing)
+            + ". Needs enterprise deploy/ops wiring (proxy port exposure + "
+            "monitor mailbox secret). Tracking: #18 follow-on."
+        )
+    return None
+
+
 def check_proxy_write_approve_deliver(client: httpx.Client, c: Check) -> None:
-    monitor_user = os.environ.get("NUVRAIL_STAGING_MONITOR_IMAP_USER")
-    proxy_imap_port = os.environ.get("NUVRAIL_STAGING_PROXY_IMAP_PORT")
-    if not monitor_user or not proxy_imap_port:
-        return c.skip(
-            "no monitor mailbox / proxy IMAP port exposed on staging yet — "
-            "needs enterprise deploy wiring (NUVRAIL_STAGING_MONITOR_IMAP_USER + "
-            "NUVRAIL_STAGING_PROXY_IMAP_PORT). Tracking: #18 follow-on."
+    """End-to-end proof the DEPLOYED SMTP proxy stages a send, the approval
+    API executes it against upstream, and the message actually lands:
+        SMTP-via-proxy -> 250 [STAGED op_x] -> GET /operations shows pending
+        -> POST /operations/{op}/approve -> direct IMAP confirms delivery
+        -> cleanup (delete probe + reject any stragglers).
+    """
+    reason = _proxy_smtp_ready()
+    if reason:
+        return c.skip(reason) and None
+
+    subject = f"nuvrail-staging-monitor-{uuid.uuid4().hex[:12]}"
+    auth = {"Authorization": f"Bearer {MONITOR_API_TOKEN}"}
+
+    op_id = asyncio.run(_smtp_stage_via_proxy(subject))
+
+    # The op must surface as pending on the approval API.
+    detail = client.get(f"{API}/operations/{op_id}", headers=auth)
+    if detail.status_code != 200:
+        return c.fail(f"staged op {op_id} not visible: GET /operations -> {detail.status_code}") and None
+    if detail.json().get("status") not in ("pending", "staged"):
+        return c.fail(f"op {op_id} unexpected status: {detail.json().get('status')}") and None
+
+    # Approve -> proxy relays to upstream SMTP.
+    appr = client.post(f"{API}/operations/{op_id}/approve", headers=auth)
+    if appr.status_code not in (200, 202):
+        return c.fail(f"approve {op_id} -> {appr.status_code}: {appr.text[:200]}") and None
+
+    uid = asyncio.run(_imap_search_subject(subject))
+    if uid is None:
+        return c.fail(
+            f"approved op {op_id} but message '{subject}' did not arrive within {FLOW_TIMEOUT:.0f}s"
         ) and None
-    # Implemented once the staging gateway exposes its proxy ports; reuses the
-    # aioimaplib/aiosmtplib helpers in tests/e2e/helpers.py against the
-    # deployed proxy endpoint rather than an in-process one.
-    return c.skip("proxy endpoint reachable but flow not yet implemented for staging") and None
+
+    asyncio.run(_imap_delete_uid(uid))
+    c.ok(f"SMTP stage->approve->deliver green (op={op_id}, uid={uid}); probe cleaned up")
 
 
 def check_rejection_revert(client: httpx.Client, c: Check) -> None:
-    if not os.environ.get("NUVRAIL_STAGING_MONITOR_IMAP_USER"):
+    """Proof the DEPLOYED IMAP proxy stages a write, a rejection reverts
+    local state, and the proxy surfaces the revert (the core Nuvrail trick:
+    rejection => unsolicited FETCH / reverted flags on the next command).
+        deliver probe -> IMAP-proxy STORE +FLAGS \\Flagged -> [STAGED op_x]
+        -> POST /operations/{op}/reject -> op status == rejected
+        -> direct IMAP confirms the flag was NOT applied upstream (reverted).
+    """
+    reason = _proxy_smtp_ready()
+    if reason:
+        return c.skip(reason.replace("SMTP flow", "rejection/revert flow")) and None
+    if not PROXY_IMAP_PORT:
         return c.skip(
-            "rejection/revert + unsolicited-FETCH proof needs the monitor mailbox "
-            "credential (enterprise wiring); skipped. Tracking: #18 follow-on."
+            "rejection/revert needs NUVRAIL_STAGING_PROXY_IMAP_PORT exposed "
+            "(enterprise wiring). Tracking: #18 follow-on."
         ) and None
-    return c.skip("monitor mailbox present but rejection/revert flow not yet implemented") and None
+
+    auth = {"Authorization": f"Bearer {MONITOR_API_TOKEN}"}
+    subject = f"nuvrail-staging-reject-{uuid.uuid4().hex[:12]}"
+
+    # Seed a message to operate on: stage a send + approve it so it exists.
+    seed_op = asyncio.run(_smtp_stage_via_proxy(subject))
+    seed_appr = client.post(f"{API}/operations/{seed_op}/approve", headers=auth)
+    if seed_appr.status_code not in (200, 202):
+        return c.fail(f"seed approve -> {seed_appr.status_code}") and None
+    if asyncio.run(_imap_search_subject(subject)) is None:
+        return c.fail("seed message for reject test never delivered") and None
+
+    # Stage a flag write via the proxy, then reject it.
+    op_id, uid = asyncio.run(_imap_stage_flag_via_proxy(subject))
+    rej = client.post(f"{API}/operations/{op_id}/reject", headers=auth)
+    if rej.status_code not in (200, 202):
+        return c.fail(f"reject {op_id} -> {rej.status_code}: {rej.text[:200]}") and None
+
+    detail = client.get(f"{API}/operations/{op_id}", headers=auth)
+    if detail.status_code != 200 or detail.json().get("status") != "rejected":
+        return c.fail(
+            f"op {op_id} not 'rejected' after reject: "
+            f"{detail.status_code} {detail.json().get('status') if detail.status_code==200 else ''}"
+        ) and None
+
+    # Ground truth: the \\Flagged flag must NOT be present upstream (reverted).
+    flagged = asyncio.run(_imap_uid_has_flag(uid, "\\Flagged"))
+    asyncio.run(_imap_delete_uid(uid))
+    if flagged:
+        return c.fail(
+            f"rejected op {op_id} but \\Flagged was applied upstream on uid {uid} — revert failed"
+        ) and None
+    c.ok(f"IMAP stage->reject->revert green (op={op_id}, uid={uid}); flag correctly not applied")
+
+
+async def _imap_uid_has_flag(uid: int, flag: str) -> bool:
+    """Direct (non-proxy) IMAP: does the message carry the given flag?"""
+    import aioimaplib
+
+    host = UPSTREAM_IMAP_HOST or PROXY_HOST
+    client = aioimaplib.IMAP4_SSL(host=host, port=UPSTREAM_IMAP_PORT)
+    try:
+        await client.wait_hello_from_server()
+        await client.login(MONITOR_IMAP_USER, MONITOR_IMAP_PASSWORD)
+        await client.select("INBOX")
+        status, data = await client.uid("fetch", str(uid), "(FLAGS)")
+        if status != "OK":
+            return False
+        text = b"".join(
+            bytes(x) if isinstance(x, (bytes, bytearray)) else b"" for x in data
+        ).decode("utf-8", "replace")
+        m = re.search(r"FLAGS\s*\(([^)]*)\)", text, re.IGNORECASE)
+        return bool(m and flag in m.group(1))
+    finally:
+        try:
+            await client.logout()
+        except Exception:
+            pass
 
 
 PUBLIC_CHECKS = [
