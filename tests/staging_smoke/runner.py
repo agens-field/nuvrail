@@ -75,19 +75,38 @@ import httpx
 # --------------------------------------------------------------------------
 # Configuration (env-driven; safe defaults point at the known staging apps)
 # --------------------------------------------------------------------------
+#
+# WHY _env() and not os.environ.get(): GitHub Actions injects an *empty
+# string* (not "absent") for an unset `${{ vars.X }}` / `${{ secrets.X }}`.
+# Plain os.environ.get("X", default) then returns "" — the empty value is
+# "present" — which silently defeats every default below. The symptom is a
+# monitor that runs every public check against "" and reports a wall of
+# `UnsupportedProtocol: Request URL is missing an 'http://'...` FAILURES
+# (see #80) instead of either passing on the safe defaults or skipping the
+# credentialed flows. _env() treats blank/whitespace-only as unset, so an
+# unset workflow var falls back to the default and an unset secret becomes
+# None (=> graceful skip), exactly as the design comments promise.
 
-GATEWAY_URL = os.environ.get(
+
+def _env(key: str, default: Optional[str] = None) -> Optional[str]:
+    val = os.environ.get(key)
+    if val is None or val.strip() == "":
+        return default
+    return val
+
+
+GATEWAY_URL = _env(
     "NUVRAIL_STAGING_GATEWAY_URL", "https://nuvrail-staging-gateway.fly.dev"
 ).rstrip("/")
-WEB_URL = os.environ.get(
+WEB_URL = _env(
     "NUVRAIL_STAGING_WEB_URL", "https://nuvrail-staging-web.fly.dev"
 ).rstrip("/")
 # Origin that MUST be rejected by staging CORS (production web app).
-PROD_ORIGIN = os.environ.get(
+PROD_ORIGIN = _env(
     "NUVRAIL_PROD_WEB_ORIGIN", "https://nuvrail-app.fly.dev"
 )
 # Per-request network timeout (seconds). fly cold-starts can be slow.
-HTTP_TIMEOUT = float(os.environ.get("NUVRAIL_STAGING_HTTP_TIMEOUT", "30"))
+HTTP_TIMEOUT = float(_env("NUVRAIL_STAGING_HTTP_TIMEOUT", "30"))
 
 API = f"{GATEWAY_URL}/api/v1"
 
@@ -107,20 +126,20 @@ def _proxy_host_default() -> str:
     return re.sub(r"^https?://", "", GATEWAY_URL).split("/")[0]
 
 
-PROXY_HOST = os.environ.get("NUVRAIL_STAGING_PROXY_HOST", _proxy_host_default())
-MONITOR_IMAP_USER = os.environ.get("NUVRAIL_STAGING_MONITOR_IMAP_USER")
-MONITOR_IMAP_PASSWORD = os.environ.get("NUVRAIL_STAGING_MONITOR_IMAP_PASSWORD")
-PROXY_IMAP_PORT = os.environ.get("NUVRAIL_STAGING_PROXY_IMAP_PORT")
-PROXY_SMTP_PORT = os.environ.get("NUVRAIL_STAGING_PROXY_SMTP_PORT")
+PROXY_HOST = _env("NUVRAIL_STAGING_PROXY_HOST", _proxy_host_default())
+MONITOR_IMAP_USER = _env("NUVRAIL_STAGING_MONITOR_IMAP_USER")
+MONITOR_IMAP_PASSWORD = _env("NUVRAIL_STAGING_MONITOR_IMAP_PASSWORD")
+PROXY_IMAP_PORT = _env("NUVRAIL_STAGING_PROXY_IMAP_PORT")
+PROXY_SMTP_PORT = _env("NUVRAIL_STAGING_PROXY_SMTP_PORT")
 # Bearer token for the approval REST API account that owns the monitor agent
 # (so the monitor can list + approve/reject its own staged operations).
-MONITOR_API_TOKEN = os.environ.get("NUVRAIL_STAGING_MONITOR_API_TOKEN")
+MONITOR_API_TOKEN = _env("NUVRAIL_STAGING_MONITOR_API_TOKEN")
 # Direct (non-proxy) upstream IMAP for ground-truth delivery verification.
-UPSTREAM_IMAP_HOST = os.environ.get("NUVRAIL_STAGING_UPSTREAM_IMAP_HOST")
-UPSTREAM_IMAP_PORT = int(os.environ.get("NUVRAIL_STAGING_UPSTREAM_IMAP_PORT", "993"))
+UPSTREAM_IMAP_HOST = _env("NUVRAIL_STAGING_UPSTREAM_IMAP_HOST")
+UPSTREAM_IMAP_PORT = int(_env("NUVRAIL_STAGING_UPSTREAM_IMAP_PORT", "993"))
 
 # How long to wait for an approved message to land / a rejection to revert.
-FLOW_TIMEOUT = float(os.environ.get("NUVRAIL_STAGING_FLOW_TIMEOUT", "25"))
+FLOW_TIMEOUT = float(_env("NUVRAIL_STAGING_FLOW_TIMEOUT", "25"))
 
 
 @dataclass
