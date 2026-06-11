@@ -357,7 +357,12 @@ class ExportAuditEntry(BaseModel):
     operation_id: Optional[str] = None
     event: str
     actor: Optional[str] = None
+    agent_id: Optional[str] = None
+    op_type: Optional[str] = None
     detail: Optional[dict] = None
+    # Hash-chain fields so the exported audit trail is independently verifiable.
+    prev_hash: Optional[str] = None
+    entry_hash: Optional[str] = None
 
     @field_validator("detail", mode="before")
     @classmethod
@@ -368,6 +373,27 @@ class ExportAuditEntry(BaseModel):
             except Exception:  # noqa: BLE001
                 return None
         return v
+
+
+class ExportMailboxMessage(BaseModel):
+    """Message metadata held in the local mailbox mirror for this user.
+
+    Envelope metadata only — Nuvrail does not store the body of messages the
+    agent merely reads. Disclosed in the Privacy Policy; included here so the
+    export reflects everything we hold about the user.
+    """
+    folder: str
+    uid: int
+    subject: Optional[str] = None
+    sender: Optional[str] = None
+    date_sent: Optional[int] = None
+    flags: Optional[str] = None
+
+
+class ExportPushSubscription(BaseModel):
+    id: int
+    endpoint: str
+    created_at: int
 
 
 class ExportAutoApprovalRule(BaseModel):
@@ -389,6 +415,11 @@ class DataExportResponse(BaseModel):
     operations: List[ExportOperation]
     audit_log: List[ExportAuditEntry]
     auto_approval_rules: List[ExportAutoApprovalRule]
+    mailbox_messages: List[ExportMailboxMessage] = []
+    push_subscriptions: List[ExportPushSubscription] = []
+    # The audit-log chain head at export time, so the holder can later detect a
+    # rewrite of the log up to this point.
+    audit_chain_head: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
