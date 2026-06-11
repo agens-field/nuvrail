@@ -173,3 +173,41 @@ async def test_wildcard_mode_allows_any_origin() -> None:
         resp = await client.get("/ping", headers={"Origin": "https://anything.example"})
     assert resp.status_code == 200
     assert resp.headers.get("access-control-allow-origin") == "*"
+
+
+# ---------------------------------------------------------------------------
+# Production fail-closed resolution (api.main.resolve_cors_origins)
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_explicit_origins_parsed() -> None:
+    from api.main import resolve_cors_origins
+
+    assert resolve_cors_origins("https://a.com, https://b.com", "prod") == [
+        "https://a.com", "https://b.com",
+    ]
+
+
+def test_resolve_empty_in_dev_falls_back_to_wildcard() -> None:
+    from api.main import resolve_cors_origins
+
+    assert resolve_cors_origins("", "dev") == ["*"]
+    assert resolve_cors_origins("   ", "test") == ["*"]
+
+
+@pytest.mark.parametrize("env", ["prod", "production", "Prod", "  PRODUCTION  "])
+def test_resolve_empty_in_production_fails_closed(env: str) -> None:
+    """An unset CORS allowlist in production must refuse to start, not wildcard."""
+    from api.main import resolve_cors_origins
+
+    with pytest.raises(RuntimeError, match="NUVRAIL_CORS_ORIGINS must be set"):
+        resolve_cors_origins("", env)
+
+
+def test_resolve_explicit_origins_in_production_ok() -> None:
+    """Production with an explicit allowlist resolves normally (no raise)."""
+    from api.main import resolve_cors_origins
+
+    assert resolve_cors_origins("https://app.nuvrail.com", "production") == [
+        "https://app.nuvrail.com",
+    ]

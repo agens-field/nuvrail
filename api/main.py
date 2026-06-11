@@ -140,17 +140,37 @@ app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 app.add_middleware(SlowAPIMiddleware)
 
-_CORS_ORIGINS_RAW = os.environ.get("NUVRAIL_CORS_ORIGINS", "")
-if _CORS_ORIGINS_RAW.strip():
-    _CORS_ORIGINS = [o.strip() for o in _CORS_ORIGINS_RAW.split(",") if o.strip()]
-else:
-    # Default: allow all origins in dev (no env var set).
-    # Always set NUVRAIL_CORS_ORIGINS in production.
+def resolve_cors_origins(raw: str, env: str) -> list[str]:
+    """Resolve the allowed CORS origins, failing closed in production.
+
+    - Explicit ``NUVRAIL_CORS_ORIGINS`` (comma-separated) → that parsed list.
+    - Empty in **production** (``NUVRAIL_ENV`` in {prod, production}) → raises
+      RuntimeError. A wildcard CORS policy lets any website drive the API in a
+      logged-in user's browser, so a missing env var must not silently ship as
+      an open policy — refuse to start instead.
+    - Empty otherwise (dev/test/ci) → ``["*"]`` for local convenience.
+    """
+    parsed = [o.strip() for o in raw.split(",") if o.strip()]
+    if parsed:
+        return parsed
+    if env.strip().lower() in ("prod", "production"):
+        raise RuntimeError(
+            f"NUVRAIL_CORS_ORIGINS must be set when NUVRAIL_ENV={env!r}. "
+            "Refusing to start with wildcard ('*') CORS in production — set it "
+            "to your deployed origin(s), e.g. https://app.nuvrail.com."
+        )
     logger.warning(
-        "NUVRAIL_CORS_ORIGINS is not set — allowing all origins (*). "
-        "Set it to your deployed URL (e.g. https://nuvrail.example.com) in production."
+        "NUVRAIL_CORS_ORIGINS is not set — allowing all origins (*) in "
+        "non-production env %r. This is refused in production (NUVRAIL_ENV=prod).",
+        env,
     )
-    _CORS_ORIGINS = ["*"]
+    return ["*"]
+
+
+_CORS_ORIGINS = resolve_cors_origins(
+    os.environ.get("NUVRAIL_CORS_ORIGINS", ""),
+    os.environ.get("NUVRAIL_ENV", "dev"),
+)
 
 app.add_middleware(
     CORSMiddleware,
