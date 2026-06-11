@@ -794,6 +794,7 @@ async def handle_smtp_client(
                         smtp_envelope=envelope,
                         intent_label=send_intent,
                         intent_confidence=send_intent_conf,
+                        db_path=_db_path,
                     )
                     staged_resp = (
                         f"250 OK [STAGED] Send queued for approval — ID: {op_id}\r\n"
