@@ -18,6 +18,7 @@ Query parameters for GET /audit:
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -27,6 +28,7 @@ from fastapi.responses import JSONResponse
 from api.auth import get_current_user
 from api.models import AuditEntry, AuditListResponse
 from api.routes.operations import get_db_path
+from gateway.audit import get_chain_head, last_verification_result, verify_audit_chain
 from gateway.state_db import get_db
 
 router = APIRouter()
@@ -305,6 +307,34 @@ async def export_audit(
     return JSONResponse(
         content={"audit_log": entries, "total": len(entries)},
         headers={"Content-Disposition": "attachment; filename=nuvrail-audit.json"},
+    )
+
+
+@router.get("/audit/verify")
+async def verify_audit(
+    db_path: Path = Depends(get_db_path),
+    current_user: dict = Depends(get_current_user),
+) -> JSONResponse:
+    """Verify the integrity of the append-only audit-log hash chain on demand.
+
+    The chain is global (a single tamper-evident chain across all activity), so
+    this returns a summary only — whether the chain is intact, how many rows are
+    broken, and the current chain head — never another account's row contents.
+    Per-row breakage detail is written to the server log, not returned here.
+
+    Also reports ``last_background_check`` so callers can see the most recent
+    result from the scheduled verification loop without forcing a fresh scan.
+    """
+    ok, errors = await verify_audit_chain(db_path)
+    head = await get_chain_head(db_path)
+    return JSONResponse(
+        content={
+            "ok": ok,
+            "broken_count": len(errors),
+            "chain_head": head,
+            "verified_at": int(time.time()),
+            "last_background_check": last_verification_result(),
+        }
     )
 
 

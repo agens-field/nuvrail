@@ -32,6 +32,7 @@ from slowapi.middleware import SlowAPIMiddleware
 from api.limiter import limiter
 from api.routes import audit, auth, features, health, oauth2, operations, push
 from api.routes import account
+from gateway.audit import run_audit_verification_loop
 from gateway.expiry import run_expiry_loop
 from gateway.extensions import load_plugins
 from gateway.scheduler import run_scheduled_execution_loop
@@ -52,6 +53,10 @@ _SCHEDULER_INITIAL_DELAY = float(os.environ.get("NUVRAIL_SCHEDULER_INITIAL_DELAY
 # Sweep daily — the window is months, so daily granularity is ample.
 _RETENTION_INTERVAL = float(os.environ.get("NUVRAIL_RETENTION_INTERVAL_SECONDS", "86400"))
 _RETENTION_INITIAL_DELAY = float(os.environ.get("NUVRAIL_RETENTION_INITIAL_DELAY_SECONDS", "120"))
+# Audit-log chain verification: the hash chain is only tamper-*evident* if
+# something verifies it. Sweep hourly and alert (ERROR log) on any break.
+_AUDIT_VERIFY_INTERVAL = float(os.environ.get("NUVRAIL_AUDIT_VERIFY_INTERVAL_SECONDS", "3600"))
+_AUDIT_VERIFY_INITIAL_DELAY = float(os.environ.get("NUVRAIL_AUDIT_VERIFY_INITIAL_DELAY_SECONDS", "45"))
 
 
 @asynccontextmanager
@@ -98,16 +103,27 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         ),
         name="nuvrail-retention-loop",
     )
+    # Start audit-log chain verification loop (tamper-evidence is only useful if
+    # something checks it; logs at ERROR on any chain break).
+    audit_verify_task = asyncio.create_task(
+        run_audit_verification_loop(
+            db_path=DB_PATH,
+            interval_seconds=_AUDIT_VERIFY_INTERVAL,
+            initial_delay_seconds=_AUDIT_VERIFY_INITIAL_DELAY,
+        ),
+        name="nuvrail-audit-verify-loop",
+    )
     logger.info(
         "Nuvrail API started — expiry every %.0fs, scrubber every %.0fs, "
-        "scheduler every %.0fs, retention every %.0fs",
+        "scheduler every %.0fs, retention every %.0fs, audit-verify every %.0fs",
         _EXPIRY_INTERVAL, _SCRUBBER_INTERVAL, _SCHEDULER_INTERVAL, _RETENTION_INTERVAL,
+        _AUDIT_VERIFY_INTERVAL,
     )
 
     yield
 
     # Cancel background tasks on shutdown
-    for task in (expiry_task, scrubber_task, scheduler_task, retention_task):
+    for task in (expiry_task, scrubber_task, scheduler_task, retention_task, audit_verify_task):
         task.cancel()
         try:
             await task

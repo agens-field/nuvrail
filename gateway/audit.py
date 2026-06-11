@@ -32,10 +32,14 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import logging
+import time
 from pathlib import Path
 from typing import Optional
 
 import aiosqlite
+
+logger = logging.getLogger(__name__)
 
 # Sentinel prev_hash for the very first row in the chain.
 GENESIS_HASH: str = "0" * 64
@@ -273,3 +277,88 @@ async def verify_audit_chain(db_path: Path) -> tuple[bool, list[str]]:
         expected_prev = row["entry_hash"]
 
     return (len(errors) == 0), errors
+
+
+# ---------------------------------------------------------------------------
+# Tamper-evidence surfacing — the hash chain is only useful if something
+# actually verifies it. These expose on-demand + scheduled verification and the
+# current chain head (so a client can record it and later prove the log up to
+# that point has not been rewritten).
+# ---------------------------------------------------------------------------
+
+# Result of the most recent background verification pass, for observability /
+# health probes. ``checked_at`` is None until the loop has run once.
+_last_verification: dict = {"checked_at": None, "ok": None, "broken_count": 0}
+
+
+def last_verification_result() -> dict:
+    """Return a copy of the most recent background verification result."""
+    return dict(_last_verification)
+
+
+async def get_chain_head(db_path: Path) -> Optional[str]:
+    """Return the entry_hash of the most recent hashed audit row (the chain
+    head), or None if the chain is empty.
+
+    A client that records this value can later detect any rewrite of the log up
+    to this point: re-verifying the chain and re-deriving the head must still
+    yield the same hash.
+    """
+    async with aiosqlite.connect(db_path) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            """
+            SELECT entry_hash FROM audit_log
+            WHERE entry_hash IS NOT NULL
+            ORDER BY id DESC
+            LIMIT 1
+            """
+        ) as cur:
+            row = await cur.fetchone()
+    return row["entry_hash"] if row else None
+
+
+async def run_audit_verification_loop(
+    db_path: Path,
+    interval_seconds: float = 3600.0,
+    initial_delay_seconds: float = 45.0,
+) -> None:
+    """Asyncio background task: periodically verify audit-log chain integrity.
+
+    The hash chain makes tampering *detectable*, but only if something runs the
+    check. This loop is that something: on each pass it walks the chain and, on
+    any break, logs at ERROR (the signal an alerting pipeline should page on).
+    The latest result is also stored for ``last_verification_result()`` / the
+    /audit/verify endpoint and health surfacing.
+
+    Run via asyncio.create_task() in the FastAPI lifespan handler. Exits cleanly
+    on asyncio.CancelledError.
+    """
+    logger.info(
+        "[audit-verify] Loop starting — interval=%.0fs, initial_delay=%.0fs",
+        interval_seconds, initial_delay_seconds,
+    )
+    try:
+        await asyncio.sleep(initial_delay_seconds)
+        while True:
+            try:
+                ok, errors = await verify_audit_chain(db_path)
+                _last_verification.update(
+                    checked_at=int(time.time()), ok=ok, broken_count=len(errors)
+                )
+                if not ok:
+                    # SECURITY-critical: the append-only guarantee has been
+                    # violated. Surface loudly; an alert should fire on this line.
+                    logger.error(
+                        "[audit-verify] AUDIT LOG INTEGRITY FAILURE — %d broken "
+                        "row(s): %s",
+                        len(errors), "; ".join(errors[:10]),
+                    )
+                else:
+                    logger.debug("[audit-verify] chain intact")
+            except Exception as exc:  # noqa: BLE001 — a sweep error must not kill the loop
+                logger.error("[audit-verify] verification run failed: %s", exc)
+            await asyncio.sleep(interval_seconds)
+    except asyncio.CancelledError:
+        logger.info("[audit-verify] Loop cancelled — shutting down")
+        raise

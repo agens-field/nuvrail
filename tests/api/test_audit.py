@@ -98,6 +98,24 @@ async def test_audit_list_empty_returns_empty(client: httpx.AsyncClient) -> None
     assert isinstance(data["entries"], list)
 
 
+async def test_audit_verify_endpoint_reports_intact_chain(
+    client: httpx.AsyncClient, db_path: Path
+) -> None:
+    """GET /audit/verify returns a summary: ok + broken_count + chain head."""
+    await _create_op_with_audit(db_path)  # writes a hash-chained 'staged' row
+
+    resp = await client.get("/api/v1/audit/verify")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["ok"] is True
+    assert data["broken_count"] == 0
+    assert isinstance(data["chain_head"], str) and len(data["chain_head"]) == 64
+    assert "verified_at" in data
+    assert "last_background_check" in data
+    # Summary only — no per-row detail / other accounts' content leaks out.
+    assert "errors" not in data
+
+
 async def test_audit_intent_label_exposed_and_filterable(
     client: httpx.AsyncClient, db_path: Path
 ) -> None:
