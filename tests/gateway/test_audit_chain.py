@@ -19,6 +19,8 @@ Test DB layout:
 """
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 import pytest_asyncio
 import aiosqlite
@@ -28,8 +30,11 @@ from pathlib import Path
 from gateway.audit import (
     GENESIS_HASH,
     _compute_entry_hash,
+    get_chain_head,
     insert_audit_event,
+    last_verification_result,
     record_audit_event,
+    run_audit_verification_loop,
     verify_audit_chain,
 )
 from gateway.state_db import get_db, init_db
@@ -195,6 +200,80 @@ async def test_verify_chain_detects_tamper(db_conn, db_path):
     ok, errors = await verify_audit_chain(db_path)
     assert ok is False
     assert any("2" in e for e in errors), f"Expected error mentioning row 2; got: {errors}"
+
+
+# ---------------------------------------------------------------------------
+# get_chain_head — current chain head for client-side anchoring
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_chain_head_none_on_empty_db(db_path):
+    """An empty audit log has no chain head."""
+    assert await get_chain_head(db_path) is None
+
+
+@pytest.mark.asyncio
+async def test_get_chain_head_tracks_latest_entry_hash(db_conn, db_path):
+    """The head equals the entry_hash of the most recently inserted hashed row."""
+    for i in range(3):
+        await insert_audit_event(
+            db_conn, timestamp=4000 + i, event="staged", actor="ai_agent",
+        )
+        await db_conn.commit()
+
+    async with db_conn.execute(
+        "SELECT entry_hash FROM audit_log ORDER BY id DESC LIMIT 1"
+    ) as cur:
+        latest = (await cur.fetchone())["entry_hash"]
+
+    assert await get_chain_head(db_path) == latest
+
+
+# ---------------------------------------------------------------------------
+# run_audit_verification_loop — scheduled tamper-evidence sweep
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_verification_loop_records_result_and_alerts_on_tamper(
+    db_conn, db_path, caplog
+):
+    """One sweep records the result; a broken chain logs at ERROR (the alert)."""
+    import logging
+
+    for i in range(3):
+        await insert_audit_event(
+            db_conn, timestamp=5000 + i, event="staged", actor="ai_agent",
+        )
+        await db_conn.commit()
+    await db_conn.execute(
+        "UPDATE audit_log SET detail = '{\"tampered\": true}' WHERE id = 2"
+    )
+    await db_conn.commit()
+
+    # Run the loop just long enough for one immediate sweep, then cancel it.
+    with caplog.at_level(logging.ERROR, logger="gateway.audit"):
+        task = asyncio.create_task(
+            run_audit_verification_loop(
+                db_path, interval_seconds=3600, initial_delay_seconds=0
+            )
+        )
+        # Wait (with real time slices) until the first sweep records a result.
+        for _ in range(100):
+            await asyncio.sleep(0.02)
+            if last_verification_result()["checked_at"] is not None:
+                break
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    result = last_verification_result()
+    assert result["ok"] is False
+    assert result["broken_count"] >= 1
+    assert any("INTEGRITY FAILURE" in r.message for r in caplog.records)
 
 
 @pytest.mark.asyncio
