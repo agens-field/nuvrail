@@ -36,6 +36,7 @@ import logging
 import time
 from pathlib import Path
 
+from gateway.loop_health import record_heartbeat
 from gateway.state_db import DB_PATH, get_db
 
 logger = logging.getLogger(__name__)
@@ -143,10 +144,14 @@ async def run_scheduled_execution_loop(
         while True:
             try:
                 count = await execute_due_scheduled(db_path=db_path)
+                record_heartbeat("scheduler", interval_seconds=interval_seconds)
                 if count > 0:
                     logger.info("[scheduler] Executed %d scheduled operation(s)", count)
             except Exception as exc:  # noqa: BLE001
                 logger.error("[scheduler] Unexpected error during run: %s", exc)
+                record_heartbeat(
+                    "scheduler", interval_seconds=interval_seconds, ok=False, detail=str(exc)
+                )
             await asyncio.sleep(interval_seconds)
     except asyncio.CancelledError:
         logger.info("[scheduler] Loop cancelled — shutting down")

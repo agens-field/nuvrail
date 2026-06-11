@@ -55,9 +55,30 @@ class TestHealthEndpoint:
         resp = await client.get("/health")
         assert resp.status_code not in (401, 403)
 
-    async def test_keys_are_exactly_status_and_timestamp(
-        self, client: httpx.AsyncClient
-    ) -> None:
-        """Response body has exactly the two expected keys, nothing extra."""
+    async def test_body_keys(self, client: httpx.AsyncClient) -> None:
+        """Response body carries status, timestamp, and the loop-health block."""
         resp = await client.get("/health")
-        assert set(resp.json().keys()) == {"status", "timestamp"}
+        assert set(resp.json().keys()) == {"status", "timestamp", "loops_ok", "loops"}
+
+    async def test_loop_heartbeat_surfaced(self, client: httpx.AsyncClient) -> None:
+        """A recorded heartbeat appears under /health loops; stays 200 even when
+        a loop is stale (liveness must not depend on worker health)."""
+        from gateway import loop_health
+
+        loop_health.reset_heartbeats()
+        # A fresh heartbeat → not stale.
+        loop_health.record_heartbeat("scrubber", interval_seconds=3600)
+        resp = await client.get("/health")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["loops"]["scrubber"]["stale"] is False
+        assert body["loops_ok"] is True
+
+        # An old heartbeat → stale, but the probe is still 200.
+        loop_health.reset_heartbeats()
+        loop_health.record_heartbeat("scrubber", interval_seconds=3600, now=1)
+        resp = await client.get("/health")
+        assert resp.status_code == 200
+        assert resp.json()["loops"]["scrubber"]["stale"] is True
+        assert resp.json()["loops_ok"] is False
+        loop_health.reset_heartbeats()

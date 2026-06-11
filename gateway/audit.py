@@ -39,6 +39,8 @@ from typing import Optional
 
 import aiosqlite
 
+from gateway.loop_health import record_heartbeat
+
 logger = logging.getLogger(__name__)
 
 # Sentinel prev_hash for the very first row in the chain.
@@ -346,6 +348,10 @@ async def run_audit_verification_loop(
                 _last_verification.update(
                     checked_at=int(time.time()), ok=ok, broken_count=len(errors)
                 )
+                # The loop completed a run — record a heartbeat. (A broken chain
+                # is a separate signal, surfaced via the ERROR log + the
+                # /audit/verify endpoint, not a loop-health failure.)
+                record_heartbeat("audit-verify", interval_seconds=interval_seconds)
                 if not ok:
                     # SECURITY-critical: the append-only guarantee has been
                     # violated. Surface loudly; an alert should fire on this line.
@@ -358,6 +364,10 @@ async def run_audit_verification_loop(
                     logger.debug("[audit-verify] chain intact")
             except Exception as exc:  # noqa: BLE001 — a sweep error must not kill the loop
                 logger.error("[audit-verify] verification run failed: %s", exc)
+                record_heartbeat(
+                    "audit-verify", interval_seconds=interval_seconds, ok=False,
+                    detail=str(exc),
+                )
             await asyncio.sleep(interval_seconds)
     except asyncio.CancelledError:
         logger.info("[audit-verify] Loop cancelled — shutting down")

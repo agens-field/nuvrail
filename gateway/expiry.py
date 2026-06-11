@@ -37,7 +37,11 @@ import time
 from pathlib import Path
 
 from gateway.audit import insert_audit_event
+from gateway.loop_health import record_heartbeat
 from gateway.state_db import DB_PATH, get_db, insert_pending_reverts, restore_from_snapshot
+
+# Heartbeat name used for loop-health reporting (see gateway.loop_health).
+_LOOP_NAME = "expiry"
 
 logger = logging.getLogger(__name__)
 
@@ -164,12 +168,16 @@ async def run_expiry_loop(
         while True:
             try:
                 count = await expire_stale_operations(db_path=db_path)
+                record_heartbeat(_LOOP_NAME, interval_seconds=interval_seconds)
                 if count > 0:
                     logger.info("[expiry] Expired %d operation(s) this run", count)
                 else:
                     logger.debug("[expiry] No overdue operations found")
             except Exception as exc:  # noqa: BLE001
                 logger.error("[expiry] Unexpected error during expiry run: %s", exc)
+                record_heartbeat(
+                    _LOOP_NAME, interval_seconds=interval_seconds, ok=False, detail=str(exc)
+                )
 
             await asyncio.sleep(interval_seconds)
 

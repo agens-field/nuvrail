@@ -51,6 +51,7 @@ import time
 from pathlib import Path
 
 from gateway.credentials import purge_agent_upstream_secrets
+from gateway.loop_health import record_heartbeat
 from gateway.state_db import DB_PATH, get_db
 
 logger = logging.getLogger(__name__)
@@ -223,10 +224,14 @@ async def run_retention_loop(
         while True:
             try:
                 count = await purge_expired_deleted_users(db_path=db_path)
+                record_heartbeat("retention", interval_seconds=interval_seconds)
                 if count > 0:
                     logger.info("[retention] Purged %d account(s)", count)
             except Exception as exc:  # noqa: BLE001
                 logger.error("[retention] Unexpected error during sweep: %s", exc)
+                record_heartbeat(
+                    "retention", interval_seconds=interval_seconds, ok=False, detail=str(exc)
+                )
             await asyncio.sleep(interval_seconds)
     except asyncio.CancelledError:
         logger.info("[retention] Loop cancelled — shutting down")
