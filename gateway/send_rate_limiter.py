@@ -56,11 +56,28 @@ Design decisions (see also docs/anti-spam.md)
   operator gets a sane outbound ceiling. Enterprise plans may later *raise* or
   tune it per-tier; the floor lives here.
 
+Scopes (defence in depth)
+-------------------------
+A per-agent hourly cap alone is not enough: a user with N agents could send
+N×cap/hour, and an abuser staying just under the hourly cap could still send a
+large volume slowly. So three ceilings are enforced together, each fail-closed:
+
+  1. per-AGENT   / window (hour)   — the original runaway-agent ceiling
+  2. per-ACCOUNT / window (hour)   — summed across all the user's agents
+  3. per-ACCOUNT / day             — bounds slow-and-wide abuse under the hourly cap
+
+The account-scoped checks resolve the owning user from the agent and sum
+recipients across every agent that user owns (audit_log → agent_credentials).
+They are skipped only when the owner can't be resolved (e.g. unit tests using a
+synthetic agent id) — production sends always carry a real agent.
+
 Configuration (env)
 --------------------
-* ``NUVRAIL_SEND_MAX_PER_WINDOW``  — cap of outbound messages per window per
-  agent. Default 100. ``0`` disables the limiter (escape hatch).
-* ``NUVRAIL_SEND_WINDOW_SECONDS``  — rolling window length. Default 3600 (1h).
+* ``NUVRAIL_SEND_MAX_PER_WINDOW``          — per-agent cap per window. Default 100.
+* ``NUVRAIL_SEND_WINDOW_SECONDS``          — rolling window length. Default 3600 (1h).
+* ``NUVRAIL_ACCOUNT_SEND_MAX_PER_WINDOW``  — per-account cap per window. Default 300.
+* ``NUVRAIL_ACCOUNT_SEND_MAX_PER_DAY``     — per-account cap per 24h. Default 1000.
+Any cap of ``0`` disables that specific ceiling (escape hatch).
 """
 from __future__ import annotations
 
@@ -79,6 +96,10 @@ logger = logging.getLogger(__name__)
 # Phase-0 user. Both knobs are overridable via env.
 _DEFAULT_MAX_PER_WINDOW = 100
 _DEFAULT_WINDOW_SECONDS = 3600
+# Account-scoped ceilings (summed across all of a user's agents).
+_DEFAULT_ACCOUNT_MAX_PER_WINDOW = 300
+_DEFAULT_ACCOUNT_MAX_PER_DAY = 1000
+_DAY_SECONDS = 86400
 
 # The audit event recorded when an agent is throttled.
 SEND_RATE_EXCEEDED_EVENT = "send_rate_exceeded"
@@ -99,14 +120,16 @@ class SendRateLimitExceeded(Exception):
         requested: int,
         cap: int,
         window_seconds: int,
+        scope: str = "agent",
     ) -> None:
         self.agent_id = agent_id
         self.used = used
         self.requested = requested
         self.cap = cap
         self.window_seconds = window_seconds
+        self.scope = scope  # 'agent' | 'account' | 'account-daily'
         super().__init__(
-            f"Outbound send rate limit exceeded for agent={agent_id!r}: "
+            f"Outbound send rate limit exceeded ({scope}) for agent={agent_id!r}: "
             f"{used} already sent + {requested} requested > cap {cap} "
             f"per {window_seconds}s"
         )
@@ -114,13 +137,21 @@ class SendRateLimitExceeded(Exception):
 
 @dataclass(frozen=True)
 class SendRateConfig:
-    """Resolved limiter configuration. ``max_per_window == 0`` ⇒ disabled."""
+    """Resolved limiter configuration. Any cap of ``0`` disables that ceiling.
+
+    ``account_*`` default to 0 here so a hand-constructed config (e.g. in a unit
+    test) is per-agent only unless it opts in; production defaults come from
+    ``load_send_rate_config`` below.
+    """
 
     max_per_window: int
     window_seconds: int
+    account_max_per_window: int = 0
+    account_max_per_day: int = 0
 
     @property
     def enabled(self) -> bool:
+        """True if the per-agent ceiling is active."""
         return self.max_per_window > 0
 
 
@@ -153,6 +184,12 @@ def load_send_rate_config() -> SendRateConfig:
         max_per_window=_int_env("NUVRAIL_SEND_MAX_PER_WINDOW", _DEFAULT_MAX_PER_WINDOW),
         window_seconds=max(
             1, _int_env("NUVRAIL_SEND_WINDOW_SECONDS", _DEFAULT_WINDOW_SECONDS)
+        ),
+        account_max_per_window=_int_env(
+            "NUVRAIL_ACCOUNT_SEND_MAX_PER_WINDOW", _DEFAULT_ACCOUNT_MAX_PER_WINDOW
+        ),
+        account_max_per_day=_int_env(
+            "NUVRAIL_ACCOUNT_SEND_MAX_PER_DAY", _DEFAULT_ACCOUNT_MAX_PER_DAY
         ),
     )
 
@@ -192,6 +229,56 @@ async def _count_recent_sends(
     return int(row[0]) if row and row[0] is not None else 0
 
 
+async def _count_recent_sends_for_user(
+    user_id: int, *, since_ts: int, db_path: Path
+) -> int:
+    """Like ``_count_recent_sends`` but summed across ALL of a user's agents.
+
+    Joins executed ``smtp_send`` audit rows to ``agent_credentials`` on
+    ``agent_id`` to scope by owning user, so the account ceiling can't be
+    side-stepped by spreading sends across multiple agents.
+    """
+    sql = """
+        SELECT COALESCE(
+            SUM(
+                CASE
+                    WHEN json_valid(a.detail)
+                         AND json_extract(a.detail, '$.recipient_count') IS NOT NULL
+                    THEN json_extract(a.detail, '$.recipient_count')
+                    ELSE 1
+                END
+            ), 0)
+        FROM audit_log a
+        JOIN agent_credentials ac ON a.agent_id = ac.id
+        WHERE a.event = 'executed'
+          AND a.op_type = 'smtp_send'
+          AND ac.user_id = ?
+          AND a.timestamp >= ?
+    """
+    async with get_db(db_path) as db:
+        async with db.execute(sql, (user_id, since_ts)) as cur:
+            row = await cur.fetchone()
+    return int(row[0]) if row and row[0] is not None else 0
+
+
+async def _resolve_owner_user_id(
+    agent_id: str | None, *, db_path: Path
+) -> int | None:
+    """Return the user_id that owns ``agent_id``, or None if unresolvable.
+
+    None means the account-scoped ceilings are skipped (e.g. synthetic agent ids
+    in unit tests). Production sends always carry a real agent.
+    """
+    if agent_id is None:
+        return None
+    async with get_db(db_path) as db:
+        async with db.execute(
+            "SELECT user_id FROM agent_credentials WHERE id = ?", (agent_id,)
+        ) as cur:
+            row = await cur.fetchone()
+    return int(row[0]) if row and row[0] is not None else None
+
+
 async def enforce_send_rate(
     agent_id: str | None,
     recipient_count: int,
@@ -212,41 +299,59 @@ async def enforce_send_rate(
             ``send_rate_exceeded`` audit row (so it shares the failure path).
     """
     cfg = config or load_send_rate_config()
-    if not cfg.enabled:
-        return
 
     # A send with no recipients shouldn't reach here, but guard anyway: treat
     # as at least one message so it can never be a zero-cost bypass.
     requested = max(1, recipient_count)
     now_ts = now if now is not None else int(time.time())
-    since_ts = now_ts - cfg.window_seconds
 
-    try:
-        used = await _count_recent_sends(agent_id, since_ts=since_ts, db_path=db_path)
-    except Exception as exc:  # fail closed — never let a count error open the gate
-        logger.error(
-            "[send-rate] count query failed for agent=%s — refusing send "
-            "(fail-closed): %s",
-            agent_id, exc,
-        )
-        raise SendRateLimitExceeded(
-            agent_id=agent_id,
-            used=-1,
-            requested=requested,
-            cap=cfg.max_per_window,
-            window_seconds=cfg.window_seconds,
-        ) from exc
+    async def _check(scope: str, cap: int, window_seconds: int, counter) -> None:
+        """Enforce one ceiling. Fail closed: a count error refuses the send."""
+        if cap <= 0:
+            return  # this ceiling disabled
+        since_ts = now_ts - window_seconds
+        try:
+            used = await counter(since_ts)
+        except Exception as exc:  # fail closed — a count error never opens the gate
+            logger.error(
+                "[send-rate] %s count query failed for agent=%s — refusing send "
+                "(fail-closed): %s", scope, agent_id, exc,
+            )
+            raise SendRateLimitExceeded(
+                agent_id=agent_id, used=-1, requested=requested, cap=cap,
+                window_seconds=window_seconds, scope=scope,
+            ) from exc
+        if used + requested > cap:
+            logger.warning(
+                "[SECURITY][send-rate] %s cap exceeded agent=%s used=%d "
+                "requested=%d cap=%d window=%ss — refusing send",
+                scope, agent_id, used, requested, cap, window_seconds,
+            )
+            raise SendRateLimitExceeded(
+                agent_id=agent_id, used=used, requested=requested, cap=cap,
+                window_seconds=window_seconds, scope=scope,
+            )
 
-    if used + requested > cfg.max_per_window:
-        logger.warning(
-            "[SECURITY][send-rate] cap exceeded agent=%s used=%d requested=%d "
-            "cap=%d window=%ss — refusing send",
-            agent_id, used, requested, cfg.max_per_window, cfg.window_seconds,
-        )
-        raise SendRateLimitExceeded(
-            agent_id=agent_id,
-            used=used,
-            requested=requested,
-            cap=cfg.max_per_window,
-            window_seconds=cfg.window_seconds,
-        )
+    # 1. Per-agent / window — the original runaway-agent ceiling.
+    await _check(
+        "agent", cfg.max_per_window, cfg.window_seconds,
+        lambda since: _count_recent_sends(agent_id, since_ts=since, db_path=db_path),
+    )
+
+    # 2 & 3. Account-scoped ceilings — only when the owning user is resolvable
+    # (skipped for synthetic agent ids in unit tests).
+    if cfg.account_max_per_window > 0 or cfg.account_max_per_day > 0:
+        user_id = await _resolve_owner_user_id(agent_id, db_path=db_path)
+        if user_id is not None:
+            await _check(
+                "account", cfg.account_max_per_window, cfg.window_seconds,
+                lambda since: _count_recent_sends_for_user(
+                    user_id, since_ts=since, db_path=db_path
+                ),
+            )
+            await _check(
+                "account-daily", cfg.account_max_per_day, _DAY_SECONDS,
+                lambda since: _count_recent_sends_for_user(
+                    user_id, since_ts=since, db_path=db_path
+                ),
+            )
