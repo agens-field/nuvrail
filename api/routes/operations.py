@@ -151,9 +151,21 @@ async def _fetch_message_previews(
 
     try:
         async with _get_db(db_path) as db:
-            # Resolve folder name to folder_id
+            # Resolve folder name to folder_id — scoped to THIS operation's owning
+            # user. Folder names are unique only within a tenant (UNIQUE(user_id,
+            # name)), so resolving by name alone could match another tenant's
+            # same-named folder (e.g. "INBOX") and leak their message previews,
+            # especially since UIDs overlap heavily across mailboxes. Derive the
+            # owner from the operation's agent rather than trusting the name.
             async with db.execute(
-                "SELECT id FROM folders WHERE name = ?", (folder_name,)
+                """
+                SELECT id FROM folders
+                WHERE name = ?
+                  AND user_id = (
+                      SELECT user_id FROM agent_credentials WHERE id = ?
+                  )
+                """,
+                (folder_name, row.get("agent_id")),
             ) as cur:
                 folder_row = await cur.fetchone()
             if folder_row is None:
