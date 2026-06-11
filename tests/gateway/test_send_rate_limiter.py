@@ -36,7 +36,7 @@ from gateway.send_rate_limiter import (
     enforce_send_rate,
     load_send_rate_config,
 )
-from gateway.state_db import init_db
+from gateway.state_db import get_db, init_db
 
 
 # ---------------------------------------------------------------------------
@@ -201,3 +201,86 @@ def test_config_invalid_falls_back_to_default(monkeypatch: pytest.MonkeyPatch) -
     cfg = load_send_rate_config()
     assert cfg.max_per_window == 100
     assert cfg.window_seconds == 3600
+
+
+# ---------------------------------------------------------------------------
+# Account-scoped ceilings (summed across a user's agents) + daily cap
+# ---------------------------------------------------------------------------
+
+
+async def _seed_user_with_agents(db_path: Path, user_id: int, agent_ids: list[int]) -> None:
+    """Insert a user and the given agent_credentials rows owned by them."""
+    async with get_db(db_path) as db:
+        await db.execute(
+            "INSERT INTO users (id, email, hashed_password, api_token, created_at) "
+            "VALUES (?, ?, 'x', ?, 0)",
+            (user_id, f"u{user_id}@example.com", f"tok{user_id}"),
+        )
+        for aid in agent_ids:
+            await db.execute(
+                """INSERT INTO agent_credentials
+                   (id, user_id, label, agent_username, hashed_token,
+                    upstream_host, upstream_imap_port, upstream_smtp_port,
+                    upstream_user, upstream_password, created_at)
+                   VALUES (?, ?, 'a', ?, 'x', 'imap.example.com', 993, 587, ?, 'p', 0)""",
+                (aid, user_id, f"nuvrail_{aid}", f"u{user_id}@example.com"),
+            )
+        await db.commit()
+
+
+def test_config_account_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    for k in (
+        "NUVRAIL_ACCOUNT_SEND_MAX_PER_WINDOW",
+        "NUVRAIL_ACCOUNT_SEND_MAX_PER_DAY",
+    ):
+        monkeypatch.delenv(k, raising=False)
+    cfg = load_send_rate_config()
+    assert cfg.account_max_per_window == 300
+    assert cfg.account_max_per_day == 1000
+
+
+async def test_account_cap_sums_across_a_users_agents(db_path: Path) -> None:
+    """Two agents under the per-agent cap can still breach the ACCOUNT cap."""
+    now = 1_000_000
+    await _seed_user_with_agents(db_path, user_id=1, agent_ids=[1, 2])
+    # Per-agent cap is high (won't trip); account window cap is 10.
+    cfg = SendRateConfig(
+        max_per_window=1000, window_seconds=3600,
+        account_max_per_window=10, account_max_per_day=0,
+    )
+    await _seed_send(db_path, agent_id="1", ts=now - 10, recipient_count=6)
+    await _seed_send(db_path, agent_id="2", ts=now - 10, recipient_count=4)
+    # Account already at 10 across both agents; one more must be refused even
+    # though neither agent is near its own 1000 ceiling.
+    with pytest.raises(SendRateLimitExceeded) as ei:
+        await enforce_send_rate("1", 1, db_path=db_path, config=cfg, now=now)
+    assert ei.value.scope == "account"
+    assert ei.value.used == 10
+
+
+async def test_account_daily_cap_catches_slow_and_wide(db_path: Path) -> None:
+    """Volume under the hourly cap but over the daily cap is refused."""
+    now = 1_000_000
+    await _seed_user_with_agents(db_path, user_id=1, agent_ids=[1])
+    cfg = SendRateConfig(
+        max_per_window=1000, window_seconds=3600,
+        account_max_per_window=1000, account_max_per_day=20,
+    )
+    # 15 within the hour + 8 earlier today (2h ago) = 23 in 24h > 20.
+    await _seed_send(db_path, agent_id="1", ts=now - 600, recipient_count=15)
+    await _seed_send(db_path, agent_id="1", ts=now - 7200, recipient_count=8)
+    with pytest.raises(SendRateLimitExceeded) as ei:
+        await enforce_send_rate("1", 1, db_path=db_path, config=cfg, now=now)
+    assert ei.value.scope == "account-daily"
+
+
+async def test_account_checks_skipped_for_unresolvable_agent(db_path: Path) -> None:
+    """A synthetic agent id with no owner row bypasses account ceilings only."""
+    now = 1_000_000
+    cfg = SendRateConfig(
+        max_per_window=1000, window_seconds=3600,
+        account_max_per_window=1, account_max_per_day=1,
+    )
+    # 'ghost' isn't in agent_credentials → owner unresolvable → account skipped.
+    await _seed_send(db_path, agent_id="ghost", ts=now - 10, recipient_count=50)
+    await enforce_send_rate("ghost", 50, db_path=db_path, config=cfg, now=now)
