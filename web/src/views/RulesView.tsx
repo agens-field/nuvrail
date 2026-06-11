@@ -18,6 +18,22 @@ const OP_TYPE_OPTIONS = [
   { value: 'smtp_send', label: 'smtp_send' },
 ] as const
 
+// Known semantic intents (core gateway/intent.py). The intent field accepts
+// any fnmatch glob (e.g. "mark_*"); these are suggestions, not a closed list.
+const INTENT_SUGGESTIONS = [
+  'archive',
+  'delete',
+  'mark_spam',
+  'not_spam',
+  'restore_from_trash',
+  'unarchive',
+  'mark_answered',
+  'save_draft',
+  'import_message',
+  'reply',
+  'forward',
+] as const
+
 const ACTION_OPTIONS: { value: AutoApprovalAction; label: string }[] = [
   { value: 'approve', label: 'Approve immediately' },
   { value: 'approve_after', label: 'Approve after a delay (cool-down)' },
@@ -27,6 +43,8 @@ const ACTION_OPTIONS: { value: AutoApprovalAction; label: string }[] = [
 
 type RuleFormState = {
   op_type: string
+  intent_pattern: string      // semantic intent glob ('archive', 'mark_*', …)
+  intent_certain_only: boolean // min_intent_confidence=1.0 — skip folder-name guesses
   sender_pattern: string
   folder_from: string
   folder_to: string
@@ -51,6 +69,8 @@ type RuleFormState = {
 
 const initialFormState: RuleFormState = {
   op_type: '',
+  intent_pattern: '',
+  intent_certain_only: false,
   sender_pattern: '',
   folder_from: '',
   folder_to: '',
@@ -74,6 +94,8 @@ const initialFormState: RuleFormState = {
 
 type TestFormState = {
   op_type: string
+  intent_label: string       // sample semantic intent ('' = none derived)
+  intent_heuristic: boolean  // sample confidence: heuristic 0.8 instead of certain 1.0
   sender: string
   folder_from: string
   folder_to: string
@@ -86,6 +108,8 @@ type TestFormState = {
 
 const initialTestForm: TestFormState = {
   op_type: '',
+  intent_label: '',
+  intent_heuristic: false,
   sender: '',
   folder_from: '',
   folder_to: '',
@@ -162,6 +186,10 @@ function actionPhrase(form: RuleFormState): string {
 
 function buildRulePreview(form: RuleFormState, agentLabel: (id: number) => string): string {
   const parts: string[] = [form.op_type ? `${form.op_type} ops` : 'any ops']
+  if (form.intent_pattern.trim()) {
+    const certainty = form.intent_certain_only ? ' (certain matches only — never folder-name guesses)' : ''
+    parts.push(`with intent "${form.intent_pattern.trim()}"${certainty}`)
+  }
   if (form.sender_pattern.trim()) parts.push(describeSender(form.sender_pattern))
   if (form.folder_from.trim()) parts.push(`from ${form.folder_from.trim()}`)
   if (form.folder_to.trim()) parts.push(`into ${form.folder_to.trim()}`)
@@ -225,6 +253,10 @@ function testHeadline(r: RuleTestResponse): string {
 /** Short labelled chips summarising every match condition set on a rule. */
 function ruleConditions(rule: AutoApprovalRule, agentLabel: (id: number) => string): string[] {
   const chips: string[] = []
+  if (rule.intent_pattern) {
+    const certainty = rule.min_intent_confidence != null ? ` ≥${rule.min_intent_confidence}` : ''
+    chips.push(`intent: ${rule.intent_pattern}${certainty}`)
+  }
   if (rule.sender_pattern) chips.push(`sender: ${rule.sender_pattern}`)
   if (rule.folder_from) chips.push(`from: ${rule.folder_from}`)
   if (rule.folder_to) chips.push(`to: ${rule.folder_to}`)
@@ -338,6 +370,9 @@ export default function RulesView() {
       description: form.description.trim(),
       priority: maxPriority + 1,
       op_type: normalizeOptionalInput(form.op_type),
+      intent_pattern: normalizeOptionalInput(form.intent_pattern),
+      min_intent_confidence:
+        form.intent_pattern.trim() && form.intent_certain_only ? 1.0 : null,
       sender_pattern: normalizeOptionalInput(form.sender_pattern),
       folder_from: normalizeOptionalInput(form.folder_from),
       folder_to: normalizeOptionalInput(form.folder_to),
@@ -397,6 +432,10 @@ export default function RulesView() {
     try {
       const result = await testRule({
         op_type: testForm.op_type.trim(),
+        intent_label: testForm.intent_label || null,
+        intent_confidence: testForm.intent_label
+          ? (testForm.intent_heuristic ? 0.8 : 1.0)
+          : null,
         sender: testForm.sender.trim() || null,
         folder_from: testForm.folder_from.trim() || null,
         folder_to: testForm.folder_to.trim() || null,
@@ -460,7 +499,9 @@ export default function RulesView() {
         <div>
           <h1 className="text-xl font-semibold text-fg">Auto-approval Rules</h1>
           <p className="text-sm text-fg-3 mt-1">
-            Create filters to auto-approve or auto-reject predictable operations.
+            Create filters to auto-approve or auto-reject predictable operations. Match on what
+            the agent is doing (its intent — archive, delete, reply) rather than provider folder
+            names.
           </p>
         </div>
         <button
@@ -585,6 +626,51 @@ export default function RulesView() {
               Match conditions <span className="text-fg-3/70">— leave blank to ignore</span>
             </legend>
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+              <div className="md:col-span-2 lg:col-span-3 rounded-md border border-accent/30 bg-indigo-950/20 p-3">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3 items-end">
+                  <div>
+                    <label className="block text-xs font-medium text-fg-3 mb-1">
+                      Intent <span className="text-fg-3/70">(what the agent is doing)</span>
+                    </label>
+                    <input
+                      list="intent-suggestions"
+                      value={form.intent_pattern}
+                      onChange={(e) =>
+                        setForm((prev) => ({ ...prev, intent_pattern: e.target.value }))
+                      }
+                      placeholder="archive"
+                      className={inputClass}
+                    />
+                    <datalist id="intent-suggestions">
+                      {INTENT_SUGGESTIONS.map((intent) => (
+                        <option key={intent} value={intent} />
+                      ))}
+                    </datalist>
+                    <p className="text-xs text-fg-3/70 mt-1">
+                      Matches the operation's meaning ("archive") on any provider — no brittle
+                      folder names like [Gmail]/All Mail. Globs work: mark_*
+                    </p>
+                  </div>
+                  <label className="inline-flex items-start gap-2 rounded-md bg-surface-hi border border-edge px-3 py-2 text-sm text-fg-2">
+                    <input
+                      type="checkbox"
+                      checked={form.intent_certain_only}
+                      disabled={!form.intent_pattern.trim()}
+                      onChange={(e) =>
+                        setForm((prev) => ({ ...prev, intent_certain_only: e.target.checked }))
+                      }
+                      className="mt-0.5 accent-emerald-500"
+                    />
+                    <span>
+                      Certain matches only
+                      <span className="block text-xs text-fg-3/70">
+                        Only fire when the gateway derived the intent from the provider or the
+                        server's own folder roles — never from a folder-name guess.
+                      </span>
+                    </span>
+                  </label>
+                </div>
+              </div>
               <div>
                 <label className="block text-xs font-medium text-fg-3 mb-1">Sender pattern</label>
                 <input
@@ -817,6 +903,38 @@ export default function RulesView() {
                   </option>
                 ))}
               </select>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-fg-3 mb-1">Intent</label>
+              <select
+                value={testForm.intent_label}
+                onChange={(e) => {
+                  setTestForm((p) => ({ ...p, intent_label: e.target.value }))
+                  setTestResult(null)
+                }}
+                className={inputClass}
+              >
+                <option value="">No derived intent</option>
+                {INTENT_SUGGESTIONS.map((intent) => (
+                  <option key={intent} value={intent}>
+                    {intent}
+                  </option>
+                ))}
+              </select>
+              {testForm.intent_label && (
+                <label className="mt-1 inline-flex items-center gap-1.5 text-xs text-fg-3">
+                  <input
+                    type="checkbox"
+                    checked={testForm.intent_heuristic}
+                    onChange={(e) => {
+                      setTestForm((p) => ({ ...p, intent_heuristic: e.target.checked }))
+                      setTestResult(null)
+                    }}
+                    className="accent-amber-500"
+                  />
+                  Folder-name guess (0.8) instead of certain (1.0)
+                </label>
+              )}
             </div>
             <div>
               <label className="block text-xs font-medium text-fg-3 mb-1">Sender</label>

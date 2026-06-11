@@ -132,6 +132,13 @@ export interface AutoApprovalRule {
   min_message_count?: number | null
   max_message_count?: number | null
   agent_id?: number | null
+  // Semantic-intent predicates: match what the agent is doing (archive, delete,
+  // mark_spam, …) instead of provider folder names. intent_pattern is an
+  // fnmatch glob on the op's intent_label (falling back to op_type when no
+  // intent was derived); min_intent_confidence (0..1) excludes folder-name
+  // heuristic matches (0.8) when set to 1.0.
+  intent_pattern?: string | null
+  min_intent_confidence?: number | null
   // Tier 2 action parameters
   delay_seconds?: number | null        // cool-down for action 'approve_after'
   rate_limit_per_hour?: number | null  // cap an approving rule's hourly budget
@@ -161,6 +168,8 @@ export interface RuleTestRequest {
   flags_remove?: string[] | null
   message_ids?: string[] | null
   agent_id?: number | null
+  intent_label?: string | null        // sample semantic intent (e.g. 'archive')
+  intent_confidence?: number | null   // 1.0 provider/mechanical, 0.8 heuristic
 }
 
 export interface RuleTestMatch {
@@ -194,6 +203,8 @@ export interface AutoApprovalRuleCreateRequest {
   min_message_count?: number | null
   max_message_count?: number | null
   agent_id?: number | null
+  intent_pattern?: string | null
+  min_intent_confidence?: number | null
   delay_seconds?: number | null
   rate_limit_per_hour?: number | null
   set_urgent?: number | null
@@ -219,6 +230,8 @@ export interface AutoApprovalRuleUpdateRequest {
   min_message_count?: number | null
   max_message_count?: number | null
   agent_id?: number | null
+  intent_pattern?: string | null
+  min_intent_confidence?: number | null
   delay_seconds?: number | null
   rate_limit_per_hour?: number | null
   set_urgent?: number | null
