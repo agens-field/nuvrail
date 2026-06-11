@@ -37,7 +37,7 @@ from api.auth import (
     hash_token_for_storage,
     verify_password,
 )
-from gateway.credentials import delete_credential, store_credential
+from gateway.credentials import delete_credential, purge_agent_upstream_secrets, store_credential
 from gateway.entitlements import entitlements
 from gateway.security_controls import build_auth_abuse_protector
 from api.models import (
@@ -487,11 +487,25 @@ async def revoke_agent(
     current_user: dict = Depends(get_current_user),
     db_path: Path = Depends(get_db_path),
 ) -> None:
-    """Revoke an agent credential. Proxy will reject it on next auth attempt."""
+    """Revoke (disconnect) an agent credential.
+
+    As promised in the Privacy Policy (§6 — credentials are removed when you
+    disconnect an agent), this revokes any OAuth grant at the provider and
+    deletes the agent's upstream secrets from the external secret store before
+    nulling the secret columns. The row itself is retained (with ``revoked_at``
+    set) for audit history; the proxy rejects the credential on its next auth
+    attempt. There is no un-revoke flow, so retaining the secret would serve no
+    purpose and would contradict the policy.
+    """
     now = int(time.time())
     async with get_db(db_path) as db:
         async with db.execute(
-            "SELECT id, user_id FROM agent_credentials WHERE id = ?", (agent_id,)
+            """
+            SELECT id, user_id, oauth2_provider, oauth2_refresh_token,
+                   oauth2_access_token, oauth2_client_secret, upstream_password
+            FROM agent_credentials WHERE id = ?
+            """,
+            (agent_id,),
         ) as cur:
             row = await cur.fetchone()
 
@@ -506,8 +520,23 @@ async def revoke_agent(
                 detail="Not your credential",
             )
 
+    # Best-effort provider revocation + external-secret deletion, BEFORE nulling
+    # the reference columns (otherwise the secret is orphaned in the store —
+    # same bug class as #72, here for the per-agent disconnect path). Done
+    # outside the DB transaction so network / secret-store I/O holds no lock.
+    await purge_agent_upstream_secrets(dict(row))
+
+    async with get_db(db_path) as db:
         await db.execute(
-            "UPDATE agent_credentials SET revoked_at = ? WHERE id = ?",
+            """
+            UPDATE agent_credentials
+            SET revoked_at = ?,
+                upstream_password = NULL,
+                oauth2_refresh_token = NULL,
+                oauth2_access_token = NULL,
+                oauth2_client_secret = NULL
+            WHERE id = ?
+            """,
             (now, agent_id),
         )
         await db.commit()

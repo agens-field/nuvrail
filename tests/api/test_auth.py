@@ -374,6 +374,70 @@ async def test_revoke_agent(client: httpx.AsyncClient, monkeypatch: pytest.Monke
     assert agents[0]["revoked_at"] is not None
 
 
+async def test_revoke_agent_purges_secrets_and_nulls_columns(
+    client: httpx.AsyncClient, db_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Disconnecting an agent (DELETE /agents/{id}) must purge its upstream
+    secrets BEFORE nulling the reference columns, so nothing is orphaned in the
+    external secret store (Privacy §6 — removed on disconnect). Mirrors the #72
+    fix for the account-deletion path, applied to the per-agent disconnect.
+    """
+    token = await _register_and_login(client)
+    auth = {"Authorization": f"Bearer {token}"}
+
+    async def _ok_verify(*args: object, **kwargs: object) -> None:
+        pass
+
+    monkeypatch.setattr(auth_routes, "_verify_imap_connection", _ok_verify)
+
+    # Record the purge call (the helper itself is unit-tested under #72; here we
+    # only assert the disconnect path invokes it with this agent's row).
+    purged: list[dict] = []
+
+    async def _record_purge(agent_row: dict, **kwargs: object) -> None:
+        purged.append(dict(agent_row))
+
+    monkeypatch.setattr(auth_routes, "purge_agent_upstream_secrets", _record_purge)
+
+    create_resp = await client.post(
+        "/api/v1/agents",
+        headers=auth,
+        json={
+            "upstream_host": "imap.example.com",
+            "upstream_user": "x@example.com",
+            "upstream_password": "p",
+        },
+    )
+    assert create_resp.status_code == 201
+    agent_id = create_resp.json()["id"]
+
+    revoke_resp = await client.delete(f"/api/v1/agents/{agent_id}", headers=auth)
+    assert revoke_resp.status_code == 204
+
+    # The disconnect path called the purge helper with the agent's stored row,
+    # which still carried the (encrypted) password at call time — i.e. purge ran
+    # BEFORE the columns were nulled.
+    assert len(purged) == 1
+    assert purged[0]["upstream_password"] is not None
+
+    # After the call, every secret column is nulled (no orphaned reference left).
+    async with get_db(db_path) as db:
+        async with db.execute(
+            """
+            SELECT upstream_password, oauth2_refresh_token,
+                   oauth2_access_token, oauth2_client_secret, revoked_at
+            FROM agent_credentials WHERE id = ?
+            """,
+            (agent_id,),
+        ) as cur:
+            row = await cur.fetchone()
+    assert row["upstream_password"] is None
+    assert row["oauth2_refresh_token"] is None
+    assert row["oauth2_access_token"] is None
+    assert row["oauth2_client_secret"] is None
+    assert row["revoked_at"] is not None
+
+
 async def test_create_agent_imap_auth_failed_no_db_row(
     client: httpx.AsyncClient, db_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
