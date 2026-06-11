@@ -29,6 +29,27 @@ def test_check_status_transitions():
     assert c.status == "skipped"
 
 
+def test_env_blank_falls_back_to_default(monkeypatch):
+    """Regression for #80: GitHub Actions injects "" (not absent) for an unset
+    `${{ vars.X }}`. _env must treat blank/whitespace as unset so the safe
+    default wins, instead of the monitor running every check against ""."""
+    # Unset -> default.
+    monkeypatch.delenv("NUVRAIL_TEST_KEY", raising=False)
+    assert R._env("NUVRAIL_TEST_KEY", "https://default") == "https://default"
+    # Empty string (the GHA-unset-var case) -> default, NOT "".
+    monkeypatch.setenv("NUVRAIL_TEST_KEY", "")
+    assert R._env("NUVRAIL_TEST_KEY", "https://default") == "https://default"
+    # Whitespace-only -> default.
+    monkeypatch.setenv("NUVRAIL_TEST_KEY", "   ")
+    assert R._env("NUVRAIL_TEST_KEY", "https://default") == "https://default"
+    # A real value is preserved untouched.
+    monkeypatch.setenv("NUVRAIL_TEST_KEY", "https://real")
+    assert R._env("NUVRAIL_TEST_KEY", "https://default") == "https://real"
+    # No default + blank -> None (=> credentialed flows skip, not crash).
+    monkeypatch.setenv("NUVRAIL_TEST_KEY", "")
+    assert R._env("NUVRAIL_TEST_KEY") is None
+
+
 def test_report_summary_partitions():
     rep = R.Report(started_at="t", gateway_url="g", web_url="w")
     rep.checks = [
