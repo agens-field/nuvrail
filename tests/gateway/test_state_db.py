@@ -870,6 +870,28 @@ async def test_get_message_metadata_null_sender_and_subject(db_path: Path) -> No
 
 
 # ---------------------------------------------------------------------------
+# Indexes — init_db must create them (idempotent migrations)
+# ---------------------------------------------------------------------------
+
+
+async def test_init_db_creates_message_id_index(db_path: Path) -> None:
+    """messages.message_id is indexed: find_message_by_message_id runs on every
+    staged reply/forward send and must not scan the whole mirror."""
+    from gateway.state_db import get_db
+
+    async with get_db(db_path) as db:
+        async with db.execute(
+            "SELECT name FROM sqlite_master"
+            " WHERE type = 'index' AND name = 'idx_messages_message_id'"
+        ) as cur:
+            row = await cur.fetchone()
+    assert row is not None, "idx_messages_message_id missing after init_db"
+
+    # Re-running init_db must be a no-op (CREATE INDEX IF NOT EXISTS).
+    await init_db(db_path)
+
+
+# ---------------------------------------------------------------------------
 # get_pending_flag_changes_for_uid
 # ---------------------------------------------------------------------------
 
