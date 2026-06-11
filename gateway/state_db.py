@@ -462,6 +462,13 @@ async def init_db(path: Path = DB_PATH) -> None:
         await db.execute(
             "CREATE INDEX IF NOT EXISTS idx_folders_user_id ON folders(user_id)"
         )
+        # Reply/forward intent lookups (find_message_by_message_id) run on every
+        # staged SMTP send carrying In-Reply-To/References — without this index
+        # each one is a full scan of the messages mirror.
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_messages_message_id"
+            " ON messages(message_id)"
+        )
 
         # Migration: add special_use to folders — the server-declared RFC 6154
         # role captured from LIST attributes, used for intent derivation.
