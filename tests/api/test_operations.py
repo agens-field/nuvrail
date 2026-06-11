@@ -930,3 +930,50 @@ async def test_batch_reject_skips_other_users_operations(
     assert data["skipped"][0]["id"] == foreign_op
     row = await get_operation(foreign_op, db_path=db_path)
     assert row["status"] == "pending"
+
+
+async def test_message_previews_do_not_leak_across_tenants(
+    client: httpx.AsyncClient, db_path: Path
+) -> None:
+    """Approval-card message previews must resolve the folder within the owning
+    tenant. Folder names are unique only per-user (UNIQUE(user_id, name)), so a
+    name-only lookup can surface another tenant's same-named folder ("INBOX") and
+    leak their sender/subject — especially since UIDs overlap across mailboxes.
+
+    Deterministic trigger: ONLY the other tenant has an "INBOX". The authenticated
+    user (OWNER_AGENT_ID / user 1) has no folder of that name, so a correctly
+    scoped lookup finds nothing, while the old name-only lookup would resolve to —
+    and leak — the other tenant's mailbox. Regression for the #73 follow-up.
+    """
+    from gateway.state_db import get_or_create_folder, upsert_message
+
+    # Other tenant (user 2) owns the only "INBOX" + a message at uid 1.
+    async with get_db(db_path) as db:
+        await db.execute(
+            "INSERT INTO users (id, email, hashed_password, api_token, created_at) "
+            "VALUES (2, 'victim@secret.test', 'x', 'victimtoken', 0)"
+        )
+        await db.commit()
+    victim_folder = await get_or_create_folder("INBOX", user_id=2, db_path=db_path)
+    await upsert_message(
+        victim_folder, 1, seq_num=1, sender="victim@secret.test",
+        subject="VICTIM CONFIDENTIAL", db_path=db_path,
+    )
+
+    # The authenticated user (user 1) stages an op referencing "INBOX"/uid 1 —
+    # but owns no such folder. A name-only lookup would hit the victim's INBOX.
+    op_id = await _create_op(
+        op_type="move", protocol="imap", description="Archive uid 1",
+        message_ids=["1"], folder_from="INBOX", folder_to="Archive",
+        db_path=db_path,
+    )
+
+    resp = await client.get(f"/api/v1/operations/{op_id}")
+    assert resp.status_code == 200
+    previews = resp.json()["message_previews"]
+
+    # The other tenant's mailbox metadata must never surface.
+    senders = {p["sender"] for p in previews}
+    subjects = {p["subject"] for p in previews}
+    assert "victim@secret.test" not in senders, f"cross-tenant leak: {previews}"
+    assert "VICTIM CONFIDENTIAL" not in subjects, f"cross-tenant leak: {previews}"
