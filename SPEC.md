@@ -1,13 +1,14 @@
 # Nuvrail IMAP/SMTP Approval Gateway — Specification
 
-**Status:** Draft v5
-**Date:** March 19, 2026
+**Status:** v6
+**Date:** June 12, 2026
 **Authors:** Martin Modahl, Jack (CEO)
 **Changelog:**
 - v2 — security/auth model added, SMTP moved to launch, failure modes defined, schema updated, deployment URLs added, open questions closed
 - v3 — multi-provider support (Google, Microsoft, Apple, generic IMAP/SMTP) added to Milestone 2; provider abstraction layer specified
-- v4 — open source scope defined: IMAP/SMTP gateway + web approval app open source (MIT or Apache 2.0); iOS app proprietary
-- v5 — updated to reflect actual built state as of 2026-03-19. Sections marked **[BUILT]** are implemented and tested. Auth lanes revised to match implementation. New sections: §17 Implementation Status, §18 MVP Demo Checklist.
+- v4 — open source scope defined (superseded in v6: license is AGPL-3.0, not MIT/Apache)
+- v5 — updated to reflect actual built state as of 2026-03-19
+- v6 — full reconciliation against the codebase as of 2026-06-12. Everything previously "Phase 1/2 planned" that has since shipped is now documented as built: secret-store credential handling, Gmail XOAUTH2, hash-chained audit log + verification, web push, batching, undo, SMTP 550 rejection notice, Sent-folder write-back, auto-approval rules (enterprise plugin), per-user tenancy, GDPR retention/erasure/export, send rate caps, loop health. Decisions log updated with supersessions (§19).
 
 ---
 
@@ -19,18 +20,18 @@ AI agents that interact with email must be given raw IMAP credentials today — 
 
 ### Solution
 
-An **IMAP/SMTP Approval Gateway** — a proxy server that sits between the AI agent and the real email provider. The AI agent believes it is talking to a normal IMAP/SMTP server. All read operations pass through transparently. All write and send operations are **staged** — queued for human approval via a separate notification interface — before executing against the real provider.
+An **IMAP/SMTP Approval Gateway** — a proxy server that sits between the AI agent and the real email provider. The AI agent believes it is talking to a normal IMAP/SMTP server. All read operations pass through transparently. All write and send operations are **staged** — queued for human approval — before executing against the real provider.
 
-The result: the AI can propose email changes freely, but nothing reaches the real mailbox without a human approving a readable diff.
+The result: the AI can propose email changes freely, but nothing reaches the real mailbox without an approval decision against a readable diff.
 
 ### Design Principles
 
 1. **Propose before execute** — every write and send is staged, never immediate
 2. **Readable diffs** — approvals show exactly what will change, in human language
-3. **Immutable audit log** — every action (proposed, approved, rejected, executed) is logged forever
-4. **No deletes** — permanent deletion is disabled at the gateway layer; archive/label only
+3. **Tamper-evident audit log** — every action (proposed, approved, rejected, executed) is written to an append-only, SHA-256 hash-chained log. The log is immutable while retained; on account deletion it is anonymized immediately and hard-purged after a bounded retention window (GDPR storage limitation — see §10)
+4. **No deletes** — permanent deletion (`EXPUNGE`) is disabled at the gateway layer; archive/trash-move only
 5. **Standard IMAP/SMTP on both ends** — no special client or agent modifications required
-6. **No credential bypass** — there is no path through the gateway that skips staging; every write is reviewed, always
+6. **Human review by default; automation is opt-in and audited** — out of the box every write requires per-action human approval. Users may opt into auto-approval rules (enterprise feature) that decide matching operations without per-action review; every rule decision is attributed in the audit log, deferred sends are cancellable during a cool-down, and rules support a shadow (observe-only) mode
 
 ---
 
@@ -38,14 +39,15 @@ The result: the AI can propose email changes freely, but nothing reaches the rea
 
 | Environment | Base URL | Purpose |
 |---|---|---|
-| **Internal testing** | *(self-hosted)* | Development, QA, dogfooding |
-| **Production** | `nuvrail.example.com` | Live customer traffic |
+| **Self-hosted** | operator-defined | Open-source core, Docker Compose |
+| **Staging** | fly.io staging app | Pre-prod; E2E smoke target |
+| **Production** | `mail.nuvrail.com` (gateway) / `app.nuvrail.com` (web) | Hosted service |
 
 **Ports:**
-- IMAP proxy: `993` (TLS) external; `10143` internal/dev
-- SMTP proxy: `587` (STARTTLS) external; `10587` internal/dev
-- REST API: `443` (TLS) external; `8080` internal
-- Approval web app: served via HTTPS on standard port
+- IMAP proxy: `993` (TLS, fly edge / nginx) external; `10143` internal
+- SMTP proxy: `465` (SMTPS, fly edge / nginx) external; `10587` internal
+- REST API: `443` (HTTPS) external; `8080` internal
+- Upstream: IMAP `993` SSL; SMTP `587` STARTTLS (certificates CA-validated)
 
 ---
 
@@ -55,32 +57,38 @@ The result: the AI can propose email changes freely, but nothing reaches the rea
 ┌────────────────────────────────────────────────────────────────────┐
 │                        Nuvrail Gateway                             │
 │                                                                    │
-│  ┌──────────────────────┐    ┌──────────────────────┐             │
-│  │   IMAP Proxy Server  │    │   SMTP Proxy Server  │             │
-│  │   (port 993/10143)   │    │   (port 587/10587)   │             │
-│  └──────────┬───────────┘    └──────────┬───────────┘             │
-│             │                            │                         │
-│  ┌──────────▼────────────────────────────▼───────────┐            │
-│  │              Staging Engine                        │            │
-│  │  (intercept writes → create Operation records)    │            │
-│  └──────────────────────┬────────────────────────────┘            │
-│                         │                                          │
-│  ┌──────────────────────▼────────────────────────────┐            │
-│  │              Core Data Layer (SQLite → Postgres)  │            │
-│  │   staged_operations │ audit_log │ local_state_db  │            │
-│  │   users │ agent_credentials │ pending_reverts     │            │
-│  └──────────────────────┬────────────────────────────┘            │
-│                         │                                          │
-│  ┌──────────────────────▼────────────────────────────┐            │
-│  │              Approval REST API (FastAPI)           │            │
-│  │              + Background Jobs (expiry loop)      │            │
-│  └──────────────────────┬────────────────────────────┘            │
-└───────────────────────── │ ─────────────────────────────────────── ┘
+│  ┌──────────────────────┐    ┌──────────────────────┐              │
+│  │   IMAP Proxy Server  │    │   SMTP Proxy Server  │              │
+│  │   (993 / 10143)      │    │   (465 / 10587)      │              │
+│  └──────────┬───────────┘    └──────────┬───────────┘              │
+│             │                            │                          │
+│  ┌──────────▼────────────────────────────▼───────────┐             │
+│  │              Staging Engine                        │             │
+│  │  intercept writes → Operation records + snapshots  │             │
+│  │  intent labels · batching window · auto-decision   │             │
+│  │  provider seam (rules, via plugin) · web push      │             │
+│  └──────────────────────┬────────────────────────────┘             │
+│                         │                                           │
+│  ┌──────────────────────▼────────────────────────────┐             │
+│  │     Core Data Layer (SQLite via aiosqlite)        │             │
+│  │  staged_operations │ audit_log │ folders/messages │             │
+│  │  users │ agent_credentials │ pending_reverts │    │             │
+│  │  push_subscriptions │ auto_approval_rules         │             │
+│  └──────────────────────┬────────────────────────────┘             │
+│                         │                                           │
+│  ┌──────────────────────▼────────────────────────────┐             │
+│  │  Approval REST API (FastAPI) + background loops:  │             │
+│  │  expiry · body scrub · cool-down scheduler ·      │             │
+│  │  retention purge · audit-chain verify             │             │
+│  │  (each heartbeats into /health)                   │             │
+│  └──────────────────────┬────────────────────────────┘             │
+└───────────────────────── │ ──────────────────────────────────────── ┘
                            │ HTTPS + Bearer token
-          ┌────────────────▼────────────────┐
-          │   Web App (React PWA)            │
-          │   Pending / Audit / Setup views  │
-          └──────────────────────────────────┘
+          ┌────────────────▼─────────────────────┐
+          │   Web App (React PWA)                 │
+          │   Pending (incl. batches) · Audit ·   │
+          │   Agents · Rules · Account · Setup    │
+          └───────────────────────────────────────┘
 ```
 
 ### Components
@@ -88,18 +96,21 @@ The result: the AI can propose email changes freely, but nothing reaches the rea
 | Component | Role | Status |
 |---|---|---|
 | **IMAP Proxy Server** | Presents as IMAP to AI agent; intercepts writes; passes reads | **BUILT** |
-| **SMTP Proxy Server** | Presents as SMTP to AI agent; stages all sends for approval | **BUILT** |
-| **Local State DB** | Mirror of mailbox state (headers, flags, folder structure) | **BUILT** |
-| **Staging Engine** | Parses intercepted commands → creates Operation records | **BUILT** |
+| **SMTP Proxy Server** | Presents as SMTP to AI agent; stages all sends | **BUILT** |
+| **Local State DB** | Per-user mailbox mirror (headers, flags, folders) | **BUILT** |
+| **Staging Engine** | Parses intercepted commands → Operation records | **BUILT** |
+| **Intent labelling** | Classifies ops (archive / delete / mark_spam / …) using RFC 6154 special-use folder discovery | **BUILT** |
+| **Batching** | Sliding-window grouping of related ops + batch summaries | **BUILT** |
 | **Rejection Revert** | Snapshot pre-op state, restore on reject, inject FETCH to AI | **BUILT** |
+| **Undo** | Reverse an executed IMAP op within 24h | **BUILT** |
 | **Operation Expiry** | 48h background job; expires pending ops, reverts state | **BUILT** |
-| **Approval REST API** | HTTP API for the approval app to fetch, approve, reject ops | **BUILT** |
-| **Audit Log API** | Paginated, filterable, exportable audit trail | **BUILT** |
-| **User Accounts** | Human accounts with bcrypt password + bearer token | **BUILT** |
-| **Agent Credentials** | Per-user agent username + one-time token for proxy auth | **BUILT** |
-| **Approval Web App** | React PWA: Pending, Audit Log, Setup/Login views | **BUILT** |
-| **Notification Service** | Push notifications to user when operations are staged | Not built |
-| **iOS App** | Native iOS approval app | Not built |
+| **Approval REST API** | Fetch/approve/reject/undo ops, single + batch | **BUILT** |
+| **Audit Log** | Append-only, SHA-256 hash-chained, verified hourly | **BUILT** |
+| **Web Push** | VAPID notifications on staging (no PII in payloads) | **BUILT** |
+| **Auto-approval rules engine** | Auto-decision provider via plugin seam | **BUILT** (enterprise plugin) |
+| **Retention & erasure** | Two-stage account erasure, body scrub, data export | **BUILT** |
+| **Approval Web App** | React PWA (see §9) | **BUILT** |
+| **iOS App** | Native approval app (APNs) | Not built |
 
 ---
 
@@ -107,45 +118,36 @@ The result: the AI can propose email changes freely, but nothing reaches the rea
 
 Three distinct access lanes. No credential from one lane can be used in another.
 
-### 4.1 Lane 1 — Provider credentials (internal only) **[PARTIAL]**
+### 4.1 Lane 1 — Upstream provider credentials **[BUILT]**
 
-The gateway authenticates to real email providers using credentials obtained during agent setup.
+The gateway authenticates to real email providers using credentials captured at agent setup (validated live against the upstream IMAP server before the agent row is created).
 
-**Current state (Phase 0):**
-- Upstream host, port, username, and password stored in `agent_credentials` table
-- Stored in **plaintext** for Phase 0 — connection-level TLS protects in transit
-- TODO: AES-256-GCM per-user encryption at rest (Phase 1 priority)
-- No XOAUTH2 yet — plain LOGIN to upstream (works with MXrouting, standard IMAP servers)
-- Gmail XOAUTH2 deferred to milestone 0.3
+**Storage — backend-selectable secret store (`NUVRAIL_SECRET_BACKEND`):**
+- `gcp-sm` / `aws-sm` (hosted service): the cloud secret manager is the store of record; the application database holds only a **v2 reference envelope** (`{"v":2,"backend":…,"ref":…}`), never the secret. Plaintext is fetched on demand into a short-TTL in-process cache.
+- `local` (self-hosted default): AES-256-GCM envelope (`{"v":1,"iv":…,"ct":…}`) under a 32-byte master key (`NUVRAIL_MASTER_KEY` env var or protected key file). Per-value random 96-bit nonce.
+- Reads dispatch on the stored envelope's own version, so plaintext→v1→v2 migrations are safe online.
 
-**Target state (Phase 1+):**
-- Upstream credentials encrypted at rest with AES-256, per-user derived keys
-- XOAUTH2 for Gmail, OAuth2 for Microsoft/Apple
+**OAuth2 (Gmail / Google Workspace) [BUILT]:** XOAUTH2 upstream auth. Refresh tokens and client secrets live in the secret store; **access tokens are cached in process memory only and never persisted**. Outlook (Azure AD) and Apple iCloud are planned.
+
+**Teardown:** agent disconnect, account deletion, and the retention purge all (a) revoke the Google OAuth grant at the provider and (b) delete the external secrets, before nulling the DB columns — nothing is orphaned in the secret store. Credentials are never logged (redaction filter) and never exposed to agents.
 
 ### 4.2 Lane 2 — AI agent credentials (IMAP/SMTP access) **[BUILT]**
 
-AI agents authenticate to the Nuvrail IMAP and SMTP proxy using Nuvrail-issued credentials:
-
-- **Username:** `nuvrail_<16 hex chars>` (e.g. `nuvrail_a1b2c3d4e5f6g7h8`)
-- **Password:** 32-byte base58-encoded random token, shown **once** at creation, stored as bcrypt hash (rounds=10)
-- Generated via `POST /api/v1/agents` and displayed once in the web app Setup view
-- Credentials verified by proxy on every IMAP LOGIN / SMTP AUTH
-- Revoked credentials (`revoked_at IS NOT NULL`) are rejected immediately
-- Multiple agent credential sets per user supported
+- **Username:** `nuvrail_<hex>`; **token** generated once, shown once, stored bcrypt-hashed (rounds=10)
+- Verified on every IMAP LOGIN / SMTP AUTH; revoked or suspended credentials rejected immediately
+- Scoped to a single upstream inbox; multiple agents per user supported (quota by plan tier)
 
 ### 4.3 Lane 3 — Human credentials (web app / REST API) **[BUILT]**
 
-Humans authenticate to the REST API using:
-
-- **Email + Password** → `POST /api/v1/auth/login` → long-lived bearer token
-- Token stored in browser localStorage, sent as `Authorization: Bearer <token>` header
-- All REST API endpoints require a valid bearer token
-- Passwords stored as bcrypt hashes (rounds=12)
-- No JWT expiry yet — tokens are long-lived; revocation requires DB deletion (Phase 1)
+- Email + password (bcrypt rounds=12) → long-lived bearer token, stored **SHA-256-hashed** at rest, shown once; self-serve rotation (`POST /account/token/rotate`)
+- Password change, reset-request/reset flow (token-based), logout
+- Login rate-limited (10/min) with lockout escalation (auth abuse protector); reset 5/min
+- Accounts can be administratively **suspended** (403 on all API use — ToS enforcement)
+- Token sent as `Authorization: Bearer`; web app keeps it in localStorage
 
 ### 4.4 Personal client access (not through gateway)
 
-Personal email clients (Apple Mail, Thunderbird used by a human) connect **directly to the email provider** — they are not routed through the Nuvrail gateway at all. Gateway is the AI lane only.
+Personal email clients connect directly to the provider — the gateway is the AI lane only.
 
 ---
 
@@ -153,21 +155,14 @@ Personal email clients (Apple Mail, Thunderbird used by a human) connect **direc
 
 ### 5.1 Connection handling
 
-- Listens on `10143` (plain TCP, dev) / `993` (TLS, prod)
-- Accepts IMAP4rev1 connections from AI agents using Lane 2 credentials
-- On LOGIN: verifies `agent_username` + `agent_token` against `agent_credentials` table; closes with `* BYE Authentication failed` on failure
-- Connects upstream using stored upstream credentials (plain LOGIN for Phase 0)
-- Each AI session maps to one upstream provider connection
+- TLS at the edge (fly/nginx); authenticates Lane 2 credentials; one upstream connection per session
+- Upstream auth: plain LOGIN (generic IMAP) or XOAUTH2 (Gmail)
 
-### 5.2 Read operations — pass-through **[BUILT]**
+### 5.2 Read operations — pass-through
 
-Commands forwarded directly: `SELECT`, `EXAMINE`, `FETCH`, `SEARCH`, `LIST`, `LSUB`, `STATUS`, `NOOP`, `CAPABILITY`, `ID`, `LOGOUT`, `CHECK`, `SUBSCRIBE`, `UNSUBSCRIBE`, `NAMESPACE`, `IDLE`
+`SELECT`, `EXAMINE`, `FETCH`, `SEARCH`, `LIST`, `LSUB`, `STATUS`, `NOOP`, `CAPABILITY`, `ID`, `LOGOUT`, `CHECK`, `SUBSCRIBE`, `UNSUBSCRIBE`, `NAMESPACE`, `IDLE` forwarded directly. The per-user local mirror is updated from FETCH/SELECT/LIST responses; special-use folder attributes (RFC 6154) are captured for intent classification. Upstream→client is line-buffered so pending reverts can be injected before tagged responses.
 
-The local state DB is updated on each FETCH/SELECT/LIST response to maintain a current mirror. Upstream → client direction is line-buffered so pending reverts can be injected before tagged responses.
-
-### 5.3 Write operations — staged **[BUILT]**
-
-Intercepted and staged (not executed):
+### 5.3 Write operations — staged
 
 | IMAP Command | Op Type | Snapshot | Reverts on reject |
 |---|---|---|---|
@@ -175,84 +170,41 @@ Intercepted and staged (not executed):
 | `STORE +FLAGS \Seen` | mark_read | ✅ | ✅ |
 | `STORE +FLAGS \Flagged` | flag | ✅ | ✅ |
 | `STORE -FLAGS *` | unflag/mark_unread | ✅ | ✅ |
-| `COPY uid folder` | copy | — | — |
-| `MOVE uid folder` | move | — | — |
+| `COPY` / `MOVE` | copy / move | — | — |
 | `EXPUNGE` | **blocked permanently** | — | — |
-| `APPEND folder` | append | — | — |
-| `CREATE folder` | create | — | — |
-| `RENAME folder` | rename | — | — |
+| `APPEND` | append (body stored until decision; scrubbed after) | — | — |
+| `CREATE` / `RENAME` | create / rename | — | — |
 
-**On interception:**
-1. Snapshot pre-op flag state for affected messages
-2. Apply optimistic update to local state DB (AI sees proposed change)
-3. Create `staged_operations` record with snapshot stored
-4. Return `OK [STAGED] Operation queued — ID: op_XXXXXX` to AI agent
-5. (Notifications not yet implemented)
+On interception: snapshot pre-op flags → optimistic local update → `staged_operations` record (with derived intent label + batching window assignment) → consult the auto-decision provider (§7.5) → `OK [STAGED]` to the agent → web push to the human (unless a rule already decided).
 
-**On rejection:** **[BUILT]**
-1. Restore messages table from snapshot
-2. Insert `pending_reverts` rows for affected UIDs
-3. On AI's next SELECT/NOOP/FETCH: inject unsolicited `* N FETCH (UID M FLAGS (...))` before tagged OK
-4. AI perceives it as another client modifying mailbox — standard IMAP sync, no extensions needed
-5. Log rejection to audit log
+Provider profiles normalize execution upstream (e.g. prefer native `MOVE` over `COPY`+`EXPUNGE`).
 
-**On approval:** **[BUILT]**
-1. Execute IMAP command against upstream (STORE, MOVE, COPY, CREATE, RENAME)
-2. Update operation status → `executed`
-3. Log to audit trail
+### 5.4 Human-readable descriptions **[BUILT]** — unchanged (`operation_parser.py`).
 
-**On expiry (48h timeout):** **[BUILT]**
-1. Background loop runs every hour; finds `status='pending' AND expires_at <= now()`
-2. Restores snapshot, queues pending_reverts
-3. Sets status → `expired` (distinct from `rejected`)
-4. Logs to audit trail
-
-### 5.4 Human-readable operation descriptions **[BUILT]**
-
-`gateway/operation_parser.py` generates descriptions:
-
-| Op type | Example description |
-|---|---|
-| mark_read | `Mark as read: 42` |
-| trash | `Move to Trash: 1:5` |
-| flag | `Star: 3` |
-| move | `Move 1:5 to Archive` |
-| smtp_send | `Send email to alice@example.com — Subject: "Q1 Report"` |
-
-### 5.5 EXPUNGE blocking and APPEND handling **[BUILT]**
-
-**EXPUNGE:** Never forwarded. Intercepted with `OK Noted`. Messages flagged `\Deleted` → staged as "trash" op.
-
-**APPEND with sync literal `{N}`:** Proxy sends `+ Ready`, consumes literal bytes from client, returns `OK [STAGED]` without forwarding body to upstream.
+### 5.5 EXPUNGE blocking and APPEND handling **[BUILT]** — unchanged: EXPUNGE never forwarded; `\Deleted` → staged trash; APPEND literals consumed and staged without touching upstream.
 
 ---
 
 ## 6. SMTP Proxy Server **[BUILT]**
 
-### 6.1 Connection handling
+- SMTPS 465 external (TLS at edge); AUTH LOGIN/PLAIN verified against Lane 2
+- All sends staged: DATA intercepted, full body + envelope stored in the op record (required for relay), 200-char preview for the approval card
+- **On approval:** relayed via `aiosmtplib` (STARTTLS, CA-validated) — *after* passing the outbound send rate caps (§6.1) — then a copy is **appended to the account's Sent folder** (discovered via RFC 6154, cached per agent), mirroring normal client behaviour
+- **On rejection [BUILT]:** the agent receives a `550` rejection notice for the op on its next SMTP session (`rejection_notified` tracking)
+- **On expiry:** as IMAP — status `expired`, audit logged
+- Bodies (and APPEND literals) are scrubbed 7 days after a terminal state (§10)
 
-- Listens on `10587` (plain TCP, dev) / `587` (prod)
-- AI agent connects plain TCP (proxy handles STARTTLS upstream)
-- On AUTH: verifies `agent_username` + `agent_token` against `agent_credentials` table
-- STARTTLS strip: proxy removes STARTTLS from EHLO capabilities forwarded to client
-- AUTH LOGIN (multi-step) and AUTH PLAIN (single-shot) both handled
+### 6.1 Outbound send rate caps **[BUILT]** — anti-spam, fail-closed
 
-### 6.2 Send interception — always staged **[BUILT]**
+Counted durably from executed `smtp_send` audit rows (recipients, not operations; survives restarts):
 
-All SMTP sends are always staged, always require explicit human approval.
+| Scope | Default | Env |
+|---|---|---|
+| Per agent / hour | 100 | `NUVRAIL_SEND_MAX_PER_WINDOW` |
+| Per account / hour (all agents) | 300 | `NUVRAIL_ACCOUNT_SEND_MAX_PER_WINDOW` |
+| Per account / day | 1,000 | `NUVRAIL_ACCOUNT_SEND_MAX_PER_DAY` |
 
-DATA interception:
-1. Forward `DATA` to upstream, read `354` response
-2. Consume full message body from client (read until `.\r\n`)
-3. Extract sender, recipients, Subject header, body preview (200 chars)
-4. Store as `staged_operations` with `op_type='smtp_send'` and `smtp_envelope` JSON
-5. Return `250 OK [STAGED] Send queued for approval — ID: op_XXXXXX` to client
-
-**On approval:** Relay full message to upstream via `aiosmtplib` with STARTTLS.
-
-**On rejection:** Nothing sent. TODO: `550 Message rejected` on AI's next SMTP session (not yet implemented).
-
-**On expiry:** Same as IMAP expiry — status → `expired`, log audit event.
+A refused send fails the op and writes a `send_rate_exceeded` audit row. Any count error refuses the send (a control that fails open is not a control). Applies to both human-approved and rule-approved sends — both flow through `execute_operation`.
 
 ---
 
@@ -262,162 +214,105 @@ DATA interception:
 
 ```sql
 CREATE TABLE staged_operations (
-    id              TEXT PRIMARY KEY,       -- op_XXXXXX (6 random alphanum)
+    id              TEXT PRIMARY KEY,       -- op_XXXXXX
     created_at      INTEGER NOT NULL,
-    expires_at      INTEGER NOT NULL,       -- created_at + 48h (configurable via NUVRAIL_EXPIRY_HOURS)
-    status          TEXT NOT NULL,          -- 'pending'|'approved'|'rejected'|'executed'|'failed'|'expired'
+    expires_at      INTEGER NOT NULL,       -- created_at + 48h (NUVRAIL_EXPIRY_HOURS)
+    status          TEXT NOT NULL,          -- pending|approved|rejected|executed|failed|expired|cancelled
     op_type         TEXT NOT NULL,
-    protocol        TEXT NOT NULL,          -- 'imap'|'smtp'
+    protocol        TEXT NOT NULL,          -- imap|smtp
     imap_command    TEXT,
-    smtp_envelope   TEXT,                   -- JSON {from, to, subject, body_preview}
+    smtp_envelope   TEXT,                   -- JSON {from,to,subject,body,body_preview}
     description     TEXT NOT NULL,
-    agent_id        TEXT,                   -- NULL for Phase 0
-    message_ids     TEXT,                   -- JSON array
-    folder_from     TEXT,
-    folder_to       TEXT,
-    flags_add       TEXT,                   -- JSON array
-    flags_remove    TEXT,                   -- JSON array
-    snapshot        TEXT,                   -- JSON {uid: {flags, seq_num, folder_id}} — pre-op state
-    decided_at      INTEGER,
-    decided_by      TEXT,
+    agent_id        TEXT,                   -- owning agent → owning user (tenancy)
+    message_ids     TEXT, folder_from TEXT, folder_to TEXT,
+    flags_add       TEXT, flags_remove TEXT,
+    snapshot        TEXT,                   -- pre-op state for revert
+    append_message  TEXT,                   -- APPEND literal (scrubbed post-decision)
+    is_urgent       INTEGER NOT NULL DEFAULT 0,
+    intent_label    TEXT, intent_confidence REAL,
+    batch_id        TEXT,                   -- sliding-window batch membership
+    decided_at      INTEGER, decided_by TEXT,
     executed_at     INTEGER,
-    undo_expires_at INTEGER,
+    undo_expires_at INTEGER,                -- 24h undo window for executed IMAP ops
+    scheduled_execute_at INTEGER,           -- cool-down deadline (approve_after rules)
+    rejection_notified INTEGER NOT NULL DEFAULT 0,
+    body_scrubbed_at INTEGER,               -- set by the scrub job
     error           TEXT
 );
 ```
 
-### 7.2 Batching
+### 7.2 Batching **[BUILT]**
 
-**Not yet implemented.** `gateway/batching.py` is a stub. Operations are currently individual. Planned for Phase 1.
+Related operations arriving within a sliding time window share a `batch_id`; the API returns intent-aggregated `batch_summaries` (e.g. "Inbox triage — 5 archived, 2 marked read") and batch approve/reject endpoints act on up to 100 ops. Batches are in-memory windows (lost on restart — acceptable; a `batches` table is a Postgres-era refinement).
 
-### 7.3 Undo window
+### 7.3 Undo **[BUILT]**
 
-**Not yet implemented.** `undo_expires_at` column exists in schema but is never populated. `api/undo.py` is a stub. Planned for Phase 1.
+`POST /operations/{id}/undo` reverses an executed IMAP operation within `undo_expires_at` (default 24h) by executing the inverse upstream. SMTP sends are not undoable (mail cannot be recalled) — which is why sends get the strictest review defaults.
 
-### 7.4 Pending reverts table **[BUILT]**
+### 7.4 Pending reverts **[BUILT]** — unchanged (per-UID revert queue; proxy injects unsolicited FETCH).
 
-```sql
-CREATE TABLE pending_reverts (
-    id           INTEGER PRIMARY KEY AUTOINCREMENT,
-    operation_id TEXT NOT NULL REFERENCES staged_operations(id),
-    folder_id    INTEGER NOT NULL,
-    uid          INTEGER NOT NULL,
-    true_flags   TEXT NOT NULL,
-    created_at   INTEGER NOT NULL,
-    delivered_at INTEGER     -- NULL until proxy injects the FETCH
-);
-```
+### 7.5 Auto-decision provider seam **[BUILT]**
+
+`gateway/extensions.py` exposes a `nuvrail.plugins` entry-point group. The staging path calls `run_auto_decision(op)`; with no provider registered (open core) every operation follows the manual-approval flow. The **enterprise plugin** registers the rules engine as provider, plus the `/rules` CRUD API, plan-tier entitlements (free = 1 agent; pro = 5 + multi-agent; enterprise = unlimited + rules), and its own idempotent schema migrations.
+
+Rule capabilities (enterprise): priority-ordered first-match; actions `approve`, `reject`, `approve_after` (cool-down `delay_seconds`; the scheduler loop executes at the deadline; cancellable until then), `hold`; predicates over op type, sender/recipient/subject/flag/intent patterns, folders, message-count bounds, minimum intent confidence, active-hours window with timezone, per-agent scoping; per-rule hourly budget for approving actions; guardrail rules; **shadow mode** (logs the would-be decision, never acts). Every rule decision is audit-attributed (`actor='auto_rule'` + rule id/description).
 
 ---
 
 ## 8. Approval REST API **[BUILT]**
 
-Base URL: `http://localhost:8080/api/v1` (dev) / `https://nuvrail.example.com/api/v1` (prod)
+Base: `/api/v1`. Bearer auth everywhere except register/login/reset; suspended accounts get 403.
 
-All endpoints require `Authorization: Bearer <token>` except `/auth/register` and `/auth/login`.
-
-### 8.1 Auth endpoints
-
-| Method | Path | Description |
+| Method | Path | Notes |
 |---|---|---|
-| POST | `/auth/register` | Create user account (email, password, display_name) |
-| POST | `/auth/login` | Exchange email+password for bearer token |
-| GET | `/auth/me` | Current user profile |
+| POST | `/auth/register` · `/auth/login` · `/auth/logout` | login rate-limited |
+| PUT | `/auth/password` | change password |
+| POST | `/auth/reset-request` · `/auth/reset` | token-based reset |
+| GET | `/auth/me` | profile |
+| POST/GET/DELETE | `/agents` · `/agents/{id}` | create (live IMAP validation; token shown once) / list / disconnect (purges secrets + revokes OAuth grant) |
+| GET | `/oauth2/google/start` · `/callback` · `/result` | Gmail OAuth connect flow |
+| GET | `/operations` | list, filters, `batch_summaries` |
+| GET | `/operations/{id}` | detail incl. message previews (tenant-scoped) |
+| POST | `/operations/{id}/approve` · `/reject` · `/undo` | single-op decisions |
+| POST | `/operations/batch/approve` · `/batch/reject` | up to 100 ids |
+| GET | `/audit` · `/audit/{id}` · `/audit/export` | user-scoped, filterable (event/actor/agent/op_type/intent/time/search) |
+| GET | `/agents/{id}/audit` | per-agent trail |
+| GET | `/audit/verify` | on-demand chain verification (summary + chain head) |
+| GET | `/push/vapid-key` · POST/DELETE `/push/subscribe` | web push |
+| GET | `/account/token` · POST `/account/token/rotate` | token management |
+| GET | `/account/export` | full GDPR export (see §10) |
+| DELETE | `/account` | self-serve deletion (password-confirmed) |
+| GET | `/features` | plan entitlements for the UI |
+| * | `/rules` … | enterprise plugin (CRUD + shadow stats) |
 
-### 8.2 Agent credential endpoints
-
-| Method | Path | Description |
-|---|---|---|
-| POST | `/agents` | Register upstream email, generate agent credentials (token shown once) |
-| GET | `/agents` | List credentials (no token field) |
-| DELETE | `/agents/{id}` | Revoke credential |
-
-### 8.3 Operation endpoints
-
-| Method | Path | Description | Status |
-|---|---|---|---|
-| GET | `/operations` | List ops (optional `?status=` filter) | **BUILT** |
-| GET | `/operations/{id}` | Single op detail | **BUILT** |
-| POST | `/operations/{id}/approve` | Approve + execute | **BUILT** |
-| POST | `/operations/{id}/reject` | Reject + revert | **BUILT** |
-| POST | `/operations/batch/approve` | Bulk approve | **NOT BUILT** |
-| POST | `/operations/batch/reject` | Bulk reject | **NOT BUILT** |
-| POST | `/operations/{id}/undo` | Undo within 24h window | **NOT BUILT** |
-
-### 8.4 Audit endpoints
-
-| Method | Path | Description | Status |
-|---|---|---|---|
-| GET | `/audit` | List entries (limit, offset, event, actor filters) | **BUILT** |
-| GET | `/audit/{id}` | Single entry | **BUILT** |
-| GET | `/audit/export` | JSON download of full log | **BUILT** |
+All operations/audit/rules queries are scoped to the authenticated user's agents (tenancy — see §14).
 
 ---
 
-## 9. Approval App (Web) **[BUILT — Phase 0]**
+## 9. Approval App (Web) **[BUILT]**
 
-React + Vite PWA. Installable on iOS Safari and Android Chrome.
-
-### 9.1 Current views
-
-**Login (`/login`):** Email + password form. Stores bearer token in localStorage.
-
-**Setup (`/setup`):** Two-step flow:
-1. Create account (email + password + display name)
-2. Connect email (upstream host/ports/credentials + label) → generates agent credentials with one-time display
-
-**Pending (`/`):** Live-refreshing (5s) list of pending operations. Each card shows protocol badge, description, time queued, expiry countdown. Approve/reject buttons. SMTP sends have confirmation dialog.
-
-**Audit Log (`/audit`):** Paginated timeline with event filters, inline row expansion, JSON export.
-
-**Agents (`/agents`):** Coming soon placeholder.
-
-### 9.2 Not yet implemented
-
-- Web Push subscription management
-- Notification action buttons
-- Operation detail expanded view with message previews
-- Bulk approve/reject UI
-- Undo button within 24h window
-- Quiet hours configuration
-
-### 9.3 Notifications
-
-**Not yet implemented.** `gateway/push.py` and `api/routes/push.py` are stubs. Web Push via VAPID is planned for Phase 1.
+React 18 + Vite + TypeScript + Tailwind PWA (installable; service worker). Views: **Login**, **Setup** (account + unified agent-add wizard incl. Google OAuth), **Pending** (live-refresh cards, batch UI, urgency, undo), **Audit** (filters, inline expansion, export), **Agents** (list/disconnect/per-agent audit), **Rules** (enterprise; predicates + intent + shadow), **Account** (export, deletion, token rotate, password change), **OAuth callback**, **Reset request/confirm**. Web push subscription management; cookie-consent banner gating Plausible analytics; AGPL §13 "source available" footer link.
 
 ---
 
-## 10. Audit Log **[BUILT]**
+## 10. Audit Log, Retention & Erasure **[BUILT]**
 
-Append-only `audit_log` table. Events: `staged`, `approved`, `rejected`, `executed`, `execution_failed`, `expired`.
+**Hash chain:** every `audit_log` row carries `prev_hash` + `entry_hash` (SHA-256 over all fields + previous hash; genesis row anchors the chain; insertions serialized). The application never issues UPDATE/DELETE against the table.
 
-Queryable via `GET /api/v1/audit` with pagination and filtering. Exportable as JSON. Never modified, truncated, or deleted.
+**Verification:** an hourly background loop walks the chain and logs at ERROR on any break (the alerting hook); `GET /audit/verify` runs it on demand (summary only); the current chain head ships in every data export so users can independently detect later rewrites.
 
-```sql
-CREATE TABLE audit_log (
-    id            INTEGER PRIMARY KEY AUTOINCREMENT,
-    timestamp     INTEGER NOT NULL,
-    operation_id  TEXT REFERENCES staged_operations(id),
-    event         TEXT NOT NULL,
-    actor         TEXT,            -- 'ai_agent'|'human'|'system'
-    agent_id      TEXT,
-    detail        TEXT             -- JSON
-);
-```
+**Events:** `staged`, `approved`, `rejected`, `executed`, `execution_failed`, `expired`, `body_scrubbed`, `shadow`, `send_rate_exceeded`, `export_requested`, `account_deleted`. Actors: `ai_agent` / `human` / `system` / `auto_rule`. Rows carry user/agent attribution + intent labels; all queries user-scoped.
+
+**Retention & erasure (GDPR-aligned):**
+- Message bodies (SMTP + APPEND) scrubbed **7 days** after a terminal decision (`NUVRAIL_BODY_SCRUB_DAYS`, hourly job, audit-logged)
+- Account deletion is **two-stage**: (1) immediate — pseudonymize the user row, null credentials (and delete them from the external secret store + revoke the OAuth grant), revoke agents, cancel pending ops, drop push subscriptions; audit log retained but no longer linkable; (2) after `NUVRAIL_RETENTION_DAYS` (default **365**) a daily sweep hard-deletes every remaining row for the account, including its mailbox-mirror rows
+- **Export** (`GET /account/export`): account, agents (never credential values), operations, audit rows incl. hash-chain fields + the chain head, rules, mailbox-mirror envelope metadata, push endpoints (no key material)
+
+The log is therefore *immutable while retained*, not retained forever — public copy must match this wording.
 
 ---
 
-## 11. Rejection Handling — IMAP Mechanics **[BUILT]**
-
-When the human rejects an IMAP operation:
-
-1. **Snapshot restore:** `restore_from_snapshot(op_id)` reads the JSON snapshot, restores `messages.flags` to pre-op values
-2. **Pending reverts queued:** `insert_pending_reverts(op_id, reverts)` inserts rows into `pending_reverts`
-3. **Next AI command:** `_upstream_to_client` detects `revert_trigger_tag` match on SELECT/NOOP/FETCH tagged OK; calls `_inject_pending_reverts` BEFORE forwarding the tagged OK
-4. **Unsolicited FETCH injected:** `* N FETCH (UID M FLAGS (...))` showing true state
-5. **AI re-syncs naturally:** Sees mailbox state changed between commands — standard IMAP behavior
-
-This requires no IMAP extensions and works with any compliant IMAP client or agent.
+## 11. Rejection Handling — IMAP Mechanics **[BUILT]** — unchanged (snapshot restore → pending_reverts → unsolicited FETCH before tagged OK; no IMAP extensions required). SMTP rejections additionally surface a `550` notice on the agent's next session.
 
 ---
 
@@ -425,13 +320,14 @@ This requires no IMAP extensions and works with any compliant IMAP client or age
 
 | Failure | Behavior |
 |---|---|
-| Upstream IMAP connection fails | `* BYE Upstream connection failed` returned to client |
-| Upstream SMTP connection fails | `421 Service temporarily unavailable` returned to client |
-| IMAP approved op fails on upstream | Status → `failed`; audit log event=`execution_failed`; 500 returned to caller |
-| SMTP relay fails on approve | Same — status → `failed`; audit logged |
-| Operation expires (48h) | Background job: status → `expired`, local state reverted, audit logged |
-| Snapshot revert fails on reject | Non-fatal — rejection still succeeds, warning logged |
-| DB sync error in proxy (state sync) | Always swallowed — byte pump continues; warning logged |
+| Upstream IMAP/SMTP connection fails | `* BYE` / `421` to client |
+| Approved op fails upstream | status `failed`; `execution_failed` audit event |
+| Operation expires (48h) | status `expired`, state reverted, audited |
+| Send-cap count query fails | **send refused** (fail closed) |
+| Snapshot revert fails on reject | non-fatal; rejection succeeds, warning logged |
+| Background loop dies or its work errors | per-loop heartbeats on `GET /health` (`loops_ok`, per-loop staleness = 3× its interval, 120s floor); probe stays 200 — alerting keys on the body |
+| `NUVRAIL_CORS_ORIGINS` unset in production | **API refuses to start** (no silent wildcard CORS); dev/test keep permissive default |
+| Secret-store fetch fails | auth/execution fails closed; deletion paths are best-effort with the retention sweep as backstop |
 
 ---
 
@@ -439,139 +335,85 @@ This requires no IMAP extensions and works with any compliant IMAP client or age
 
 | Component | Technology |
 |---|---|
-| IMAP Proxy Server | Python + asyncio, custom IMAP4rev1 state machine |
-| SMTP Proxy Server | Python + asyncio, single-coroutine per-session |
-| Provider IMAP connection | Direct SSL (plain LOGIN for Phase 0; XOAUTH2 deferred to 0.3) |
-| Provider SMTP connection | aiosmtplib + STARTTLS |
-| Token encryption | Plaintext for Phase 0; TODO AES-256-GCM per-user (Phase 1) |
-| Local State DB | SQLite via aiosqlite |
-| Approval REST API | FastAPI + uvicorn |
-| Background jobs | asyncio.create_task in FastAPI lifespan |
-| Web App | React 18 + Vite + TypeScript + Tailwind CSS (PWA via vite-plugin-pwa) |
-| State management | @tanstack/react-query v5 |
-| Auth | bcrypt (rounds=12 human, rounds=10 agent) + base58 bearer tokens |
-| Testing | pytest + pytest-asyncio + httpx; 226 tests (unit + integration + e2e) |
-| Dev infrastructure | Docker-compose (gateway + API + web); fly.io target for prod |
+| IMAP / SMTP proxies | Python 3.11 + asyncio (custom IMAP4rev1 state machine; single-coroutine SMTP) |
+| Upstream connections | aioimaplib / aiosmtplib, TLS CA-validated; XOAUTH2 (Gmail) via httpx |
+| Credential storage | GCP/AWS Secret Manager (hosted; lazy SDK extras) or AES-256-GCM local |
+| Data layer | SQLite via aiosqlite; idempotent startup migrations (Postgres planned) |
+| REST API | FastAPI + uvicorn + slowapi (rate limits) |
+| Background jobs | asyncio tasks in FastAPI lifespan + loop-health heartbeats |
+| Web push | VAPID (pywebpush) |
+| Web app | React 18 + Vite + TypeScript + Tailwind, PWA, @tanstack/react-query |
+| Auth | bcrypt (12 human / 10 agent); SHA-256-hashed bearer tokens |
+| Testing / CI | pytest + pytest-asyncio + httpx — **~780 tests**; ruff; gitleaks; staged deploys (CI → manual dispatch → staging → E2E smoke → prod) |
+| License | **AGPL-3.0 (core)**; enterprise plugin proprietary |
 
 ---
 
 ## 14. Database Schema Summary (actual)
 
-Tables in `nuvrail.db`:
-
-| Table | Purpose | Status |
+| Table | Purpose | Notes |
 |---|---|---|
-| `users` | Human accounts | **BUILT** |
-| `agent_credentials` | Lane 2 agent tokens + upstream config | **BUILT** |
-| `staged_operations` | Write/send operations pending approval | **BUILT** |
-| `audit_log` | Immutable event log | **BUILT** |
-| `pending_reverts` | Per-UID revert queue for proxy injection | **BUILT** |
-| `folders` | Local mailbox mirror — folder metadata | **BUILT** |
-| `messages` | Local mailbox mirror — message headers + flags | **BUILT** |
-| `push_subscriptions` | Web Push subscriber registrations | STUB |
-| `auto_approval_rules` | Auto-approval rule definitions | STUB |
+| `users` | Human accounts | + `suspended_at`, `deleted_at` (tombstone), reset tokens, plan tier (plugin migration) |
+| `agent_credentials` | Agent tokens + upstream config | secret-store reference envelopes; OAuth2 fields; cached `sent_folder` |
+| `staged_operations` | Pending/decided operations | see §7.1 |
+| `audit_log` | Append-only, hash-chained event log | + `user_id`, `prev_hash`, `entry_hash`, `intent_label` |
+| `pending_reverts` | Per-UID revert queue | unchanged |
+| `folders` / `messages` | Local mailbox mirror | **per-user** (`folders.user_id`, `UNIQUE(user_id, name)`) — names are unique per tenant, never globally; purged with the account |
+| `push_subscriptions` | Web Push registrations | user-scoped |
+| `auto_approval_rules` | Rule definitions | table in core; predicates/actions/guardrail columns added by the enterprise plugin migration; evaluation is enterprise-only |
+
+**Tenancy:** the hosted service is a multi-user deployment on a shared database. Every read/write path — operations, audit, rules, mailbox mirror, message previews, push — is scoped to the owning user. Folder lookups resolve by `(user_id, name)`, never name alone.
 
 ---
 
 ## 15. Milestones
 
-### Phase 0 (completed)
+### Shipped (Phases 0–2a)
 
-| Milestone | Description | Status |
-|---|---|---|
-| 0.1 | Raw async TCP proxy + LOGIN passthrough | ✅ Done |
-| 0.2 | IMAP command parser + router + proxy wiring | ✅ Done |
-| 0.4 | Local state DB (folder + message sync from upstream) | ✅ Done |
-| 0.5 | SMTP proxy + DATA staging | ✅ Done |
-| 1.0 | Staging engine + SQLite DB + minimal REST API | ✅ Done |
-| 1.1 | End-to-end scenario test suite | ✅ Done |
-| 1.2 | Rejection revert mechanism (snapshot → restore → inject FETCH) | ✅ Done |
-| 2.0 | React PWA (Pending + Audit + Setup + Login views) | ✅ Done |
-| Audit API | GET /audit, /audit/{id}, /audit/export | ✅ Done |
-| Expiry | 48h expiry background job + revert on expiry | ✅ Done |
-| Auth | Lane 2 + Lane 3 authentication | ✅ Done |
+Proxies, staging, reverts, expiry, REST API, web PWA, audit API — plus everything v5 listed as planned: Gmail XOAUTH2, credential secret store, web push (VAPID), batch approve/reject (API + UI), undo (API + UI), SMTP 550 rejection notice, urgency, per-agent audit, intent labelling + special-use discovery, provider profiles, auto-approval rules engine (enterprise plugin: predicates, cool-down, guardrails, shadow), plan entitlements, account maintenance (export / delete / token rotate / password reset), hash-chained + verified audit log, two-stage GDPR erasure + body scrub, send rate caps, per-user tenancy, loop health, CORS fail-closed, unified agent-add wizard.
 
-### Phase 0 (in progress — parallel)
+### Next
 
-| Milestone | Description | Status |
-|---|---|---|
-| 0.0 | Dev environment + Google Cloud Console OAuth2 | In progress (mmodahl) |
-| 0.3 | XOAUTH2 real auth (Gmail) | Waiting on 0.0 |
-
-### Phase 1 (next)
-
-| Milestone | Description |
+| Item | Notes |
 |---|---|
-| MVP Demo | Polish pass for external demo (see §18) |
-| 1.3 | Batch approve/reject API + UI |
-| 1.4 | Web Push notifications (VAPID) |
-| 1.5 | Undo within 24h window |
-| 1.6 | Upstream credential encryption (AES-256-GCM, per-user keys) |
-| 1.7 | SMTP 550 rejection response to AI |
-| 1.8 | Operation batching engine (30s window grouping) |
-| 1.9 | is_urgent field + urgency escalation logic |
-
-### Phase 2+
-
-- iOS app (SwiftUI + APNs)
-- Microsoft / Outlook OAuth2
-- Apple iCloud (app-specific password flow)
-- Auto-approval rules engine
-- Postgres migration
-- Multi-tenant platform layer
+| Outlook (Azure AD) OAuth2 | Phase 2 provider work |
+| Apple iCloud (app-specific password flow) | Phase 2 provider work |
+| iOS app (SwiftUI + APNs) | proprietary |
+| Postgres migration | Phase 3 (with durable batches table) |
+| EU hosting region | fly.io region expansion |
 
 ---
 
-## 16. Open Source Boundary (unchanged)
+## 16. Open Source Boundary
 
-Open source (MIT or Apache 2.0): IMAP proxy, SMTP proxy, staging engine, audit log, REST API, web PWA, Docker Compose.
-
-Proprietary: iOS app, Nuvrail Cloud managed infrastructure, enterprise features.
+- **Core — AGPL-3.0** (supersedes v4's MIT/Apache decision): IMAP/SMTP proxies, staging engine, audit log + verification, retention/erasure, REST API, web PWA, Docker Compose. Public repo: `github.com/agens-field/nuvrail`. The hosted app's footer links the corresponding source (AGPL §13).
+- **Proprietary**: the enterprise plugin (`nuvrail-enterprise` — rules engine, plan entitlements, admin API), deploy tooling, iOS app, Nuvrail Cloud operations. The plugin attaches through the `nuvrail.plugins` entry-point seam (§7.5); the public build has no providers registered and is fully functional with manual approval.
 
 ---
 
 ## 17. Implementation Notes (architecture decisions)
 
-**Single-coroutine SMTP vs. two-task IMAP:**
-IMAP proxy uses two concurrent asyncio tasks (client→upstream, upstream→client) because IMAP supports unsolicited server pushes. SMTP is strictly request/response — DATA interception requires synchronous control of both sides, so SMTP uses a single coroutine.
+**Single-coroutine SMTP vs. two-task IMAP** — unchanged from v5 (IMAP needs unsolicited server pushes; SMTP DATA needs synchronous control of both sides).
 
-**Revert injection timing:**
-Pending reverts are injected BEFORE the tagged OK for SELECT/NOOP/FETCH is forwarded to the client. This ensures the AI receives `[* N FETCH ...][tag OK]` in the correct order — the unsolicited FETCH arrives before the command completes, which is valid per RFC 3501.
+**Revert injection timing** — unchanged: unsolicited FETCH injected before the tagged OK (valid per RFC 3501).
 
-**DB path injection for testing:**
-All DB-accessing functions accept `db_path: Path = DB_PATH` as a keyword parameter. FastAPI endpoints use `Depends(get_db_path)` to override in tests. Proxy modules read `gateway.state_db.DB_PATH` at connection time (not at import time) so test fixtures can patch the module attribute.
+**Secret store "Pattern B" (store-of-record):** long-lived secrets live in the cloud secret manager; the DB stores only a reference. This keeps the DB breach-blast-radius to references, makes deletion provable (delete the secret, not just the pointer), and leaves self-hosting dependency-free via the AES local backend. Short-lived OAuth access tokens deliberately stay in process memory to avoid secret-version churn.
 
-**Agent token bcrypt rounds:**
-Human passwords use rounds=12 (slow, logged-in-once). Agent tokens use rounds=10 (faster — verified on every IMAP/SMTP connection attempt). Both are sufficient for their threat models.
+**Durable send caps from the audit log:** the rate limiter counts executed sends from `audit_log` rather than an in-memory counter, so the ceiling survives deploys/restarts and needs no new write path. Fail closed.
 
-**Upstream credentials plaintext (Phase 0):**
-`agent_credentials.upstream_password` is stored in plaintext. This is an acknowledged technical debt for Phase 0. Encryption path: AES-256-GCM with a per-user key derived from a master secret (KMS or Vault). Flagged as Phase 1 priority.
+**Tamper-evidence must be exercised:** a hash chain nobody verifies is decorative. Verification runs hourly, is exposed on demand, and the chain head is handed to users in their export.
+
+**Plugin seam over forks:** enterprise capability registers into core extension points (auto-decision provider, migrations, entitlements, routers) so core stays self-contained and the public build's behavior is exactly "no provider → manual approval."
+
+**DB path injection for testing** and **bcrypt round split (12 human / 10 agent)** — unchanged from v5.
 
 ---
 
-## 18. MVP Demo Checklist
+## 18. Production Readiness Checklist
 
-For an external demo, the following must work end-to-end:
+The v5 demo-blocker list is fully resolved: CORS is origin-allowlisted and fails closed in prod; upstream credentials are secret-store/encrypted (plaintext Phase 0 long gone); login and send paths are rate-limited; TLS terminates at the fly edge on all listeners.
 
-1. **Account creation** — new user registers at `/setup`, enters email + password
-2. **Email connection** — user enters upstream IMAP/SMTP host + credentials, generates agent token
-3. **Agent configures** — AI agent configured with proxy host/port, `agent_username`, `agent_token`
-4. **AI proposes operations** — agent connects to IMAP proxy, performs STORE/MOVE commands → `OK [STAGED]`
-5. **Human sees pending** — web app shows operation cards with description
-6. **Human approves** — button click; operation executes against upstream; AI re-syncs
-7. **Human rejects** — operation reverted; AI sees corrected state on next command
-8. **Audit trail** — complete timeline visible at `/audit`
-
-**Not required for demo but nice to have:**
-- Web Push notifications (currently requires manual refresh)
-- SMTP send staging (works but is secondary to IMAP for demo)
-- Batch approve
-
-**Known gaps before demo:**
-- No CORS configuration for production domain (currently `*` in dev mode)
-- Upstream credentials stored in plaintext (acceptable for demo, disclose to audience)
-- No rate limiting on proxy connections
-- No TLS on proxy listen side (SSH tunnel needed for remote agents)
+End-to-end flow for a new user: register → connect mailbox (manual IMAP/SMTP or Google OAuth; live validation; token shown once) → point the agent at the proxy → agent proposes; ops stage with readable descriptions, intents, batches → push notification → approve/reject/undo from the PWA (or rules decide, audited) → full trail in Audit, exportable and chain-verifiable.
 
 ---
 
@@ -580,18 +422,22 @@ For an external demo, the following must work end-to-end:
 | # | Question | Decision |
 |---|---|---|
 | 1 | SMTP proxy? | Yes — IMAP and SMTP together |
-| 2 | Multi-agent support? | Multiple agent credential sets per user from day 1 |
+| 2 | Multi-agent support? | Multiple agent credential sets per user from day 1 (quota by plan tier) |
 | 3 | Calendar scope? | Deferred — email only |
 | 4 | Personal clients bypass gateway? | Yes — AI lane only |
-| 5 | APPEND to Sent folder? | Blocked at IMAP layer |
+| 5 | APPEND to Sent folder? | ~~Blocked at IMAP layer~~ **Superseded:** on an approved send, the gateway itself appends a copy to the discovered Sent folder (RFC 6154), mirroring normal client behaviour. Agent-initiated APPENDs remain staged writes. |
 | 6 | APPEND to Drafts? | Staged as normal write |
-| 7 | Single vs. multi-account? | Multiple agents per user; multi-upstream planned |
-| 8 | Auto-approval for sends? | Never — sends always explicit |
-| 9 | Operation expiry? | 48h; status='expired' distinct from 'rejected' |
-| 10 | Gmail vs. generic IMAP first? | Generic IMAP/SMTP first (MXrouting); Gmail in 0.3 |
-| 11 | Auth: JWT vs. long-lived token? | Long-lived bearer token for Phase 0; JWT refresh in Phase 1 |
-| 12 | Agent token storage? | bcrypt hash only; plaintext shown once at creation |
-| 13 | Upstream cred encryption? | Plaintext Phase 0; AES-256-GCM per-user key Phase 1 |
-| 14 | Rejection revert timing? | Inject FETCH BEFORE tagged OK (correct IMAP ordering) |
-| 15 | Expiry distinct from rejection? | Yes — `expired` vs `rejected` for auditability |
-| 16 | Open source scope? | Gateway + web app OSS; iOS app proprietary |
+| 7 | Single vs. multi-account? | Multiple agents per user; multi-upstream supported |
+| 8 | Auto-approval for sends? | ~~Never~~ **Superseded:** opt-in enterprise rules may auto-approve sends, with safeguards — off by default, cool-down (`approve_after`) cancellable, shadow mode, per-rule hourly budgets, account/agent send caps, full audit attribution. Default behaviour is still per-action human approval. |
+| 9 | Operation expiry? | 48h; `expired` distinct from `rejected` |
+| 10 | Gmail vs. generic IMAP first? | Generic first; Gmail XOAUTH2 shipped |
+| 11 | Auth: JWT vs. long-lived token? | Long-lived bearer token, SHA-256-hashed at rest, self-serve rotation |
+| 12 | Agent token storage? | bcrypt hash only; plaintext shown once |
+| 13 | Upstream cred encryption? | ~~Plaintext Phase 0~~ **Superseded:** secret-manager store-of-record (hosted) / AES-256-GCM (local); see §4.1 |
+| 14 | Rejection revert timing? | Inject FETCH before tagged OK |
+| 15 | Expiry distinct from rejection? | Yes |
+| 16 | Open source scope? | ~~MIT/Apache~~ **Superseded:** core AGPL-3.0; enterprise plugin proprietary (§16) |
+| 17 | Audit retained forever? | **No — superseded by GDPR alignment:** immutable while retained; two-stage erasure (anonymize at deletion, hard-purge after 365 days) |
+| 18 | Tenancy on the hosted service? | Multi-user on a shared DB with strict per-user scoping everywhere, incl. the mailbox mirror (`UNIQUE(user_id, name)`) |
+| 19 | Outbound abuse control? | Fail-closed send caps: 100/hr/agent, 300/hr/account, 1,000/day/account, counted durably from the audit log |
+| 20 | Worker observability? | Per-loop heartbeats on `/health`; liveness stays 200, alerting keys on `loops_ok` |
