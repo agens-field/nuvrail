@@ -223,6 +223,57 @@ async def test_export_requires_auth(client: httpx.AsyncClient) -> None:
     assert resp.status_code == 401
 
 
+async def test_export_includes_mirror_push_and_chain_head(
+    client: httpx.AsyncClient, db_path: Path
+) -> None:
+    """Export covers everything Nuvrail holds: mailbox-mirror metadata, push
+    subscriptions, hash-chain fields on audit rows, and the chain head (Gap 4)."""
+    email = _unique_email()
+    token, _ = await _register_and_login(client, email=email)
+
+    async with get_db(db_path) as db:
+        async with db.execute("SELECT id FROM users WHERE email = ?", (email,)) as cur:
+            user_id = (await cur.fetchone())["id"]
+        # Seed a folder + message for this user, and a push subscription.
+        cur = await db.execute(
+            "INSERT INTO folders (user_id, name, last_synced) VALUES (?, 'INBOX', 0)",
+            (user_id,),
+        )
+        folder_id = cur.lastrowid
+        await db.execute(
+            """INSERT INTO messages (folder_id, uid, subject, sender, flags)
+               VALUES (?, 1, 'Hello', 'alice@example.com', '[]')""",
+            (folder_id,),
+        )
+        await db.execute(
+            """INSERT INTO push_subscriptions (user_id, endpoint, p256dh, auth, created_at)
+               VALUES (?, 'https://push.example/abc', 'k', 'a', 0)""",
+            (user_id,),
+        )
+        await db.commit()
+
+    # First export writes the 'export_requested' audit row (read happens before
+    # the write within a request); a second export then includes it.
+    await client.get("/api/v1/account/export", headers=_auth(token))
+    data = (await client.get("/api/v1/account/export", headers=_auth(token))).json()
+
+    # Mailbox mirror metadata present (envelope only).
+    assert any(
+        m["folder"] == "INBOX" and m["sender"] == "alice@example.com"
+        and m["subject"] == "Hello"
+        for m in data["mailbox_messages"]
+    )
+    # Push subscription present, WITHOUT key material.
+    assert data["push_subscriptions"]
+    sub = data["push_subscriptions"][0]
+    assert sub["endpoint"] == "https://push.example/abc"
+    assert "p256dh" not in sub and "auth" not in sub
+    # Audit rows carry the chain fields; chain head is exported for anchoring.
+    assert data["audit_log"], "expected at least the export_requested row"
+    assert all("entry_hash" in e and "prev_hash" in e for e in data["audit_log"])
+    assert isinstance(data["audit_chain_head"], str) and len(data["audit_chain_head"]) == 64
+
+
 # ---------------------------------------------------------------------------
 # Issue #26 — Account deletion
 # ---------------------------------------------------------------------------

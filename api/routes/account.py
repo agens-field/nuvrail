@@ -23,12 +23,14 @@ from api.models import (
     ExportAgent,
     ExportAuditEntry,
     ExportAutoApprovalRule,
+    ExportMailboxMessage,
     ExportOperation,
+    ExportPushSubscription,
     TokenInfoResponse,
     TokenRotateResponse,
 )
 from api.routes.operations import get_db_path
-from gateway.audit import insert_audit_event
+from gateway.audit import get_chain_head, insert_audit_event
 from gateway.credentials import purge_agent_upstream_secrets
 from gateway.state_db import get_db
 
@@ -103,8 +105,13 @@ async def export_account_data(
       - agents: label, upstream_host, upstream_user, created_at, revoked_at
         (NO credential values — passwords/tokens/keys are never exported)
       - operations: full staged_operations history for this user's agents
-      - audit_log: all audit entries scoped to this user
+      - audit_log: all audit entries scoped to this user, incl. the hash-chain
+        fields (prev_hash/entry_hash) so the trail is independently verifiable
       - auto_approval_rules: all rules for this user
+      - mailbox_messages: envelope metadata (folder/subject/sender/flags) held in
+        the local mirror for this user's folders (no message bodies)
+      - push_subscriptions: this user's web-push endpoints (no key material)
+      - audit_chain_head: the chain head at export time, for later tamper-checks
 
     Writes an 'export_requested' audit event.
     Sets Content-Disposition: attachment for browser download.
@@ -143,10 +150,12 @@ async def export_account_data(
             ) as cur:
                 operations_list = [dict(r) for r in await cur.fetchall()]
 
-        # Fetch audit_log scoped to this user (via user_id column added in issue #5)
+        # Fetch audit_log scoped to this user (via user_id column added in issue #5).
+        # Include the hash-chain fields so the export is independently verifiable.
         async with db.execute(
             """
-            SELECT id, timestamp, operation_id, event, actor, detail
+            SELECT id, timestamp, operation_id, event, actor, agent_id, op_type,
+                   detail, prev_hash, entry_hash
             FROM audit_log
             WHERE user_id = ?
             ORDER BY timestamp ASC
@@ -154,6 +163,34 @@ async def export_account_data(
             (user_id,),
         ) as cur:
             audit_rows = [dict(r) for r in await cur.fetchall()]
+
+        # Fetch mailbox-mirror message metadata for this user's folders. Envelope
+        # metadata only (no bodies) — this is data we hold about the user.
+        async with db.execute(
+            """
+            SELECT f.name AS folder, m.uid, m.subject, m.sender,
+                   m.date_sent, m.flags
+            FROM messages m
+            JOIN folders f ON m.folder_id = f.id
+            WHERE f.user_id = ?
+            ORDER BY f.name ASC, m.uid ASC
+            """,
+            (user_id,),
+        ) as cur:
+            message_rows = [dict(r) for r in await cur.fetchall()]
+
+        # Fetch this user's push subscriptions (endpoint + created_at; the
+        # encryption keys are subscription secrets and are not exported).
+        async with db.execute(
+            """
+            SELECT id, endpoint, created_at
+            FROM push_subscriptions
+            WHERE user_id = ?
+            ORDER BY created_at ASC
+            """,
+            (user_id,),
+        ) as cur:
+            push_rows = [dict(r) for r in await cur.fetchall()]
 
         # Fetch auto_approval_rules (scoped to this user)
         async with db.execute(
@@ -172,6 +209,10 @@ async def export_account_data(
         await insert_audit_event(db, timestamp=now, event='export_requested', actor='human', user_id=user_id)
         await db.commit()
 
+    # Chain head AFTER the export_requested row is committed, so the exported
+    # head reflects the state including this export.
+    chain_head = await get_chain_head(db_path)
+
     export = DataExportResponse(
         exported_at=now,
         account=ExportAccount(
@@ -188,6 +229,9 @@ async def export_account_data(
             )
             for r in rule_rows
         ],
+        mailbox_messages=[ExportMailboxMessage(**r) for r in message_rows],
+        push_subscriptions=[ExportPushSubscription(**r) for r in push_rows],
+        audit_chain_head=chain_head,
     )
 
     timestamp_str = str(now)

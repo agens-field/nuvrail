@@ -41,6 +41,7 @@ import time
 from pathlib import Path
 
 from gateway.audit import insert_audit_event
+from gateway.loop_health import record_heartbeat
 from gateway.state_db import DB_PATH, get_db
 
 logger = logging.getLogger(__name__)
@@ -170,12 +171,16 @@ async def run_scrubber_loop(
         while True:
             try:
                 count = await scrub_expired_body_previews(db_path=db_path)
+                record_heartbeat("scrubber", interval_seconds=interval_seconds)
                 if count > 0:
                     logger.info("[scrubber] Scrubbed %d operation(s) this run", count)
                 else:
                     logger.debug("[scrubber] No eligible operations to scrub")
             except Exception as exc:  # noqa: BLE001
                 logger.error("[scrubber] Unexpected error during scrub run: %s", exc)
+                record_heartbeat(
+                    "scrubber", interval_seconds=interval_seconds, ok=False, detail=str(exc)
+                )
 
             await asyncio.sleep(interval_seconds)
 
