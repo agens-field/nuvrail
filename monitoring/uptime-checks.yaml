@@ -1,0 +1,90 @@
+# Nuvrail external uptime checks — vendor-neutral manifest (#34)
+#
+# Single source of truth for the off-host uptime monitors. The operator
+# imports these into Better Uptime (or UptimeRobot) rather than hand-entering
+# eight checks across two environments — see monitoring/README.md.
+#
+# WHY OFF-HOST: these checks run from OUTSIDE the fly.io network so we detect
+# outages independently of the host — fly.io itself down, DNS/TLS break, cert
+# expiry, edge-routing failure. This is Layer 2 in docs/oncall.md. It is blind
+# to app-internal logic (that is Layer 3, the staging E2E monitor).
+#
+#   ┌─ gateway /health ─ HTTPS 200 "ok" ─┐   API may auto-stop when idle →
+#   │  web /            ─ HTTPS 200 HTML  │   cold-start tolerance below.
+#   │  gateway :993     ─ TCP (IMAP)      │   IMAP/SMTP never auto-stop →
+#   └─ gateway :465     ─ TCP (SMTPS)    ─┘   a TCP failure there is real.
+#
+# HOST NAMES are authoritative from the enterprise deploy.yml "Resolve deploy
+# config" step (NOT from GitHub issue #34's body, which predates the final
+# staging app names — it said nuvrail-mail-staging.fly.dev; the deployed
+# staging gateway is nuvrail-staging-gateway.fly.dev). Production app names are
+# resolved at deploy time from the FLY_MAIL_APP_PROD / FLY_WEB_APP_PROD repo
+# vars and are NOT yet pinned to literals here — fill them in at go-live from
+# `flyctl apps list` / the prod GitHub environment, then uncomment the prod
+# block.
+
+defaults:
+  # Cold-start tolerance: the REST API machine auto-stops when idle
+  # (min_machines_running=0). The first external probe wakes it and may be slow
+  # or time out once, then succeed. Absorb that without paging.
+  http_request_timeout_seconds: 10        # >= 10s to absorb cold start
+  check_interval_seconds: 180             # 3-min (Better Uptime free tier)
+  confirmation_period: 2_consecutive_failures   # alert on 2nd miss, not 1st
+  regions: [us, eu]                       # multi-region so one bad PoP != page
+  expected_status_code: 200
+
+environments:
+
+  staging:
+    gateway_host: nuvrail-staging-gateway.fly.dev
+    web_host: nuvrail-staging-web.fly.dev
+    checks:
+      - name: "staging · gateway /health"
+        type: http
+        url: https://nuvrail-staging-gateway.fly.dev/health
+        expected_status_code: 200
+        expected_body_contains: "ok"
+        http_request_timeout_seconds: 10   # cold-start: API auto-stops idle
+      - name: "staging · web /"
+        type: http
+        url: https://nuvrail-staging-web.fly.dev/
+        expected_status_code: 200
+      - name: "staging · gateway IMAP 993"
+        type: tcp
+        host: nuvrail-staging-gateway.fly.dev
+        port: 993                          # never auto-stops → unambiguous up/down
+      - name: "staging · gateway SMTPS 465"
+        type: tcp
+        host: nuvrail-staging-gateway.fly.dev
+        port: 465                          # never auto-stops → unambiguous up/down
+
+  # production:  (UNCOMMENT + fill hosts at go-live from FLY_*_APP_PROD)
+  #   gateway_host: <FLY_MAIL_APP_PROD>.fly.dev
+  #   web_host: <FLY_WEB_APP_PROD>.fly.dev
+  #   checks:
+  #     - name: "prod · gateway /health"
+  #       type: http
+  #       url: https://<FLY_MAIL_APP_PROD>.fly.dev/health
+  #       expected_status_code: 200
+  #       expected_body_contains: "ok"
+  #       http_request_timeout_seconds: 10
+  #     - name: "prod · web /"
+  #       type: http
+  #       url: https://<FLY_WEB_APP_PROD>.fly.dev/
+  #       expected_status_code: 200
+  #     - name: "prod · gateway IMAP 993"
+  #       type: tcp
+  #       host: <FLY_MAIL_APP_PROD>.fly.dev
+  #       port: 993
+  #     - name: "prod · gateway SMTPS 465"
+  #       type: tcp
+  #       host: <FLY_MAIL_APP_PROD>.fly.dev
+  #       port: 465
+
+alerting:
+  # See docs/oncall.md "Alert routing & contacts" — this mirrors it; keep the
+  # two in sync if either changes.
+  email: kc@nuvrail.com
+  slack_webhook: ""        # fill if/when a Slack incoming webhook exists
+  status_page: true        # Better Uptime free tier includes a public status page
+  escalation: single_on_call_KC   # Phase-0 single-user scale; revisit at team growth
