@@ -9,16 +9,10 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@700;800;900&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
-    <script>
-      // Apply saved theme before first paint to avoid flash
-      ;(function () {
-        const saved = localStorage.getItem('nuvrail-theme')
-        const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches
-        if (saved === 'dark' || (!saved && prefersDark)) {
-          document.documentElement.classList.add('dark')
-        }
-      })()
-    </script>
+    <!-- Theme bootstrap is an external 'self' asset (not inline) so the web CSP
+         can drop script-src 'unsafe-inline' (#63). Blocking <script> in <head>
+         keeps the pre-paint timing. -->
+    <script src="/theme-bootstrap.js"></script>
   </head>
   <body>
     <div id="root"></div>
