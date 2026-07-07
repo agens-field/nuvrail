@@ -1,0 +1,52 @@
+name: Feature request
+description: Suggest a capability or improvement for Nuvrail.
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Nuvrail's design bias is **simple solutions to the actual problem** — the smallest
+        thing that keeps a human in the loop between an agent and a real mailbox. Requests
+        framed around a concrete problem land better than requests framed around a solution.
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Preflight
+      options:
+        - label: I searched existing issues and this is not a duplicate.
+          required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem are you trying to solve?
+      description: Describe the situation and why the current behavior falls short. Lead with the problem, not the fix.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What would you like Nuvrail to do? Rough is fine.
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which area?
+      options:
+        - IMAP proxy
+        - SMTP proxy
+        - Web PWA / approvals UI
+        - REST API
+        - Provider support (Gmail, iCloud, Outlook, ...)
+        - Deployment / self-host
+        - Docs
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Workarounds you've tried, or other approaches you weighed.
