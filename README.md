@@ -2,6 +2,15 @@
 
 **The approval layer between AI agents and your inbox.**
 
+[![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
+[![Self-host](https://img.shields.io/badge/self--host-docker%20compose-2496ED?logo=docker&logoColor=white)](#-try-it-in-60-seconds-local)
+[![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
+[![Stars](https://img.shields.io/github/stars/agens-field/nuvrail?style=social)](https://github.com/agens-field/nuvrail/stargazers)
+
+> Email is the most dangerous thing you can hand an AI agent. Nuvrail makes it safe to try —
+> reads flow through instantly, every write waits for one human tap. **If that sounds useful,
+> [★ star the repo](https://github.com/agens-field/nuvrail) and [self-host it in 60 seconds](#-try-it-in-60-seconds-local).**
+
 AI agents that can send email are useful. AI agents that can send email *without any human check* are a liability. Nuvrail sits between your AI agent and your real mail server. The agent sees a normal IMAP/SMTP server. Every write — every move, delete, flag change, and outbound send — is staged for your approval before it touches the real mailbox. Reads pass through instantly; nothing blocks the agent from working. Only destructive or irreversible actions require a human to say yes.
 
 ---
@@ -26,6 +35,49 @@ AI agents that can send email are useful. AI agents that can send email *without
 4. **You approve or reject** — one tap. On approval the operation executes against the real server. On rejection the proxy reverts its local state and silently surfaces the rejection to the agent on its next command.
 
 Nothing is deleted. Ever. `EXPUNGE` is permanently blocked at the gateway layer — the worst the agent can do is move a message to Trash, and even that requires your sign-off.
+
+---
+
+## ⚡ Try it in 60 seconds (local)
+
+Just want to see it work? You need **Docker with the Compose plugin** — nothing else. No
+domain, no TLS, no nginx. This runs everything on `localhost` for evaluation.
+
+```bash
+git clone https://github.com/agens-field/nuvrail.git
+cd nuvrail
+cp .env.example .env
+
+# For a local trial, clear the two production-only origin settings so the
+# localhost UI can talk to the API (dev env falls back to permissive CORS):
+sed -i 's/^NUVRAIL_CORS_ORIGINS=.*/NUVRAIL_CORS_ORIGINS=/' .env
+
+docker compose up --build
+```
+
+> The shipped `.env.example` is pre-filled for a real `nuvrail.example.com` deployment.
+> Clearing `NUVRAIL_CORS_ORIGINS` with `NUVRAIL_ENV=dev` (the default) lets the local
+> browser at `localhost:3000` reach the API; production refuses to start without an
+> explicit origin. That's the only edit the local trial needs.
+
+Then open **<http://localhost:3000>** and create your first account. The API is on
+`http://localhost:8080`:
+
+```bash
+curl -s http://localhost:8080/health   # → {"status": "ok", ...}
+```
+
+That's it — the approval UI, REST API, and IMAP/SMTP proxies (`localhost:10143` / `localhost:10587`)
+are all running. Point a test IMAP/SMTP client at the proxy ports and watch writes get staged for
+approval in the UI.
+
+> ℹ️ **Local trial only.** With `NUVRAIL_MASTER_KEY` left blank the gateway auto-generates a
+> key on first run (fine for kicking the tires, **not** for real mail). To connect a real
+> mailbox with agents on other machines, follow [Deploying to production](#deploying-to-production)
+> below — that adds TLS, nginx, and a persisted master key.
+
+Like what you see? **[★ Star the repo](https://github.com/agens-field/nuvrail)** — it's the
+fastest way to help other people find it.
 
 ---
 
@@ -58,7 +110,11 @@ No plain-text port is reachable from outside the host.
 
 ---
 
-## Deploying
+## Deploying to production
+
+The 60-second path above is for evaluation on `localhost`. To run Nuvrail as a real service —
+reachable by an agent on another machine, terminating TLS, connecting a real mailbox — follow
+the full deployment below.
 
 ### Prerequisites
 
