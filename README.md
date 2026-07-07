@@ -543,9 +543,3 @@ If you hit a false positive, add an allowlist entry to `.gitleaks.toml` and comm
 |-----------|--------|
 | `web/` | 0 vulnerabilities ✅ |
 | `web/landing/` | 2 moderate (postcss in Next.js transitive deps — unfixable without downgrading to next@9.3.3, which is a worse outcome; tracked until Next.js ships a fix upstream) |
-
----
-
-## License
-
-MIT. See [LICENSE](LICENSE).
