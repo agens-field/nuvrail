@@ -60,6 +60,17 @@ Gmail supports RFC 6851 `UID MOVE`. All staged move operations targeting Gmail a
 
 ## Outlook / Microsoft 365 (`outlook.office365.com`, `hotmail.com`, `live.com`)
 
+### Authentication (OAuth2 / XOAUTH2 only)
+
+Microsoft deprecated IMAP/SMTP basic auth for Exchange Online in 2023, so Outlook
+agents authenticate upstream via **XOAUTH2** with an Azure AD access token — the
+same base64 wire format as Gmail, refreshed by `_refresh_microsoft_token`
+(`gateway/oauth2_tokens.py`, `oauth2_provider = "microsoft"`). Unlike Google,
+Microsoft requires the `scope` to be echoed on the refresh grant. The in-browser
+setup flow and Azure app registration are documented in
+[`docs/outlook-oauth2-setup.md`](outlook-oauth2-setup.md). Upstream hosts are
+`outlook.office365.com:993` (IMAP) / `smtp.office365.com:587` (SMTP).
+
 ### Trash folder
 
 Outlook uses `Deleted Items` rather than `\Trash` or `[Gmail]/Trash`.

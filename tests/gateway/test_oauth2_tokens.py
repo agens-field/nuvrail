@@ -6,6 +6,8 @@ Covers:
   - get_xoauth2_string: cache hit (no refresh), cache miss (refresh called),
     OAuth2Error on missing provider/credentials
   - _refresh_google_token: success path via httpx mock, HTTP error path
+  - _refresh_microsoft_token: success path, HTTP error path, scope echoed
+  - get_access_token: dispatches to the right provider refresh (google/microsoft)
   - DB schema: oauth2 columns present after init_db()
 """
 from __future__ import annotations
@@ -24,7 +26,9 @@ from gateway.oauth2_tokens import (
     _access_token_cache,
     _build_xoauth2_string,
     _refresh_google_token,
+    _refresh_microsoft_token,
     clear_access_token_cache,
+    get_access_token,
     get_xoauth2_string,
 )
 from gateway.state_db import get_db, init_db
@@ -275,6 +279,77 @@ async def test_refresh_google_token_http_error() -> None:
     with patch("httpx.AsyncClient", return_value=mock_client):
         with pytest.raises(OAuth2Error, match="HTTP 400"):
             await _refresh_google_token("cid", "csecret", "refresh")
+
+
+# ---------------------------------------------------------------------------
+# _refresh_microsoft_token — httpx path (Outlook/O365, Azure AD)
+# ---------------------------------------------------------------------------
+
+
+async def test_refresh_microsoft_token_success() -> None:
+    """Returns (access_token, expires_at) on HTTP 200."""
+    fake_resp = MagicMock()
+    fake_resp.status_code = 200
+    fake_resp.text = json.dumps({
+        "access_token": "eyJ0.ms.new",
+        "expires_in": 3600,
+    })
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    mock_client.post = AsyncMock(return_value=fake_resp)
+
+    with patch("httpx.AsyncClient", return_value=mock_client):
+        token, expires_at = await _refresh_microsoft_token("cid", "csecret", "refresh")
+
+    assert token == "eyJ0.ms.new"
+    assert expires_at > int(time.time())
+    # Microsoft requires the scope to be echoed on the refresh grant.
+    _, kwargs = mock_client.post.call_args
+    assert "scope" in kwargs["data"]
+    assert "offline_access" in kwargs["data"]["scope"]
+    assert kwargs["data"]["grant_type"] == "refresh_token"
+
+
+async def test_refresh_microsoft_token_http_error() -> None:
+    """Raises OAuth2Error on non-200 HTTP response, surfacing the error code."""
+    fake_resp = MagicMock()
+    fake_resp.status_code = 400
+    fake_resp.text = json.dumps({"error": "invalid_grant"})
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    mock_client.post = AsyncMock(return_value=fake_resp)
+
+    with patch("httpx.AsyncClient", return_value=mock_client):
+        with pytest.raises(OAuth2Error, match="invalid_grant"):
+            await _refresh_microsoft_token("cid", "csecret", "refresh")
+
+
+async def test_get_access_token_dispatches_microsoft(db_path: Path) -> None:
+    """A microsoft-provider agent refreshes via the Microsoft token path."""
+    agent_id = await _insert_agent(
+        db_path,
+        oauth2_provider="microsoft",
+        oauth2_refresh_token_plain="ms-refresh",
+        oauth2_client_id="ms-cid",
+        oauth2_client_secret_plain="ms-secret",
+        upstream_user="user@outlook.com",
+    )
+    with patch(
+        "gateway.oauth2_tokens._refresh_microsoft_token",
+        new=AsyncMock(return_value=("ms-access", int(time.time()) + 3600)),
+    ) as mock_ms, patch(
+        "gateway.oauth2_tokens._refresh_google_token",
+        new=AsyncMock(side_effect=AssertionError("google path must not run")),
+    ):
+        email, token = await get_access_token(agent_id, db_path)
+
+    assert email == "user@outlook.com"
+    assert token == "ms-access"
+    mock_ms.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------

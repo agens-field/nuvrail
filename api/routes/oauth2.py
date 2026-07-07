@@ -1,21 +1,39 @@
 """
-OAuth2 web flow endpoints — Gmail XOAUTH2 in-browser setup.
+OAuth2 web flow endpoints — XOAUTH2 in-browser setup (Gmail + Outlook/O365).
 
-Flow:
-  1. GET /api/v1/oauth2/google/start  (authenticated)
+Provider-parameterized. The same three-legged flow serves every provider in
+_PROVIDERS; only the endpoints, scopes, env var names, and upstream IMAP/SMTP
+hosts differ. Google and Microsoft (Azure AD) are wired today.
+
+Route shape (``{provider}`` ∈ {"google", "microsoft"}):
+  1. GET /api/v1/oauth2/{provider}/start     (authenticated)
        Generates state nonce, returns {auth_url, state}.
-       Browser navigates to auth_url (Google consent).
+       Browser navigates to auth_url (provider consent).
 
-  2. GET /api/v1/oauth2/google/callback  (unauthenticated — called by Google)
+  2. GET /api/v1/oauth2/{provider}/callback  (unauthenticated — called by provider)
        Exchanges code → refresh_token + access_token.
-       Creates agent_credentials row.
+       Creates agent_credentials row (with the provider's upstream hosts).
        Redirects browser to /#/oauth2/callback?state=<state>.
 
-  3. GET /api/v1/oauth2/google/result  (authenticated)
+  3. GET /api/v1/oauth2/{provider}/result    (authenticated)
        Frontend polls for completed result (one-time, clears on read).
 
-State lifecycle:
-  _pending[state] = {user_id, label, created_at}   (max _STATE_TTL seconds)
+Provider dispatch
+-----------------
+
+    /oauth2/{provider}/start ---.
+    /oauth2/{provider}/callback  >--- _provider_or_404(provider) --> ProviderConfig
+    /oauth2/{provider}/result --'          |                              |
+                                           |  auth/token endpoints, scope, |
+                                           |  env var names, imap/smtp host,|
+                                           |  email-from-response extractor |
+                                           v                              v
+                                    503 if unknown              build auth_url /
+                                                                exchange code /
+                                                                INSERT credentials
+
+State lifecycle (shared across providers — state nonce is globally unique):
+  _pending[state] = {user_id, label, provider, created_at}   (max _STATE_TTL s)
   _results[state] = {agent_username, agent_token, label, upstream_user}
                   | {error: str}                    (cleared on first read)
 
@@ -37,6 +55,9 @@ import urllib.request
 from pathlib import Path
 from typing import Optional
 
+from dataclasses import dataclass
+from typing import Callable
+
 from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse, RedirectResponse
 
@@ -56,12 +77,89 @@ _GOOGLE_TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token"
 _SCOPE = "https://mail.google.com/ openid email"
 _STATE_TTL = 300  # seconds
 
+# Microsoft identity platform (Azure AD v2.0). The tenant segment defaults to
+# "common" (multi-tenant + personal Microsoft accounts) so consumer Outlook.com
+# and most Office 365 tenants work out of the box; a single-tenant deployment
+# overrides it with MICROSOFT_TENANT.
+_MS_TENANT = os.environ.get("MICROSOFT_TENANT", "common").strip() or "common"
+_MICROSOFT_AUTH_ENDPOINT = (
+    f"https://login.microsoftonline.com/{_MS_TENANT}/oauth2/v2.0/authorize"
+)
+_MICROSOFT_TOKEN_ENDPOINT = (
+    f"https://login.microsoftonline.com/{_MS_TENANT}/oauth2/v2.0/token"
+)
+# offline_access -> refresh token; IMAP.AccessAsUser.All + SMTP.Send -> mailbox
+# access; openid email -> account address. Microsoft echoes these on refresh too.
+_MICROSOFT_SCOPE = (
+    "offline_access openid email "
+    "https://outlook.office.com/IMAP.AccessAsUser.All "
+    "https://outlook.office.com/SMTP.Send"
+)
+
 # ---------------------------------------------------------------------------
 # Module-level state (process-scoped, single-worker)
 # ---------------------------------------------------------------------------
 
-_pending: dict[str, dict] = {}  # state → {user_id, label, created_at}
+_pending: dict[str, dict] = {}  # state → {user_id, label, provider, created_at}
 _results: dict[str, dict] = {}  # state → result or error dict
+
+
+# ---------------------------------------------------------------------------
+# Provider registry
+# ---------------------------------------------------------------------------
+#
+# Everything provider-specific about the flow lives in one ProviderConfig row.
+# The route handlers are provider-agnostic: they resolve a config by the
+# ``{provider}`` path segment and read endpoints/scopes/hosts off it. Adding a
+# provider = adding a row here (+ a token-refresh branch in
+# gateway/oauth2_tokens.py), not forking the flow.
+
+
+@dataclass(frozen=True)
+class ProviderConfig:
+    """Static wiring for one OAuth2 provider's XOAUTH2 setup flow.
+
+    Fields
+    ------
+    key : str
+        The ``oauth2_provider`` value stored on agent_credentials and the
+        token-refresh dispatch key ("google" / "microsoft").
+    auth_endpoint / token_endpoint : str
+        Provider authorization + token URLs.
+    scope : str
+        Space-delimited scopes requested at consent time.
+    client_id_env / client_secret_env : str
+        Names of the env vars holding this provider's OAuth2 client creds.
+    redirect_env / redirect_default : str
+        Env var name + fallback for the callback URL registered with the
+        provider (must exactly match one registered redirect URI).
+    imap_host / smtp_host / imap_port / smtp_port :
+        Upstream mail hosts written onto the agent_credentials row.
+    default_label : str
+        Label used when the caller doesn't pass one.
+    email_extractor : Callable[[dict], str]
+        Pulls the account email out of the token-exchange response JSON. Google
+        carries it in the id_token JWT; Microsoft does too, but under a
+        different claim precedence — see the extractor functions below.
+    extra_auth_params : dict[str, str]
+        Provider-specific query params appended to the auth URL.
+    """
+
+    key: str
+    auth_endpoint: str
+    token_endpoint: str
+    scope: str
+    client_id_env: str
+    client_secret_env: str
+    redirect_env: str
+    redirect_default: str
+    imap_host: str
+    smtp_host: str
+    imap_port: int
+    smtp_port: int
+    default_label: str
+    email_extractor: Callable[[dict], str]
+    extra_auth_params: dict[str, str]
 
 
 # ---------------------------------------------------------------------------
@@ -76,30 +174,48 @@ def _prune_expired() -> None:
         del _pending[k]
 
 
-def _get_oauth2_env() -> tuple[str, str] | None:
-    """Return (client_id, client_secret) from env, or None if not configured."""
-    client_id = os.environ.get("GOOGLE_CLIENT_ID", "").strip()
-    client_secret = os.environ.get("GOOGLE_CLIENT_SECRET", "").strip()
+def _get_oauth2_env(cfg: ProviderConfig) -> tuple[str, str] | None:
+    """Return (client_id, client_secret) for *cfg* from env, or None if unset."""
+    client_id = os.environ.get(cfg.client_id_env, "").strip()
+    client_secret = os.environ.get(cfg.client_secret_env, "").strip()
     if not client_id or not client_secret:
         return None
     return client_id, client_secret
 
 
-def _not_configured_response() -> JSONResponse:
+def _not_configured_response(cfg: ProviderConfig) -> JSONResponse:
     return JSONResponse(
         status_code=503,
         content={
             "error": "oauth2_not_configured",
-            "detail": "GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET not set on this server.",
+            "detail": (
+                f"{cfg.client_id_env} / {cfg.client_secret_env} "
+                "not set on this server."
+            ),
         },
     )
 
 
-def _get_redirect_uri() -> str:
-    return os.environ.get(
-        "GOOGLE_REDIRECT_URI",
-        "http://localhost:8080/api/v1/oauth2/google/callback",
+def _provider_or_404(provider: str) -> ProviderConfig | None:
+    """Resolve a provider key to its config, or None for an unknown provider."""
+    return _PROVIDERS.get(provider)
+
+
+def _unknown_provider_response(provider: str) -> JSONResponse:
+    return JSONResponse(
+        status_code=404,
+        content={
+            "error": "oauth2_unknown_provider",
+            "detail": (
+                f"Unknown OAuth2 provider {provider!r}. "
+                f"Supported: {', '.join(sorted(_PROVIDERS))}."
+            ),
+        },
     )
+
+
+def _get_redirect_uri(cfg: ProviderConfig) -> str:
+    return os.environ.get(cfg.redirect_env, cfg.redirect_default)
 
 
 def _urllib_post(url: str, payload: dict) -> tuple[int, str]:
@@ -119,14 +235,17 @@ def _urllib_post(url: str, payload: dict) -> tuple[int, str]:
 
 
 async def _exchange_code(
+    cfg: ProviderConfig,
     code: str,
     client_id: str,
     client_secret: str,
     redirect_uri: str,
-) -> tuple[str, str]:
-    """Exchange an authorization code for (refresh_token, access_token).
+) -> tuple[str, str, str]:
+    """Exchange an authorization code for (refresh_token, access_token, id_token).
 
-    Raises ValueError if the exchange fails or refresh_token is absent.
+    Provider-agnostic: posts to ``cfg.token_endpoint`` with ``cfg.scope``
+    echoed (Microsoft requires the scope on the code grant; Google tolerates
+    it). Raises ValueError if the exchange fails or refresh_token is absent.
     """
     payload = {
         "code": code,
@@ -134,100 +253,186 @@ async def _exchange_code(
         "client_secret": client_secret,
         "redirect_uri": redirect_uri,
         "grant_type": "authorization_code",
+        "scope": cfg.scope,
     }
     status_code, body = await asyncio.get_event_loop().run_in_executor(
-        None, _urllib_post, _GOOGLE_TOKEN_ENDPOINT, payload
+        None, _urllib_post, cfg.token_endpoint, payload
     )
     if status_code != 200:
         try:
             err = json.loads(body)
             raise ValueError(
-                f"Google token exchange failed: {err.get('error')} — {err.get('error_description')}"
+                f"{cfg.key} token exchange failed: "
+                f"{err.get('error')} — {err.get('error_description')}"
             )
         except json.JSONDecodeError:
-            raise ValueError(f"Google token exchange failed: HTTP {status_code}")
+            raise ValueError(f"{cfg.key} token exchange failed: HTTP {status_code}")
 
     data = json.loads(body)
     refresh_token = data.get("refresh_token")
     if not refresh_token:
         raise ValueError(
-            "Google did not return a refresh_token. "
-            "Ensure the OAuth2 client uses access_type=offline and prompt=consent."
+            f"{cfg.key} did not return a refresh_token. "
+            "Ensure the OAuth2 client requests offline access and forces consent."
         )
     access_token = data.get("access_token", "")
     id_token = data.get("id_token", "")
-    return refresh_token, access_token, id_token  # type: ignore[return-value]
+    return refresh_token, access_token, id_token
 
 
-def _email_from_id_token(id_token: str) -> str:
-    """Extract email from a Google id_token JWT payload (base64 decode, no verify)."""
-    if not id_token:
-        return ""
+def _decode_jwt_payload(jwt: str) -> dict:
+    """Base64-decode the payload segment of a JWT (no signature verification).
+
+    We only read non-authoritative display claims (the account email) from the
+    id_token the provider just minted for us over TLS in the code exchange — we
+    are not authenticating the user, so signature verification is unnecessary
+    here. Returns {} on any malformed input.
+    """
+    if not jwt:
+        return {}
     try:
-        parts = id_token.split(".")
+        parts = jwt.split(".")
         if len(parts) != 3:
-            return ""
+            return {}
         padding = "=" * (4 - len(parts[1]) % 4)
-        payload = json.loads(base64.b64decode(parts[1] + padding).decode("utf-8"))
-        return payload.get("email", "")
+        return json.loads(base64.b64decode(parts[1] + padding).decode("utf-8"))
     except Exception:
-        return ""
+        return {}
+
+
+def _google_email_from_response(data: dict) -> str:
+    """Google carries the account email in the id_token's ``email`` claim."""
+    return _decode_jwt_payload(data.get("id_token", "")).get("email", "")
+
+
+def _microsoft_email_from_response(data: dict) -> str:
+    """Extract the account email from a Microsoft token response.
+
+    Azure AD's id_token puts the address in ``email`` for accounts that expose
+    it, but consumer/work accounts often only populate ``preferred_username``
+    (which is the UPN / sign-in address — the correct IMAP/SMTP login). Prefer
+    ``email`` when present, fall back to ``preferred_username``, then ``upn``.
+    """
+    claims = _decode_jwt_payload(data.get("id_token", ""))
+    return (
+        claims.get("email")
+        or claims.get("preferred_username")
+        or claims.get("upn")
+        or ""
+    )
+
+
+_PROVIDERS: dict[str, ProviderConfig] = {
+    "google": ProviderConfig(
+        key="google",
+        auth_endpoint=_GOOGLE_AUTH_ENDPOINT,
+        token_endpoint=_GOOGLE_TOKEN_ENDPOINT,
+        scope=_SCOPE,
+        client_id_env="GOOGLE_CLIENT_ID",
+        client_secret_env="GOOGLE_CLIENT_SECRET",
+        redirect_env="GOOGLE_REDIRECT_URI",
+        redirect_default="http://localhost:8080/api/v1/oauth2/google/callback",
+        imap_host="imap.gmail.com",
+        smtp_host="smtp.gmail.com",
+        imap_port=993,
+        smtp_port=587,
+        default_label="gmail",
+        email_extractor=_google_email_from_response,
+        # access_type=offline + prompt=consent is how Google returns a refresh
+        # token on the code grant.
+        extra_auth_params={"access_type": "offline", "prompt": "consent"},
+    ),
+    "microsoft": ProviderConfig(
+        key="microsoft",
+        auth_endpoint=_MICROSOFT_AUTH_ENDPOINT,
+        token_endpoint=_MICROSOFT_TOKEN_ENDPOINT,
+        scope=_MICROSOFT_SCOPE,
+        client_id_env="MICROSOFT_CLIENT_ID",
+        client_secret_env="MICROSOFT_CLIENT_SECRET",
+        redirect_env="MICROSOFT_REDIRECT_URI",
+        redirect_default="http://localhost:8080/api/v1/oauth2/microsoft/callback",
+        imap_host="outlook.office365.com",
+        smtp_host="smtp.office365.com",
+        imap_port=993,
+        smtp_port=587,
+        default_label="outlook",
+        email_extractor=_microsoft_email_from_response,
+        # offline_access (in scope) yields the refresh token; prompt=consent
+        # forces the consent screen so the refresh token is reliably returned.
+        extra_auth_params={"prompt": "consent"},
+    ),
+}
 
 
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
 
-@router.get("/oauth2/google/start")
-async def oauth2_google_start(
+@router.get("/oauth2/{provider}/start")
+async def oauth2_start(
+    provider: str,
     label: Optional[str] = None,
     current_user: dict = Depends(get_current_user),
 ) -> JSONResponse:
-    """Initiate Gmail OAuth2 flow.
+    """Initiate an OAuth2 XOAUTH2 setup flow for *provider* (google|microsoft).
 
     Returns {auth_url, state}. The caller should redirect the browser to
-    auth_url. On completion Google will redirect to /callback.
+    auth_url. On completion the provider will redirect to /callback.
     """
-    creds = _get_oauth2_env()
+    cfg = _provider_or_404(provider)
+    if cfg is None:
+        return _unknown_provider_response(provider)
+
+    creds = _get_oauth2_env(cfg)
     if creds is None:
-        return _not_configured_response()
+        return _not_configured_response(cfg)
     client_id, _ = creds
 
     _prune_expired()
     state = secrets.token_hex(32)
     _pending[state] = {
         "user_id": current_user["id"],
-        "label": label or "gmail",
+        "label": label or cfg.default_label,
+        "provider": cfg.key,
         "created_at": time.time(),
     }
 
     params = {
         "client_id": client_id,
-        "redirect_uri": _get_redirect_uri(),
+        "redirect_uri": _get_redirect_uri(cfg),
         "response_type": "code",
-        "scope": _SCOPE,
-        "access_type": "offline",
-        "prompt": "consent",
+        "scope": cfg.scope,
         "state": state,
+        **cfg.extra_auth_params,
     }
-    auth_url = _GOOGLE_AUTH_ENDPOINT + "?" + urllib.parse.urlencode(params)
+    auth_url = cfg.auth_endpoint + "?" + urllib.parse.urlencode(params)
     return JSONResponse({"auth_url": auth_url, "state": state})
 
 
-@router.get("/oauth2/google/callback")
-async def oauth2_google_callback(
+@router.get("/oauth2/{provider}/callback")
+async def oauth2_callback(
+    provider: str,
     code: Optional[str] = None,
     state: Optional[str] = None,
     error: Optional[str] = None,
     db_path: Path = Depends(get_db_path),
 ) -> RedirectResponse:
-    """Google OAuth2 redirect target (unauthenticated — called by Google).
+    """OAuth2 redirect target (unauthenticated — called by the provider).
 
-    On success: creates agent_credentials row, redirects to SPA callback route.
-    On any failure: stores error in _results, still redirects so the SPA can
-    show a useful message rather than a blank server error page.
+    On success: creates agent_credentials row (with the provider's upstream
+    hosts), redirects to SPA callback route. On any failure: stores error in
+    _results, still redirects so the SPA can show a useful message rather than
+    a blank server error page.
+
+    The provider is resolved from BOTH the path segment and the pending state
+    entry; if they disagree (a state minted for a different provider) we treat
+    it as an invalid state rather than crossing wires.
     """
     frontend_callback = "/#/oauth2/callback"
+
+    cfg = _provider_or_404(provider)
+    if cfg is None:
+        return _unknown_provider_response(provider)
 
     # Unknown or expired state — redirect with error flag so SPA can react.
     if not state or state not in _pending:
@@ -236,7 +441,12 @@ async def oauth2_google_callback(
 
     pending = _pending.pop(state)
 
-    # User denied access or Google returned an error before we got a code.
+    # State was minted for a different provider's flow — refuse to cross wires.
+    if pending.get("provider", "google") != cfg.key:
+        qs = urllib.parse.urlencode({"state": state, "error": "invalid_state"})
+        return RedirectResponse(f"{frontend_callback}?{qs}", status_code=302)
+
+    # User denied access or the provider returned an error before we got a code.
     if error or not code:
         _results[state] = {"error": error or "no_code", "user_id": pending["user_id"]}
         return RedirectResponse(
@@ -245,7 +455,7 @@ async def oauth2_google_callback(
         )
 
     # Attempt code exchange + agent creation.
-    creds = _get_oauth2_env()
+    creds = _get_oauth2_env(cfg)
     if creds is None:
         _results[state] = {"error": "oauth2_not_configured", "user_id": pending["user_id"]}
         return RedirectResponse(
@@ -257,9 +467,11 @@ async def oauth2_google_callback(
     created_refs: list[str] = []
     try:
         refresh_token, access_token, id_token = await _exchange_code(
-            code, client_id, client_secret, _get_redirect_uri()
+            cfg, code, client_id, client_secret, _get_redirect_uri(cfg)
         )
-        upstream_user = _email_from_id_token(id_token)
+        upstream_user = cfg.email_extractor(
+            {"id_token": id_token, "access_token": access_token}
+        )
 
         now = int(time.time())
         agent_username = "nuvrail_" + secrets.token_hex(8)
@@ -294,13 +506,13 @@ async def oauth2_google_callback(
                     pending["label"],
                     agent_username,
                     hashed,
-                    "imap.gmail.com",
-                    "smtp.gmail.com",
-                    993,
-                    587,
+                    cfg.imap_host,
+                    cfg.smtp_host,
+                    cfg.imap_port,
+                    cfg.smtp_port,
                     upstream_user,
                     None,
-                    "google",
+                    cfg.key,
                     client_id,
                     stored_client_secret,
                     stored_refresh_token,
@@ -332,8 +544,9 @@ async def oauth2_google_callback(
     )
 
 
-@router.get("/oauth2/google/result")
-async def oauth2_google_result(
+@router.get("/oauth2/{provider}/result")
+async def oauth2_result(
+    provider: str,
     state: str,
     current_user: dict = Depends(get_current_user),
 ) -> JSONResponse:
@@ -346,7 +559,13 @@ async def oauth2_google_result(
     A caller who is not that user gets a 404 (indistinguishable from an
     unknown state) and the result is NOT consumed — so a leaked state value
     cannot be used to steal another user's freshly minted agent token.
+
+    ``provider`` is validated for a clear error on a bogus path, but the result
+    map is keyed by the globally-unique state nonce, so lookups don't branch on
+    it.
     """
+    if _provider_or_404(provider) is None:
+        return _unknown_provider_response(provider)
     result = _results.get(state)
     if result is None or result.get("user_id") != current_user["id"]:
         return JSONResponse(
