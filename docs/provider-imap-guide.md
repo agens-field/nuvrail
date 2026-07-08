@@ -76,6 +76,33 @@ Outlook/Exchange supports RFC 6851 `UID MOVE`.
 
 ---
 
+## Apple iCloud (`imap.mail.me.com`, `smtp.mail.me.com`, legacy `*.mac.com`)
+
+iCloud is detected on the `mail.me.com` and `mac.com` hostname suffixes (see `ICLOUD_PROFILE` in `gateway/provider_profiles.py`). Users authenticate with an **app-specific password** (iCloud has no OAuth2 for IMAP/SMTP); the user-facing setup walkthrough lives in [`docs/providers/icloud.md`](providers/icloud.md).
+
+### Folder mapping
+
+iCloud uses non-standard folder names, mapped by the profile:
+
+| Role    | iCloud folder      |
+| ------- | ------------------ |
+| Archive | `Archive`          |
+| Trash   | `Deleted Messages` |
+| Junk    | `Junk`             |
+| Sent    | `Sent Messages`    |
+
+Archive/delete/spam intents are recognized and staged the same way as Gmail (COPY+STORE `\Deleted` → `UID MOVE` into the mapped folder), with delete-intent ops marked urgent in the approval UI.
+
+### Sent Mail — Nuvrail APPENDs (does NOT auto-save)
+
+Unlike Gmail and Outlook, **iCloud does not auto-save a copy to the Sent folder on SMTP relay.** The profile therefore sets `sent_folder="Sent Messages"`, so Nuvrail performs an IMAP APPEND to `Sent Messages` after a successful send (on approval) to keep the Sent folder correct. Agent APPENDs to `Sent Messages` are suppressed (`sent_suppress_folders`) to avoid the duplicate that would otherwise result from Nuvrail's own APPEND.
+
+### MOVE capability
+
+iCloud supports RFC 6851 `UID MOVE` (`move_capable=True`).
+
+---
+
 ## Generic IMAP
 
 No normalization beyond standard RFC 3501. `UID MOVE` is not assumed.
