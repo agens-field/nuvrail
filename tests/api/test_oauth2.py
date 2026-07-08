@@ -1,9 +1,12 @@
 """
-Tests for OAuth2 web flow endpoints.
+Tests for OAuth2 web flow endpoints (provider-parameterized).
 
-GET /api/v1/oauth2/google/start
-GET /api/v1/oauth2/google/callback
-GET /api/v1/oauth2/google/result
+GET /api/v1/oauth2/{provider}/start
+GET /api/v1/oauth2/{provider}/callback
+GET /api/v1/oauth2/{provider}/result
+
+Covers Google (Gmail) and Microsoft (Outlook/O365 via Azure AD), plus the
+unknown-provider guard.
 
 Uses httpx.AsyncClient + tmp_path DB, same pattern as test_auth.py.
 """
@@ -219,3 +222,102 @@ async def test_callback_with_invalid_state_redirects_with_error(
     assert "/#/oauth2/callback" in location
     assert "error=invalid_state" in location
     assert "bad_state_xyz" in location
+
+
+# ---------------------------------------------------------------------------
+# Provider parameterization: Microsoft (Outlook/O365) + unknown provider
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_microsoft_start_returns_auth_url_when_configured(
+    client: httpx.AsyncClient,
+) -> None:
+    """/microsoft/start returns an Azure AD auth_url when MS env vars are set."""
+    token = await _register_and_login(client, email="msuser@example.com")
+
+    with patch.dict(
+        "os.environ",
+        {"MICROSOFT_CLIENT_ID": "ms_client_id", "MICROSOFT_CLIENT_SECRET": "ms_secret"},
+    ):
+        resp = await client.get(
+            "/api/v1/oauth2/microsoft/start?label=My+Outlook",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "login.microsoftonline.com" in body["auth_url"]
+    assert "ms_client_id" in body["auth_url"]
+    assert body["state"] in body["auth_url"]
+    # State records the provider so the callback won't cross wires.
+    assert oauth2_routes._pending[body["state"]]["provider"] == "microsoft"
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_microsoft_start_503_when_env_not_configured(
+    client: httpx.AsyncClient,
+) -> None:
+    """/microsoft/start reports the Microsoft env var names when unset."""
+    import os
+
+    token = await _register_and_login(client, email="msnoenv@example.com")
+    env_backup = {}
+    for key in ("MICROSOFT_CLIENT_ID", "MICROSOFT_CLIENT_SECRET"):
+        env_backup[key] = os.environ.pop(key, None)
+    try:
+        resp = await client.get(
+            "/api/v1/oauth2/microsoft/start",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    finally:
+        for key, val in env_backup.items():
+            if val is not None:
+                os.environ[key] = val
+
+    assert resp.status_code == 503
+    body = resp.json()
+    assert body["error"] == "oauth2_not_configured"
+    assert "MICROSOFT_CLIENT_ID" in body["detail"]
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_unknown_provider_start_returns_404(
+    client: httpx.AsyncClient,
+) -> None:
+    """/oauth2/<bogus>/start returns a clear unknown-provider 404."""
+    token = await _register_and_login(client, email="bogusprov@example.com")
+    resp = await client.get(
+        "/api/v1/oauth2/yahoo/start",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 404
+    assert resp.json()["error"] == "oauth2_unknown_provider"
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_callback_provider_mismatch_is_invalid_state(
+    client: httpx.AsyncClient,
+) -> None:
+    """A state minted for google, replayed on the microsoft callback, is refused.
+
+    Guards against crossing a google flow's state into a microsoft callback
+    (or vice versa) — the callback must honor the provider the state was for.
+    """
+    import time as _time
+
+    state = "mismatch_" + "x" * 55
+    oauth2_routes._pending[state] = {
+        "user_id": 12345,
+        "label": "gmail",
+        "provider": "google",
+        "created_at": _time.time(),
+    }
+    resp = await client.get(
+        f"/api/v1/oauth2/microsoft/callback?code=abc&state={state}",
+        follow_redirects=False,
+    )
+    assert resp.status_code == 302
+    assert "error=invalid_state" in resp.headers["location"]
+    # The mismatched state was consumed (popped) rather than left dangling.
+    assert state not in oauth2_routes._pending

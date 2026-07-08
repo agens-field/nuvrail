@@ -10,7 +10,13 @@ The long-lived refresh token / client secret are resolved on demand via
 gateway.credentials.fetch_credential (which may hit AWS/GCP secret managers).
 
 Supported providers:
-  - google: token endpoint https://oauth2.googleapis.com/token
+  - google:    token endpoint https://oauth2.googleapis.com/token
+  - microsoft: token endpoint
+               https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token
+               (Outlook.com / Office 365 via Azure AD; XOAUTH2 — same base64
+               wire format as Gmail, differs only in endpoints + scopes).
+               Microsoft deprecated IMAP/SMTP basic auth for Exchange Online
+               in 2023, so OAuth2 is the only remaining path.
 
 The XOAUTH2 string format (base64-encoded):
   user=<email>\x01auth=Bearer <access_token>\x01\x01
@@ -55,6 +61,23 @@ logger = logging.getLogger(__name__)
 
 _GOOGLE_TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token"
 _GOOGLE_REVOKE_ENDPOINT = "https://oauth2.googleapis.com/revoke"
+
+# Microsoft identity platform (Azure AD v2.0). The tenant segment is
+# "common" for multi-tenant + personal Microsoft accounts, which is what we
+# use for consumer Outlook.com and most Office 365 tenants; a single-tenant
+# deployment can override it via MICROSOFT_TENANT (see api/routes/oauth2.py).
+_MICROSOFT_TOKEN_ENDPOINT = (
+    "https://login.microsoftonline.com/common/oauth2/v2.0/token"
+)
+# Scopes required on the refresh exchange. offline_access keeps the refresh
+# token alive; IMAP.AccessAsUser.All + SMTP.Send grant mailbox access; openid
+# email let us read the account address. Microsoft — unlike Google — requires
+# the scopes to be echoed on the refresh_token grant, so we send them here too.
+_MICROSOFT_SCOPE = (
+    "offline_access openid email "
+    "https://outlook.office.com/IMAP.AccessAsUser.All "
+    "https://outlook.office.com/SMTP.Send"
+)
 
 # Refresh the cached token if it expires within this many seconds.
 _EXPIRY_BUFFER_SECONDS = 120
@@ -163,6 +186,10 @@ async def get_access_token(agent_id: str, db_path: Path) -> tuple[str, str]:
             access_token, new_expires_at = await _refresh_google_token(
                 client_id, client_secret, refresh_token
             )
+        elif provider == "microsoft":
+            access_token, new_expires_at = await _refresh_microsoft_token(
+                client_id, client_secret, refresh_token
+            )
         else:
             raise OAuth2Error(f"Unsupported oauth2_provider: {provider!r}")
 
@@ -247,6 +274,79 @@ async def _refresh_google_token(
     if not access_token:
         raise OAuth2Error(
             "Google token endpoint response missing 'access_token' "
+            "(details redacted)"
+        )
+
+    expires_in = int(data.get("expires_in", 3600))
+    expires_at = int(time.time()) + expires_in
+
+    return access_token, expires_at
+
+
+async def _refresh_microsoft_token(
+    client_id: str,
+    client_secret: str,
+    refresh_token: str,
+) -> tuple[str, int]:
+    """Exchange a Microsoft refresh token for a new access token.
+
+    Calls the Azure AD v2.0 token endpoint via httpx (preferred) or
+    urllib.request (fallback).  Returns (access_token, expires_at_unix).
+
+    Differs from the Google exchange in two ways:
+      * endpoint is login.microsoftonline.com/common/oauth2/v2.0/token; and
+      * Microsoft requires the ``scope`` to be echoed on the refresh grant,
+        whereas Google infers it from the original grant.
+
+    Raises OAuth2Error on HTTP errors or unexpected response shapes.
+    Never logs the token values.
+    """
+    payload = {
+        "client_id": client_id,
+        "client_secret": client_secret,
+        "refresh_token": refresh_token,
+        "grant_type": "refresh_token",
+        "scope": _MICROSOFT_SCOPE,
+    }
+
+    try:
+        import httpx  # noqa: PLC0415
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.post(_MICROSOFT_TOKEN_ENDPOINT, data=payload)
+        status_code = resp.status_code
+        body = resp.text
+    except ImportError:
+        status_code, body = await asyncio.get_event_loop().run_in_executor(
+            None, _urllib_post, _MICROSOFT_TOKEN_ENDPOINT, payload
+        )
+
+    if status_code != 200:
+        # Microsoft returns {"error": "...", "error_description": "..."} — the
+        # error code (e.g. "invalid_grant") carries no credential material.
+        error_code = "unknown"
+        error_desc = ""
+        try:
+            err_data = json.loads(body)
+            error_code = err_data.get("error", "unknown")
+            error_desc = err_data.get("error_description", "")
+        except json.JSONDecodeError:
+            pass
+        raise OAuth2Error(
+            f"Microsoft token refresh failed: HTTP {status_code} "
+            f"error={error_code!r} description={error_desc!r}"
+        )
+
+    try:
+        data = json.loads(body)
+    except json.JSONDecodeError as exc:
+        raise OAuth2Error(
+            f"Microsoft token endpoint returned non-JSON: {exc}"
+        ) from exc
+
+    access_token = data.get("access_token")
+    if not access_token:
+        raise OAuth2Error(
+            "Microsoft token endpoint response missing 'access_token' "
             "(details redacted)"
         )
 

@@ -208,7 +208,7 @@ class AgentCreateRequest(BaseModel):
     # Password auth (mutually exclusive with OAuth2 fields below)
     upstream_password: Optional[str] = None
     # OAuth2 / XOAUTH2 fields (all required together if oauth2_provider is set)
-    oauth2_provider: Optional[str] = None          # e.g. "google"
+    oauth2_provider: Optional[str] = None          # "google" | "microsoft"
     oauth2_client_id: Optional[str] = None
     oauth2_client_secret: Optional[str] = None
     oauth2_refresh_token: Optional[str] = None

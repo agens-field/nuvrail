@@ -155,6 +155,10 @@ Required environment variables:
 | `GOOGLE_CLIENT_ID` | GCP OAuth2 client ID (required for Gmail agent setup) |
 | `GOOGLE_CLIENT_SECRET` | GCP OAuth2 client secret (required for Gmail agent setup) |
 | `GOOGLE_REDIRECT_URI` | `https://nuvrail.example.com/api/v1/oauth2/google/callback` |
+| `MICROSOFT_CLIENT_ID` | Azure AD app client ID (required for Outlook/O365 agent setup) |
+| `MICROSOFT_CLIENT_SECRET` | Azure AD app client secret (required for Outlook/O365 agent setup) |
+| `MICROSOFT_REDIRECT_URI` | `https://nuvrail.example.com/api/v1/oauth2/microsoft/callback` |
+| `MICROSOFT_TENANT` | Azure AD tenant — `common` (default) for personal + multi-tenant, or a tenant GUID/domain for single-tenant |
 
 > ⚠️ **Back up `NUVRAIL_MASTER_KEY`.** It encrypts every upstream credential in the
 > database. Losing it makes all stored agent credentials unrecoverable.
@@ -331,13 +335,24 @@ TOKEN=$(curl -s -X POST https://nuvrail.example.com/api/v1/auth/login \
 
 ## Connecting an email account
 
-Nuvrail supports Gmail (OAuth2), standard IMAP/SMTP, and more providers coming. Each connected account gets a unique agent credential — the username and token you give to your AI agent.
+Nuvrail supports Gmail (OAuth2), Outlook / Office 365 (OAuth2), iCloud + standard IMAP/SMTP, and more providers coming. Each connected account gets a unique agent credential — the username and token you give to your AI agent.
 
 ### Gmail via OAuth2 (recommended)
 
 1. Go to `https://nuvrail.example.com` → **Agents** → **Connect Gmail**
 2. Complete the Google OAuth2 consent flow
 3. Copy the one-time agent token that appears on success — you won't see it again
+
+### Outlook / Office 365 via OAuth2 (recommended)
+
+Microsoft deprecated IMAP/SMTP basic auth for Exchange Online in 2023, so OAuth2
+(Azure AD) is the only supported path for Outlook.com / Microsoft 365 accounts.
+
+1. One-time server setup: register an Azure AD app and set `MICROSOFT_CLIENT_ID`
+   / `MICROSOFT_CLIENT_SECRET` — see **[docs/outlook-oauth2-setup.md](docs/outlook-oauth2-setup.md)**.
+2. Go to `https://nuvrail.example.com` → **Agents** → **Connect Outlook**
+3. Complete the Microsoft consent flow
+4. Copy the one-time agent token that appears on success — you won't see it again
 
 ### Standard IMAP/SMTP
 
