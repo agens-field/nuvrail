@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/agens-field/nuvrail/security/policy
+    about: "Please do NOT open a public issue for security vulnerabilities. Report them privately per SECURITY.md."
+  - name: Question / usage help
+    url: https://github.com/agens-field/nuvrail/discussions
+    about: For setup help and open-ended questions, start a discussion instead of a bug report.

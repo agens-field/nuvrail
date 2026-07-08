@@ -1,0 +1,94 @@
+name: Bug report
+description: Something in the Nuvrail gateway (IMAP/SMTP proxy, web/API, approvals) is not working as expected.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug. A little structure up front saves a lot of
+        back-and-forth. **Please do not paste real credentials, tokens, or full mailbox
+        contents** — redact addresses and secrets before sharing logs.
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Preflight
+      options:
+        - label: I searched existing issues and this is not a duplicate.
+          required: true
+        - label: I have redacted credentials, tokens, and personal email content from anything I paste below.
+          required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you observe? Include the exact IMAP/SMTP command or approval action if relevant.
+      placeholder: |
+        e.g. `UID MOVE 42 Trash` returned `OK [STAGED]` but the approval never appeared in the web UI.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect to happen?
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Minimal steps. If it involves a specific client (Claude, Cursor, Thunderbird, a script), name it.
+      placeholder: |
+        1. Point <mail client> at the gateway on :993
+        2. Issue <command>
+        3. ...
+    validations:
+      required: true
+  - type: dropdown
+    id: component
+    attributes:
+      label: Which component?
+      options:
+        - IMAP proxy
+        - SMTP proxy
+        - Web PWA / approvals UI
+        - REST API
+        - Deployment / docker-compose / nginx
+        - Not sure
+    validations:
+      required: true
+  - type: dropdown
+    id: provider
+    attributes:
+      label: Upstream mail provider
+      description: Which real mail server is Nuvrail proxying to?
+      options:
+        - Gmail / Google Workspace
+        - Apple iCloud
+        - Microsoft Outlook / Office 365
+        - Fastmail
+        - Other / generic IMAP+SMTP
+        - Not applicable
+    validations:
+      required: true
+  - type: input
+    id: nuvrail-version
+    attributes:
+      label: Nuvrail version
+      description: "`git rev-parse --short HEAD`, a release tag, or the `version` in pyproject.toml."
+      placeholder: "e.g. 0.1.0 or commit abc1234"
+    validations:
+      required: true
+  - type: input
+    id: deploy
+    attributes:
+      label: How are you running it?
+      placeholder: "e.g. docker compose (self-host), local venv, other"
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Redacted gateway logs / client errors. This is automatically formatted as code.
+      render: shell
