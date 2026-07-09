@@ -49,7 +49,7 @@ gcp = [
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "session"
 testpaths = ["tests"]
-norecursedirs = ["scripts", "web", "web/landing", ".venv", "node_modules"]
+norecursedirs = ["scripts", "web", ".venv", "node_modules"]
 
 [tool.ruff]
 line-length = 100

@@ -11,9 +11,9 @@
  * window.nuvrailReopenCookieBanner() allows reopening from an account
  * settings page or anywhere else in the app.
  *
- * Note: localStorage is origin-scoped. Consent given on nuvrail.com is
- * not visible here (different origin). Users will see this banner once
- * on the landing page and once in the app — that's correct behaviour.
+ * Note: localStorage is origin-scoped. Consent recorded here applies only
+ * to this app's origin; a separately-hosted marketing site (different
+ * origin) tracks its own consent independently — that's correct behaviour.
  */
 
 import { useEffect, useState } from 'react'
