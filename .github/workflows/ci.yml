@@ -10,6 +10,13 @@ on:
   # open self-host product; it only lints, tests, and validates the self-host
   # docker-compose build.
 
+# Least privilege for GITHUB_TOKEN: both jobs below only checkout, lint, test,
+# and build — neither writes to the repo. Pin the workflow default to read-only
+# so a compromised build step or dependency cannot use the token to push,
+# open issues, or alter releases. Mirrors staging-monitor.yml's explicit block.
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
