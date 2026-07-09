@@ -1,5 +1,15 @@
 # Staging Monitor — Continuous E2E Against Deployed Staging
 
+> **Relocated (2026-07-09).** This monitor no longer runs from this public
+> repository. As a pre-public-launch secret-exfil hardening measure, the
+> `staging-monitor.yml` workflow and its `tests/staging_smoke/` code were
+> moved to the **private `agens-field/nuvrail-internal` repo** — it was the
+> only public workflow that referenced staging secrets, and a public repo
+> must not carry secret-wired workflows a fork-PR could abuse. The monitor
+> runs unchanged there, against the same staging apps. This doc is kept for
+> reference (it is linked from `oncall.md`); the workflow + runner live in
+> `nuvrail-internal`.
+
 **What it is:** a scheduled end-to-end monitor that exercises the *deployed*
 fly.io staging environment over its real network endpoints, every 45 minutes,
 and alerts when something is wrong. It is the answer to #18's follow-on ask:
