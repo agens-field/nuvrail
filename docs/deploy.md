@@ -45,7 +45,6 @@ flyctl secrets set \
   NUVRAIL_MASTER_KEY="<64 hex chars — run: python3 -c 'import secrets; print(secrets.token_hex(32))'>" \
   NUVRAIL_VAPID_PRIVATE="<vapid_private.pem contents>" \
   NUVRAIL_VAPID_PUBLIC="<vapid_public.pem contents>" \
-  LOOPS_API_KEY="<loops.so api key>" \
   --app nuvrail-mail-staging
 ```
 

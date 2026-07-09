@@ -46,11 +46,6 @@ client_secret.json
 web/node_modules/
 web/dist/
 
-# The marketing/landing site lives in the PRIVATE nuvrail-internal repo, NOT
-# here. Any web/landing/ in this public repo is only a stray local build
-# (.next/node_modules) and must never be committed.
-web/landing/
-
 # macOS
 .DS_Store
 *.swp

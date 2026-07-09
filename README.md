@@ -119,9 +119,8 @@ the full deployment below.
 ### Prerequisites
 
 - Ubuntu 22.04 LTS (or equivalent Debian-based distro)
-- DNS `A` records pointing at your server:
+- DNS `A` record pointing at your server:
   - `nuvrail.example.com` → server IP (approval UI + proxy)
-  - `example.com` → same IP (landing page, optional)
 - Git, Docker Engine + Compose plugin, nginx with stream module, certbot
 
 ```bash
@@ -165,18 +164,69 @@ Required environment variables:
 
 ---
 
-### Step 2 — TLS certificates
+### Step 2 — nginx (HTTP first) + TLS certificates
+
+Certificates don't exist yet, so we bring nginx up with a **minimal HTTP-only**
+config first, let certbot obtain the certs against the running nginx, and only
+*then* add the TLS listeners and the mail stream proxies (Step 3). Doing it in
+this order avoids the chicken-and-egg trap where nginx refuses to start because
+it references `fullchain.pem` files that haven't been issued yet.
+
+#### 2a — Minimal HTTP server block
+
+`/etc/nginx/sites-available/nuvrail` — start with just this:
+
+```nginx
+server {
+    listen 80;
+    server_name nuvrail.example.com;
+    # certbot's --nginx plugin will add the ACME challenge location here,
+    # then insert the TLS server block in Step 2b.
+    location / {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+```
 
 ```bash
-sudo ufw allow 80  # temporarily for certbot
-sudo certbot certonly --standalone \
-  -d nuvrail.example.com -d example.com \
-  --non-interactive --agree-tos -m you@yourdomain.com
+sudo ln -s /etc/nginx/sites-available/nuvrail /etc/nginx/sites-enabled/
+sudo nginx -t && sudo systemctl reload nginx
 ```
+
+#### 2b — Obtain certificates (certbot drives nginx)
+
+```bash
+sudo ufw allow 80   # ACME HTTP-01 challenge
+sudo certbot --nginx \
+  -d nuvrail.example.com \
+  --non-interactive --agree-tos --redirect \
+  -m you@yourdomain.com
+```
+
+`certbot --nginx` obtains the cert, rewrites the port-80 block to redirect to
+HTTPS, and adds a `listen 443 ssl` block wired to the freshly issued
+`fullchain.pem` / `privkey.pem`. It also installs a systemd renewal timer.
+Verify:
+
+```bash
+sudo certbot certificates          # confirm the cert exists
+sudo nginx -t                      # config still valid
+```
+
+> The mail proxies (:993 / :465) reuse this same certificate — that's why we
+> mint it before configuring the stream module below.
 
 ---
 
-### Step 3 — nginx
+### Step 3 — Add the mail stream proxies + finalize web config
+
+With certificates now in place, add the TLS-terminating stream proxies for
+IMAP/SMTP and confirm the web server block is correct.
 
 #### Enable the stream module
 
@@ -220,12 +270,16 @@ server {
 }
 ```
 
-#### `/etc/nginx/sites-available/nuvrail`
+#### `/etc/nginx/sites-available/nuvrail` (final web config)
+
+certbot already rewrote this file in Step 2b into an HTTP→HTTPS redirect plus a
+`listen 443 ssl` block for `nuvrail.example.com`. Confirm it matches the shape
+below; add the hardening headers if certbot didn't:
 
 ```nginx
 server {
     listen 80;
-    server_name nuvrail.example.com example.com www.example.com;
+    server_name nuvrail.example.com;
     return 301 https://$host$request_uri;
 }
 
@@ -249,24 +303,9 @@ server {
         proxy_set_header X-Forwarded-Proto $scheme;
     }
 }
-
-server {
-    listen 443 ssl;
-    server_name example.com www.example.com;
-    ssl_certificate     /etc/letsencrypt/live/example.com/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/example.com/privkey.pem;
-    include             /etc/letsencrypt/options-ssl-nginx.conf;
-    ssl_dhparam         /etc/letsencrypt/ssl-dhparams.pem;
-    location / {
-        proxy_pass http://127.0.0.1:3001;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-    }
-}
 ```
 
 ```bash
-sudo ln -s /etc/nginx/sites-available/nuvrail /etc/nginx/sites-enabled/
 sudo nginx -t && sudo systemctl reload nginx
 ```
 
@@ -535,7 +574,7 @@ sudo certbot renew && sudo systemctl reload nginx
 ```bash
 sudo ufw allow 22    # SSH
 sudo ufw allow 80    # HTTP → HTTPS redirect
-sudo ufw allow 443   # HTTPS: approval UI + API + landing
+sudo ufw allow 443   # HTTPS: approval UI + API
 sudo ufw allow 993   # IMAP SSL: AI agent connects here
 sudo ufw allow 465   # SMTPS: AI agent connects here
 sudo ufw enable
@@ -554,9 +593,14 @@ Nuvrail core is licensed under the **GNU Affero General Public License v3.0**
 Under the AGPL's network-use clause, anyone who runs a modified version as a
 network service must make their modified source available to its users.
 
-Commercial/enterprise features — such as the auto-approval rules engine and
-per-plan entitlements — ship in a separate, proprietary package and are **not**
-part of this repository.
+The communications and security core — everything that proxies mail, stages
+changes, and enforces the approval and audit guarantees — is and remains open
+source under AGPL-3.0. Commercial or enterprise features may be built as
+separate add-on packages layered *on top of* this project (Nuvrail exposes
+plugin seams for exactly this), shipped under whatever license their authors
+choose. Those add-ons are **not** part of this repository. The one constraint
+is that the open-source core stays open: an add-on extends it, it does not
+replace or close it.
 
 ---
 
@@ -613,4 +657,3 @@ If you hit a false positive, add an allowlist entry to `.gitleaks.toml` and comm
 | Directory | Status |
 |-----------|--------|
 | `web/` | 0 vulnerabilities ✅ |
-| `web/landing/` | 2 moderate (postcss in Next.js transitive deps — unfixable without downgrading to next@9.3.3, which is a worse outcome; tracked until Next.js ships a fix upstream) |
