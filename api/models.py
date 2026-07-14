@@ -137,7 +137,6 @@ class BatchRejectResponse(BaseModel):
 # with the rules engine and the /rules API. The auto_approval_rules TABLE and
 # the ExportAutoApprovalRule model below stay in core so account data-export
 # keeps working in an open-core build (it returns an empty list there).
-# See docs/REPO_SPLIT.md.
 
 
 class AuditEntry(BaseModel):
