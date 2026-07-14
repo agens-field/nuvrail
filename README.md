@@ -388,7 +388,7 @@ Microsoft deprecated IMAP/SMTP basic auth for Exchange Online in 2023, so OAuth2
 (Azure AD) is the only supported path for Outlook.com / Microsoft 365 accounts.
 
 1. One-time server setup: register an Azure AD app and set `MICROSOFT_CLIENT_ID`
-   / `MICROSOFT_CLIENT_SECRET` — see **[docs/outlook-oauth2-setup.md](docs/outlook-oauth2-setup.md)**.
+   / `MICROSOFT_CLIENT_SECRET` — see **[docs/providers/outlook.md](docs/providers/outlook.md)**.
 2. Go to `https://nuvrail.example.com` → **Agents** → **Connect Outlook**
 3. Complete the Microsoft consent flow
 4. Copy the one-time agent token that appears on success — you won't see it again
