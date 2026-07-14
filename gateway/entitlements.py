@@ -11,7 +11,6 @@ limit is hit.
 The agent limit is deliberately NOT hard-coded in core: a quota is a billing
 policy, not a property of the open product. Core only exposes the seam
 (``assert_can_create_agent``); the policy lives in the enterprise provider.
-See docs/REPO_SPLIT.md.
 """
 from __future__ import annotations
 

@@ -17,7 +17,7 @@ Two mechanisms live here:
 
 Neither mechanism changes behaviour in the public build: with no plugin
 installed, the rules engine that ships in core registers the only provider and
-there are no external entry points to load. See docs/REPO_SPLIT.md.
+there are no external entry points to load.
 """
 from __future__ import annotations
 
