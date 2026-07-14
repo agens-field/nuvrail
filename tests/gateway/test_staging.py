@@ -280,4 +280,4 @@ async def test_create_operation_without_snapshot_stores_null(db_path: Path) -> N
 # NOTE: auto-approval staging tests (a matching rule executing/rejecting an
 # operation, execution-failure non-fatality, and push suppression) moved to the
 # nuvrail-enterprise package, since the auto-decision provider now lives there.
-# Open core stages every operation as pending. See docs/REPO_SPLIT.md.
+# Open core stages every operation as pending.

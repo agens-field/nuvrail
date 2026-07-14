@@ -541,7 +541,7 @@ async def test_reject_without_snapshot_does_not_raise(
 
 
 # NOTE: the API-level auto-approval test moved to the nuvrail-enterprise package
-# along with the rules engine. See docs/REPO_SPLIT.md.
+# along with the rules engine.
 
 
 # ---------------------------------------------------------------------------
