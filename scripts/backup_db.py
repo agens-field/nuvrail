@@ -16,14 +16,17 @@ Environment variables (all optional — defaults shown):
                                encrypted via openssl before writing. Leave unset to
                                skip encryption (not recommended for off-instance storage).
 
-Restore: see docs/backup-strategy.md
+Restore:
+    A backup file is a complete SQLite database (a point-in-time snapshot taken via
+    the SQLite Online Backup API). To restore, stop the service and put the backup
+    file in place of NUVRAIL_DB_PATH. If NUVRAIL_BACKUP_KEY was set, decrypt first:
+    `openssl enc -d -aes-256-cbc -pbkdf2 -in <backup> -out nuvrail.db`.
 
 Audit log integrity note:
     The audit log in nuvrail.db is append-only. The backup produced by this script
     is a consistent point-in-time snapshot (SQLite Online Backup API). On restore,
     all rows present at backup time will be present — the chain is intact for that
     window. Any operations staged after the backup timestamp will be missing.
-    See docs/backup-strategy.md for the restore procedure and data-loss implications.
 
 Exit codes:
     0   success
