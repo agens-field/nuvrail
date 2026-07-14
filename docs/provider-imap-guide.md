@@ -68,7 +68,7 @@ same base64 wire format as Gmail, refreshed by `_refresh_microsoft_token`
 (`gateway/oauth2_tokens.py`, `oauth2_provider = "microsoft"`). Unlike Google,
 Microsoft requires the `scope` to be echoed on the refresh grant. The in-browser
 setup flow and Azure app registration are documented in
-[`docs/outlook-oauth2-setup.md`](outlook-oauth2-setup.md). Upstream hosts are
+[`docs/providers/outlook.md`](providers/outlook.md). Upstream hosts are
 `outlook.office365.com:993` (IMAP) / `smtp.office365.com:587` (SMTP).
 
 ### Trash folder
