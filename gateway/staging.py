@@ -25,7 +25,7 @@ from gateway.audit import insert_audit_event, record_audit_event
 # The auto-approval rules engine lives in the nuvrail-enterprise plugin, which
 # registers the auto-decision provider via load_plugins(). With no plugin
 # installed (open core), run_auto_decision() returns None and every operation
-# follows the normal manual-approval path. See docs/REPO_SPLIT.md.
+# follows the normal manual-approval path.
 from gateway.extensions import run_auto_decision
 from gateway.state_db import DB_PATH, get_db
 from gateway.state_db import insert_pending_reverts, restore_from_snapshot
