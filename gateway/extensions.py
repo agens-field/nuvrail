@@ -6,18 +6,19 @@ Two mechanisms live here:
 1. Auto-decision provider — the seam the auto-approval rules engine plugs into.
    Core's staging path calls ``run_auto_decision()``; with no provider registered
    it returns ``None`` and operations follow the normal manual-approval flow.
-   The in-core rules engine registers itself today (``gateway/rules.py``); when
-   the rules engine is extracted to the enterprise package it will register here
-   instead, via ``load_plugins()`` and the ``nuvrail.plugins`` entry point.
+   Open core ships NO built-in auto-decision provider — the rules engine lives in
+   the enterprise plugin, which registers the provider here via ``load_plugins()``
+   and the ``nuvrail.plugins`` entry point. Absent that plugin, no provider is
+   ever registered and every operation stays on the manual-approval path.
 
-2. Plugin discovery — ``load_plugins()`` registers built-ins and then loads any
-   installed packages advertising the ``nuvrail.plugins`` entry-point group. Each
-   plugin exposes a ``setup(app)`` callable that registers routers / migrations /
-   entitlements / auto-decision providers.
+2. Plugin discovery — ``load_plugins()`` loads any installed packages advertising
+   the ``nuvrail.plugins`` entry-point group (open core registers no built-in
+   provider of its own). Each plugin exposes a ``setup(app)`` callable that
+   registers routers / migrations / entitlements / auto-decision providers.
 
 Neither mechanism changes behaviour in the public build: with no plugin
-installed, the rules engine that ships in core registers the only provider and
-there are no external entry points to load.
+installed, no auto-decision provider is registered and there are no external
+entry points to load, so operations follow the normal manual-approval flow.
 """
 from __future__ import annotations
 
