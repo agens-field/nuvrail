@@ -53,9 +53,12 @@ tags = ["oauth2", "google", "nuvrail"]
 
 [[rules]]
 id = "nuvrail-hardcoded-aes-key"
-description = "Hardcoded AES/Fernet key material (32-byte base64)"
-regex = '''[A-Za-z0-9+/]{43}={0,2}'''
-secretGroup = 0
+description = "Hardcoded AES/Fernet key material (32-byte base64) assigned to a key-like identifier"
+# Anchored to an assignment context (key/secret/token = "...") so a bare 43-char
+# base64/base58 blob (e.g. the BASE58_ALPHABET constant, or npm integrity hashes)
+# no longer trips the rule. secretGroup 1 = the key material itself.
+regex = '''(?i)(?:aes|fernet|master|secret|encryption|priv)[_a-z0-9]*key\s*[:=]\s*["']?([A-Za-z0-9+/]{43}={0,2})["']?'''
+secretGroup = 1
 entropy = 4.5
 tags = ["encryption", "nuvrail"]
 
@@ -84,4 +87,9 @@ paths = [
     '''tests/''',
     # This config file itself
     '''\.gitleaks\.toml''',
+    # Generated dependency lockfiles: their integrity hashes (sha512-<base64>)
+    # are not secrets and produced 1300+ AES-key false positives (sweep #3).
+    '''(^|/)package-lock\.json$''',
+    '''(^|/)yarn\.lock$''',
+    '''(^|/)pnpm-lock\.yaml$''',
 ]
