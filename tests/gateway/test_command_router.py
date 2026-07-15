@@ -132,3 +132,58 @@ def test_expunge_is_blocked() -> None:
 
 def test_delete_is_blocked() -> None:
     assert classify(_cmd("DELETE")) == "blocked"
+
+
+# ---------------------------------------------------------------------------
+# Regression: CLOSE must be BLOCKED, not forwarded (covert-EXPUNGE guard)
+# ---------------------------------------------------------------------------
+#
+# RFC 3501 §6.4.2: CLOSE permanently expunges every \Deleted message in the
+# selected mailbox, THEN returns to the authenticated state. If CLOSE is
+# forwarded upstream it silently expunges mail the human's other clients
+# flagged \Deleted — a covert EXPUNGE path that breaks the core invariant
+# "EXPUNGE never reaches upstream." It must classify as 'blocked' so the proxy
+# answers OK locally and never forwards it.
+
+def test_close_is_blocked() -> None:
+    """CLOSE side-effect-expunges (RFC 3501) — it must never be forwarded."""
+    assert classify(_cmd("CLOSE")) == "blocked", (
+        "CLOSE expunges \\Deleted messages upstream per RFC 3501 §6.4.2; "
+        "classifying it as anything but 'blocked' is a covert EXPUNGE path."
+    )
+
+
+def test_close_is_in_blocked_set() -> None:
+    """Guard the enumeration itself, not just the classify() result."""
+    assert "CLOSE" in BLOCKED_COMMANDS
+
+
+def test_uid_close_is_blocked() -> None:
+    """UID prefix must not let CLOSE slip through to 'read'."""
+    assert classify(_cmd("CLOSE", uid=True)) == "blocked"
+
+
+# ---------------------------------------------------------------------------
+# UNSELECT (RFC 3691) is the SAFE way to leave a mailbox — no expunge → read
+# ---------------------------------------------------------------------------
+
+def test_unselect_is_read() -> None:
+    """UNSELECT closes the mailbox WITHOUT expunging (RFC 3691) — safe to forward."""
+    assert classify(_cmd("UNSELECT")) == "read"
+
+
+# ---------------------------------------------------------------------------
+# Invariant guard: no expunge-capable verb may be classified 'read'
+# ---------------------------------------------------------------------------
+#
+# Any RFC IMAP command that can expunge \Deleted mail as a side effect must be
+# in BLOCKED_COMMANDS. This test is the backstop against a future edit
+# accidentally moving one of these into READ_COMMANDS.
+
+@pytest.mark.parametrize("command", ["EXPUNGE", "CLOSE"])
+def test_expunge_capable_commands_never_read(command: str) -> None:
+    assert command not in READ_COMMANDS
+    assert command not in WRITE_COMMANDS
+    assert classify(_cmd(command)) == "blocked", (
+        f"{command} can expunge upstream and must be 'blocked', not forwarded."
+    )
