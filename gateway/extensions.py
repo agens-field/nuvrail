@@ -20,6 +20,7 @@ Two mechanisms live here:
 Neither mechanism changes behaviour in the public build: with no plugin
 installed there is no auto-decision provider registered and no external entry
 points to load, so every operation follows the manual-approval flow.
+
 """
 from __future__ import annotations
 
