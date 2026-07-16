@@ -84,4 +84,14 @@ paths = [
     '''tests/''',
     # This config file itself
     '''\.gitleaks\.toml''',
+    # Generated dependency lockfiles — their integrity hashes (e.g. npm's
+    # "sha512-<base64>==") are high-entropy 43+ char base64 strings that the
+    # nuvrail-hardcoded-aes-key rule flags as AES/Fernet key material,
+    # producing 1300+ false positives that drown the real CI secret signal.
+    # These files are machine-generated hash manifests, never a place we
+    # commit real secrets, so allowlisting them by path keeps the gate
+    # meaningful without weakening the AES rule's entropy threshold.
+    '''(^|/)package-lock\.json$''',
+    '''(^|/)pnpm-lock\.yaml$''',
+    '''(^|/)yarn\.lock$''',
 ]
