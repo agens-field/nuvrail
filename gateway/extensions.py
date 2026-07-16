@@ -6,19 +6,21 @@ Two mechanisms live here:
 1. Auto-decision provider — the seam the auto-approval rules engine plugs into.
    Core's staging path calls ``run_auto_decision()``; with no provider registered
    it returns ``None`` and operations follow the normal manual-approval flow.
-   Open core ships NO built-in auto-decision provider — the rules engine lives in
-   the enterprise plugin, which registers the provider here via ``load_plugins()``
-   and the ``nuvrail.plugins`` entry point. Absent that plugin, no provider is
-   ever registered and every operation stays on the manual-approval path.
+   Open core ships NO built-in auto-decision provider — nothing in core calls
+   ``register_auto_decision_provider()``, so ``run_auto_decision()`` always
+   returns ``None`` here. The auto-approval rules engine lives in the enterprise
+   package (``nuvrail-enterprise``); when installed it registers the provider via
+   ``load_plugins()`` and the ``nuvrail.plugins`` entry point.
 
 2. Plugin discovery — ``load_plugins()`` loads any installed packages advertising
-   the ``nuvrail.plugins`` entry-point group (open core registers no built-in
-   provider of its own). Each plugin exposes a ``setup(app)`` callable that
-   registers routers / migrations / entitlements / auto-decision providers.
+   the ``nuvrail.plugins`` entry-point group (open core has none to load). Each
+   plugin exposes a ``setup(app)`` callable that registers routers / migrations /
+   entitlements / auto-decision providers.
 
 Neither mechanism changes behaviour in the public build: with no plugin
-installed, no auto-decision provider is registered and there are no external
-entry points to load, so operations follow the normal manual-approval flow.
+installed there is no auto-decision provider registered and no external entry
+points to load, so every operation follows the manual-approval flow.
+
 """
 from __future__ import annotations
 
@@ -93,7 +95,10 @@ _plugins_loaded = False
 
 
 def load_plugins(app=None) -> None:
-    """Register built-in providers and load external nuvrail plugins.
+    """Load external nuvrail plugins via the ``nuvrail.plugins`` entry point.
+
+    Open core registers no built-in providers here; this only discovers and
+    loads installed plugin packages (none in the public build).
 
     Idempotent and exception-safe: a failing plugin is logged, never fatal, so a
     bad optional plugin can't take down the proxies or API. Pass the FastAPI
@@ -105,7 +110,7 @@ def load_plugins(app=None) -> None:
     # External plugins via entry points (none in the public build). The
     # nuvrail-enterprise package, when installed, registers the auto-approval
     # rules engine (auto-decision provider) and the /rules router here.
-    # Open core has no built-in providers — operations stay manual-approval.
+    # Open core registers no providers at all — operations stay manual-approval.
     try:
         eps = importlib.metadata.entry_points(group="nuvrail.plugins")
     except Exception:  # noqa: BLE001  (older importlib API / lookup failure)
