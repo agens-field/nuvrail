@@ -31,6 +31,7 @@ from slowapi.middleware import SlowAPIMiddleware
 
 from api.limiter import limiter
 from api.routes import audit, auth, features, health, oauth2, operations, push
+from api.signup import resolve_signup_mode
 from api.routes import account
 from gateway.audit import run_audit_verification_loop
 from gateway.expiry import run_expiry_loop
@@ -171,6 +172,19 @@ _CORS_ORIGINS = resolve_cors_origins(
     os.environ.get("NUVRAIL_CORS_ORIGINS", ""),
     os.environ.get("NUVRAIL_ENV", "dev"),
 )
+
+
+# Resolve the human-account signup policy once at startup (fail-closed). This
+# also raises immediately if NUVRAIL_SIGNUP_MODE=open lacks its ack env var, so
+# a misconfigured "open" box refuses to boot rather than silently accepting
+# public registration. The register route re-resolves at request time via
+# api.signup.current_signup_mode() against the same function — one source of
+# truth, no drift.
+SIGNUP_MODE = resolve_signup_mode(
+    os.environ.get("NUVRAIL_SIGNUP_MODE", ""),
+    os.environ.get("NUVRAIL_ALLOW_OPEN_SIGNUP", ""),
+)
+logger.info("Human account signup mode: %s", SIGNUP_MODE)
 
 app.add_middleware(
     CORSMiddleware,

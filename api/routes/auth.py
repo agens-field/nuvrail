@@ -29,6 +29,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 
 from api.limiter import limiter
+from api.signup import current_signup_mode
 from api.auth import (
     generate_token,
     get_current_user,
@@ -158,8 +159,29 @@ async def register(
 ) -> UserResponse:
     """Create a new user account.
 
+    Gated by the deployment's signup mode (NUVRAIL_SIGNUP_MODE):
+      - closed  -> 403; accounts are provisioned only via scripts/manage_users.py
+      - invite  -> requires a valid single-use invite_code (redeemed atomically
+                   BEFORE the account is created; a bad/expired/spent/revoked
+                   code -> 403 and no account)
+      - open    -> allowed (deployment already acknowledged open signup at boot)
+
     Returns 409 if the email is already registered.
+
+    Ordering note: the invite code is redeemed *before* the user INSERT so a
+    caller cannot burn a valid code on a duplicate-email attempt — we check the
+    email-exists case first, then spend the code, then insert. The redeem is a
+    single atomic UPDATE, so it is also safe against concurrent double-spend.
     """
+    mode = current_signup_mode()
+    if mode == "closed":
+        # Do not reveal whether registration would otherwise succeed; a private
+        # instance simply has no public signup.
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Public registration is disabled on this deployment.",
+        )
+
     now = int(time.time())
     hashed = hash_password(body.password)
     # Generate an API token immediately on registration so the client can
@@ -167,6 +189,16 @@ async def register(
     api_token = generate_token()
 
     async with get_db(db_path) as db:
+        # Invite mode: the email-uniqueness check runs first (below) so a
+        # duplicate email 409s without consuming a code; the code is then spent
+        # atomically just before INSERT.
+        if mode == "invite":
+            raw_code = (body.invite_code or "").strip()
+            if not raw_code:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="An invite code is required to register on this deployment.",
+                )
         # Check for existing email
         async with db.execute(
             "SELECT id FROM users WHERE email = ?", (body.email,)
@@ -177,6 +209,31 @@ async def register(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=f"Email {body.email!r} is already registered",
             )
+
+        # Invite mode: spend the code on THIS connection, in the same
+        # transaction as the user INSERT, so the code and the account commit (or
+        # fail) together — no spending a code without creating an account, and
+        # no creating an account without spending a code. The conditional UPDATE
+        # is the single-use gate: rowcount 1 = valid & now spent, 0 = reject.
+        if mode == "invite":
+            code_hash = hash_token_for_storage(raw_code)
+            redeem_cur = await db.execute(
+                "UPDATE invite_codes "
+                "SET redeemed_at = ?, redeemed_by_email = ? "
+                "WHERE code_hash = ? "
+                "  AND redeemed_at IS NULL "
+                "  AND revoked_at IS NULL "
+                "  AND (expires_at IS NULL OR expires_at > ?)",
+                (now, body.email, code_hash, now),
+            )
+            if redeem_cur.rowcount != 1:
+                # Invalid / expired / already-used / revoked — uniform 403, no
+                # detail about which, so the endpoint can't be used to probe
+                # which codes exist.
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Invalid or already-used invite code.",
+                )
 
         cur2 = await db.execute(
             """

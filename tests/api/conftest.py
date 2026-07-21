@@ -30,6 +30,21 @@ def reset_rate_limiters() -> None:
     LOGIN_ABUSE_PROTECTOR.reset()
 
 
+@pytest.fixture(autouse=True)
+def _default_open_signup(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Default the whole api suite to an OPEN-signup deployment.
+
+    Production now defaults to NUVRAIL_SIGNUP_MODE=closed (fail-closed), which
+    would 403 the many existing tests that exercise /auth/register mechanics.
+    Those tests are about registration behaviour, not the gating policy, so we
+    model the test box as an operator who has explicitly opted into open
+    signup. The dedicated gating tests (test_signup_gating.py) monkeypatch this
+    per-test to exercise closed / invite / open-without-ack.
+    """
+    monkeypatch.setenv("NUVRAIL_SIGNUP_MODE", "open")
+    monkeypatch.setenv("NUVRAIL_ALLOW_OPEN_SIGNUP", "1")
+
+
 @pytest.fixture()
 async def db_path(tmp_path: Path) -> Path:
     """Return the path to a freshly initialised, isolated SQLite DB."""

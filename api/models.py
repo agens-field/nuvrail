@@ -175,6 +175,9 @@ class UserCreateRequest(BaseModel):
     email: str
     password: str
     display_name: Optional[str] = None
+    # Required only when the deployment runs NUVRAIL_SIGNUP_MODE=invite;
+    # ignored in open mode and rejected (as unnecessary) is not enforced.
+    invite_code: Optional[str] = None
 
 
 class UserResponse(BaseModel):
