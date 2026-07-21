@@ -78,12 +78,27 @@ regexes = [
     '''fake_(client_id|client_secret|refresh_token)''',
     # README / SPEC code examples
     '''example\.com''',
+    # Base58 alphabet constant in api/auth.py — the charset used to encode
+    # tokens, not a secret itself. The 43-char high-entropy AES rule captures
+    # only the leading 43 chars of the 58-char alphabet, so the allowlist must
+    # match that captured prefix (not the full literal).
+    '''123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghij''',
+    # Illustrative fake agent-username token used only in script docstring
+    # usage examples ("...check_oauth2_token.py nuvrail_edda3807f21c3c9b").
+    # Not a live credential — the real value is minted per agent at runtime.
+    '''nuvrail_edda3807f21c3c9b''',
 ]
 paths = [
     # Test files may contain fixture credentials
     '''tests/''',
     # This config file itself
     '''\.gitleaks\.toml''',
+    # .env.example ships EMPTY placeholder assignments (KEY=, SECRET=) so a
+    # newcomer knows which vars to fill. There are never real values here —
+    # the env-secrets rule fires on the bare "SECRET=" left-hand side. If a
+    # real value ever lands in .env.example that is itself a review-catchable
+    # mistake; the live-secret gate is .env (unignored, still scanned).
+    '''(^|/)\.env\.example$''',
     # Generated dependency lockfiles — their integrity hashes (e.g. npm's
     # "sha512-<base64>==") are high-entropy 43+ char base64 strings that the
     # nuvrail-hardcoded-aes-key rule flags as AES/Fernet key material,
