@@ -1,7 +1,6 @@
 """Tests for gateway/provider_profiles.py — provider detection and normalization helpers."""
 from __future__ import annotations
 
-
 from gateway.provider_profiles import (
     GENERIC_PROFILE,
     GMAIL_PROFILE,
@@ -12,7 +11,6 @@ from gateway.provider_profiles import (
     detect_provider,
     should_suppress_append,
 )
-
 
 # ---------------------------------------------------------------------------
 # detect_provider

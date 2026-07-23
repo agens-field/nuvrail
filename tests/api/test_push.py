@@ -27,11 +27,10 @@ def _sub_body(endpoint: str) -> dict:
 
 
 async def _owner_of(db_path: Path, endpoint: str) -> int | None:
-    async with get_db(db_path) as db:
-        async with db.execute(
-            "SELECT user_id FROM push_subscriptions WHERE endpoint = ?", (endpoint,)
-        ) as cur:
-            row = await cur.fetchone()
+    async with get_db(db_path) as db, db.execute(
+        "SELECT user_id FROM push_subscriptions WHERE endpoint = ?", (endpoint,)
+    ) as cur:
+        row = await cur.fetchone()
     return row["user_id"] if row else None
 
 

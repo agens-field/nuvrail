@@ -82,7 +82,7 @@ async def rotate_token(
 
     return TokenRotateResponse(
         token=new_token,
-        token_type="bearer",
+        token_type="bearer",  # noqa: S106 — OAuth2 response field, not a secret
         user_id=current_user["id"],
         email=current_user["email"],
     )

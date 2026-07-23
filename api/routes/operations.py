@@ -48,7 +48,6 @@ import json
 import logging
 import time
 from pathlib import Path
-from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
@@ -71,7 +70,12 @@ from gateway.audit import record_audit_event
 from gateway.batch_summary import build_batch_summary
 from gateway.execution import ExecutionError, execute_operation
 from gateway.staging import get_operation, list_operations, update_operation_status
-from gateway.state_db import DB_PATH, decode_json_list, insert_pending_reverts, restore_from_snapshot
+from gateway.state_db import (
+    DB_PATH,
+    decode_json_list,
+    insert_pending_reverts,
+    restore_from_snapshot,
+)
 from gateway.undo import UndoError, undo_operation
 
 logger = logging.getLogger(__name__)
@@ -115,7 +119,7 @@ def _previews_from_snapshot(row: dict, max_messages: int = 3) -> list[MessagePre
                     date_sent=None,
                 ))
         return previews
-    except Exception:  # noqa: BLE001
+    except Exception:
         return []
 
 
@@ -129,7 +133,7 @@ async def _fetch_message_previews(
     (used when rows were deleted during MOVE staging, or folder_from is null).
     SMTP ops return an empty list.
     """
-    from gateway.state_db import get_db as _get_db  # noqa: PLC0415
+    from gateway.state_db import get_db as _get_db
 
     if row.get("protocol") != "imap":
         return []
@@ -213,7 +217,7 @@ async def _fetch_message_previews(
                 return _previews_from_snapshot(row, max_messages)
 
             return previews
-    except Exception:  # noqa: BLE001
+    except Exception:
         # Non-fatal: fall back to snapshot rather than breaking the API
         return _previews_from_snapshot(row, max_messages)
 
@@ -252,7 +256,7 @@ async def _do_approve(op_id: str, row: dict, db_path: Path) -> ApproveResponse:
     )
 
 
-async def _do_reject(op_id: str, row: dict, db_path: Path) -> RejectResponse:  # noqa: ARG001
+async def _do_reject(op_id: str, row: dict, db_path: Path) -> RejectResponse:
     """Core reject logic for a single operation.
 
     Updates status to 'rejected', inserts audit log entry, attempts snapshot
@@ -297,8 +301,8 @@ async def _do_reject(op_id: str, row: dict, db_path: Path) -> RejectResponse:  #
 
 @router.get("/operations", response_model=OperationListResponse)
 async def list_ops(
-    status: Optional[str] = None,
-    agent_id: Optional[int] = Query(default=None, ge=1),
+    status: str | None = None,
+    agent_id: int | None = Query(default=None, ge=1),
     db_path: Path = Depends(get_db_path),
     current_user: dict = Depends(get_current_user),
 ) -> OperationListResponse:

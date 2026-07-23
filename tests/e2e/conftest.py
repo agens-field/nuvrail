@@ -37,6 +37,7 @@ Auth in e2e tests:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 from pathlib import Path
 
@@ -60,9 +61,9 @@ def _patch_staging_db(db_path: Path) -> dict:
 
     Returns a dict of originals for restoration at teardown.
     """
+    import gateway.proxy as _proxy
     import gateway.staging as _staging
     import gateway.state_db as _state_db
-    import gateway.proxy as _proxy
 
     originals: dict = {}
 
@@ -112,8 +113,8 @@ def _patch_staging_db(db_path: Path) -> dict:
 
 def _restore_staging_db(originals: dict) -> None:
     """Restore the original db_path defaults after test teardown."""
-    import gateway.state_db as _state_db
     import gateway.proxy as _proxy
+    import gateway.state_db as _state_db
 
     # Restore module-level DB_PATH constants
     if "_state_db_DB_PATH" in originals:
@@ -181,8 +182,8 @@ async def e2e_setup(tmp_path_factory: pytest.TempPathFactory) -> dict:
     #    get_auth_db_path — used by get_current_user (api/auth.py) which runs
     #                       on every authenticated endpoint; must point to the
     #                       same test DB or bearer token lookups will fail.
-    from api.main import app
     from api.auth import get_auth_db_path
+    from api.main import app
     from api.routes.operations import get_db_path
 
     app.dependency_overrides[get_db_path] = lambda: db_path
@@ -279,18 +280,14 @@ async def e2e_setup(tmp_path_factory: pytest.TempPathFactory) -> dict:
     imap_server.close()
     await imap_server.wait_closed()
     imap_task.cancel()
-    try:
+    with contextlib.suppress(asyncio.CancelledError, Exception):
         await imap_task
-    except (asyncio.CancelledError, Exception):
-        pass
 
     smtp_server.close()
     await smtp_server.wait_closed()
     smtp_task.cancel()
-    try:
+    with contextlib.suppress(asyncio.CancelledError, Exception):
         await smtp_task
-    except (asyncio.CancelledError, Exception):
-        pass
 
     _restore_staging_db(staging_originals)
 

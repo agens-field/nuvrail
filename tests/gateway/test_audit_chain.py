@@ -20,12 +20,12 @@ Test DB layout:
 from __future__ import annotations
 
 import asyncio
+import contextlib
+from pathlib import Path
 
+import aiosqlite
 import pytest
 import pytest_asyncio
-import aiosqlite
-
-from pathlib import Path
 
 from gateway.audit import (
     GENESIS_HASH,
@@ -38,7 +38,6 @@ from gateway.audit import (
     verify_audit_chain,
 )
 from gateway.state_db import get_db, init_db
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -67,18 +66,18 @@ async def db_conn(db_path: Path):
 
 
 def _base_fields() -> dict:
-    return dict(
-        prev_hash=GENESIS_HASH,
-        row_id=1,
-        timestamp=1_700_000_000,
-        operation_id="op_abc123",
-        event="staged",
-        actor="ai_agent",
-        agent_id="agent_42",
-        op_type="move",
-        detail='{"foo": "bar"}',
-        user_id=7,
-    )
+    return {
+        "prev_hash": GENESIS_HASH,
+        "row_id": 1,
+        "timestamp": 1_700_000_000,
+        "operation_id": "op_abc123",
+        "event": "staged",
+        "actor": "ai_agent",
+        "agent_id": "agent_42",
+        "op_type": "move",
+        "detail": '{"foo": "bar"}',
+        "user_id": 7,
+    }
 
 
 def test_compute_entry_hash_is_deterministic():
@@ -265,10 +264,8 @@ async def test_verification_loop_records_result_and_alerts_on_tamper(
             if last_verification_result()["checked_at"] is not None:
                 break
         task.cancel()
-        try:
+        with contextlib.suppress(asyncio.CancelledError):
             await task
-        except asyncio.CancelledError:
-            pass
 
     result = last_verification_result()
     assert result["ok"] is False
@@ -363,12 +360,11 @@ async def test_record_audit_event_persists_and_commits(db_path: Path) -> None:
         operation_id="op_abc", op_type="move",
     )
     # Visible from a fresh connection → it committed.
-    async with get_db(db_path) as db:
-        async with db.execute(
-            "SELECT event, actor, operation_id, op_type, entry_hash "
-            "FROM audit_log WHERE operation_id = 'op_abc'"
-        ) as cur:
-            row = await cur.fetchone()
+    async with get_db(db_path) as db, db.execute(
+        "SELECT event, actor, operation_id, op_type, entry_hash "
+        "FROM audit_log WHERE operation_id = 'op_abc'"
+    ) as cur:
+        row = await cur.fetchone()
     assert row is not None
     assert row["event"] == "executed"
     assert row["actor"] == "human"
@@ -402,11 +398,10 @@ async def test_intent_label_stored_and_chain_verifies(db_path: Path) -> None:
         operation_id="op_int02", op_type="trash", intent_label="delete",
     )
 
-    async with get_db(db_path) as db:
-        async with db.execute(
-            "SELECT intent_label FROM audit_log WHERE operation_id = 'op_int01'"
-        ) as cur:
-            row = await cur.fetchone()
+    async with get_db(db_path) as db, db.execute(
+        "SELECT intent_label FROM audit_log WHERE operation_id = 'op_int01'"
+    ) as cur:
+        row = await cur.fetchone()
     assert row["intent_label"] == "archive"
 
     ok, errors = await verify_audit_chain(db_path)

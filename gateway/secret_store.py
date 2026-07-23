@@ -52,7 +52,7 @@ import logging
 import os
 import time
 from dataclasses import dataclass
-from typing import Optional, Protocol, runtime_checkable
+from typing import Protocol, runtime_checkable
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +70,7 @@ GCP_BACKEND = "gcp-sm"
 class SecretContext:
     field: str                       # "upstream_password" | "oauth2_refresh_token" | …
     secret_id: str                   # opaque unique id (uuid4) chosen by the caller
-    owner_user_id: Optional[int] = None
+    owner_user_id: int | None = None
 
 
 @runtime_checkable
@@ -114,8 +114,8 @@ class AwsSecretsManagerStore:
         *,
         prefix: str,
         env: str,
-        region: Optional[str] = None,
-        kms_key_id: Optional[str] = None,
+        region: str | None = None,
+        kms_key_id: str | None = None,
         recovery_window_days: int = 7,
     ) -> None:
         self._prefix = prefix.rstrip("/")
@@ -129,7 +129,7 @@ class AwsSecretsManagerStore:
         # aioboto3 clients are async context managers; we open one per call.
         # Reads are served from CachingSecretStore, so this only runs on
         # cold reads, writes, and deletes — all rare.
-        import aioboto3  # noqa: PLC0415
+        import aioboto3
 
         if self._session is None:
             self._session = aioboto3.Session()
@@ -177,7 +177,7 @@ class GcpSecretManagerStore:
         self._client_obj = None  # created lazily
 
     def _client(self):
-        from google.cloud import secretmanager_v1  # noqa: PLC0415
+        from google.cloud import secretmanager_v1
 
         if self._client_obj is None:
             self._client_obj = secretmanager_v1.SecretManagerServiceAsyncClient()
@@ -214,12 +214,13 @@ class GcpSecretManagerStore:
         client = self._client()
         # ref is a version name; delete the parent secret (all versions).
         secret_name = ref.split("/versions/")[0]
-        from google.api_core.exceptions import NotFound  # noqa: PLC0415
+        import contextlib
 
-        try:
+        from google.api_core.exceptions import NotFound
+
+        # already gone — deletion is idempotent
+        with contextlib.suppress(NotFound):
             await client.delete_secret(request={"name": secret_name})
-        except NotFound:
-            pass  # already gone — idempotent
 
 
 # ---------------------------------------------------------------------------
@@ -237,7 +238,7 @@ class CachingSecretStore:
         self._locks: dict[str, asyncio.Lock] = {}
         self._guard = asyncio.Lock()
 
-    def _fresh(self, ref: str, now: float) -> Optional[str]:
+    def _fresh(self, ref: str, now: float) -> str | None:
         hit = self._cache.get(ref)
         if hit is not None and hit[1] > now:
             return hit[0]
@@ -329,7 +330,7 @@ def _build_store(backend: str) -> SecretStore:
     return CachingSecretStore(inner, ttl=ttl, max_entries=max_entries)
 
 
-def get_secret_store(backend: Optional[str] = None) -> Optional[SecretStore]:
+def get_secret_store(backend: str | None = None) -> SecretStore | None:
     """Return the store for `backend` (or the configured one).
 
     Returns None for the `local` backend, which is handled inline by

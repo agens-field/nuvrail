@@ -11,24 +11,22 @@ Sub-milestone: 1.0
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import secrets
 import string
 import time
 from pathlib import Path
-from typing import Optional
-
-import asyncio
 
 from gateway.audit import insert_audit_event, record_audit_event
+
 # The auto-approval rules engine lives in the nuvrail-enterprise plugin, which
 # registers the auto-decision provider via load_plugins(). With no plugin
 # installed (open core), run_auto_decision() returns None and every operation
 # follows the normal manual-approval path.
 from gateway.extensions import run_auto_decision
-from gateway.state_db import DB_PATH, get_db
-from gateway.state_db import insert_pending_reverts, restore_from_snapshot
+from gateway.state_db import DB_PATH, get_db, insert_pending_reverts, restore_from_snapshot
 
 OP_ID_PREFIX = "op_"
 _ID_ALPHABET = string.ascii_letters + string.digits
@@ -49,19 +47,18 @@ _logger = logging.getLogger(__name__)
 
 
 async def _resolve_user_id_for_agent(
-    agent_id: Optional[int], db_path: Path
-) -> Optional[int]:
+    agent_id: int | None, db_path: Path
+) -> int | None:
     """Return the user_id that owns ``agent_id``, or None if unresolvable.
 
     Used to scope auto-approval rule evaluation to the operation's owner.
     """
     if agent_id is None:
         return None
-    async with get_db(db_path) as db:
-        async with db.execute(
-            "SELECT user_id FROM agent_credentials WHERE id = ?", (agent_id,)
-        ) as cur:
-            row = await cur.fetchone()
+    async with get_db(db_path) as db, db.execute(
+        "SELECT user_id FROM agent_credentials WHERE id = ?", (agent_id,)
+    ) as cur:
+        row = await cur.fetchone()
     return row["user_id"] if row is not None else None
 
 
@@ -69,12 +66,17 @@ async def _resolve_user_id_for_agent(
 # Used by create_operation to suppress the pending-review push notification.
 _TERMINAL_AUTO_ACTIONS = {"approve", "reject"}
 
+# Strong references to fire-and-forget background tasks. asyncio only holds a
+# weak reference to a task, so without this the push-notify task can be GC'd
+# before it runs (RUF006). Tasks remove themselves on completion.
+_BACKGROUND_TASKS: set[asyncio.Task] = set()
+
 
 async def _set_schedule_and_urgency(
     op_id: str,
     db_path: Path,
-    scheduled_execute_at: Optional[int] = None,
-    is_urgent: Optional[int] = None,
+    scheduled_execute_at: int | None = None,
+    is_urgent: int | None = None,
 ) -> None:
     """Set scheduled_execute_at and/or is_urgent on a still-pending op.
 
@@ -104,9 +106,9 @@ async def _apply_auto_rule_decision(
     op_id: str,
     decision: dict,
     db_path: Path,
-    agent_id: Optional[int] = None,
-    op_type: Optional[str] = None,
-    intent_label: Optional[str] = None,
+    agent_id: int | None = None,
+    op_type: str | None = None,
+    intent_label: str | None = None,
 ) -> None:
     """Apply a matched auto-rule decision.
 
@@ -148,7 +150,7 @@ async def _apply_auto_rule_decision(
         try:
             reverts = await restore_from_snapshot(op_id, db_path=db_path)
             await insert_pending_reverts(op_id, reverts, db_path=db_path)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             _logger.warning(
                 "[auto_rule] Snapshot revert failed for op %s (non-fatal): %s",
                 op_id,
@@ -201,7 +203,7 @@ async def _apply_auto_rule_decision(
         return
     # Imported lazily to avoid a circular import (gateway.execution imports
     # gateway.staging for get_operation/update_operation_status).
-    from gateway.execution import ExecutionError, execute_operation  # noqa: PLC0415
+    from gateway.execution import ExecutionError, execute_operation
     try:
         await execute_operation(op_id, row, db_path, actor="auto_rule")
     except ExecutionError as exc:
@@ -220,20 +222,20 @@ async def create_operation(
     op_type: str,
     protocol: str,
     description: str,
-    agent_id: Optional[int] = None,
-    imap_command: Optional[str] = None,
-    smtp_envelope: Optional[dict] = None,
-    message_ids: Optional[list] = None,
-    folder_from: Optional[str] = None,
-    folder_to: Optional[str] = None,
-    flags_add: Optional[list] = None,
-    flags_remove: Optional[list] = None,
-    snapshot: Optional[dict] = None,
-    is_urgent: Optional[int] = None,
-    batch_id: Optional[str] = None,
-    append_message: Optional[str] = None,
-    intent_label: Optional[str] = None,
-    intent_confidence: Optional[float] = None,
+    agent_id: int | None = None,
+    imap_command: str | None = None,
+    smtp_envelope: dict | None = None,
+    message_ids: list | None = None,
+    folder_from: str | None = None,
+    folder_to: str | None = None,
+    flags_add: list | None = None,
+    flags_remove: list | None = None,
+    snapshot: dict | None = None,
+    is_urgent: int | None = None,
+    batch_id: str | None = None,
+    append_message: str | None = None,
+    intent_label: str | None = None,
+    intent_confidence: float | None = None,
     db_path: Path = DB_PATH,
 ) -> str:
     """Insert a staged_operations row + audit_log entry. Returns operation ID.
@@ -339,13 +341,17 @@ async def create_operation(
         # Fire-and-forget Web Push notification. Non-fatal — staging always succeeds.
         try:
             from gateway.push import notify_staged as _notify
-            asyncio.create_task(
+            # Keep a reference so the fire-and-forget task is not garbage-collected
+            # mid-flight (RUF006); it is a best-effort push and self-clears on done.
+            _notify_task = asyncio.create_task(
                 _notify(
                     op_id, description, is_urgent=bool(is_urgent),
                     db_path=db_path, user_id=rule_user_id,
                 ),
                 name=f"push-notify-{op_id}",
             )
+            _BACKGROUND_TASKS.add(_notify_task)
+            _notify_task.add_done_callback(_BACKGROUND_TASKS.discard)
         except Exception as _exc:
             _logger.debug("push notify skipped: %s", _exc)
 
@@ -355,8 +361,8 @@ async def create_operation(
 async def get_operation(
     op_id: str,
     db_path: Path = DB_PATH,
-    user_id: Optional[int] = None,
-) -> Optional[dict]:
+    user_id: int | None = None,
+) -> dict | None:
     """Fetch operation by ID. Returns dict or None.
 
     When ``user_id`` is provided, the operation is only returned if it belongs
@@ -385,10 +391,10 @@ async def get_operation(
 
 
 async def list_operations(
-    status: Optional[str] = None,
-    agent_id: Optional[int] = None,
+    status: str | None = None,
+    agent_id: int | None = None,
     db_path: Path = DB_PATH,
-    user_id: Optional[int] = None,
+    user_id: int | None = None,
 ) -> list:
     """List operations, optionally filtered by status and/or agent_id.
 
@@ -430,7 +436,7 @@ async def update_operation_status(
     op_id: str,
     status: str,
     decided_by: str = "human",
-    error: Optional[str] = None,
+    error: str | None = None,
     db_path: Path = DB_PATH,
 ) -> None:
     """Update status + decided_at (and executed_at if status='executed')."""

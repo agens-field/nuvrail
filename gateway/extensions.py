@@ -26,19 +26,19 @@ from __future__ import annotations
 
 import importlib.metadata
 import logging
-from typing import Awaitable, Callable, Optional
+from collections.abc import Awaitable, Callable
 
 logger = logging.getLogger(__name__)
 
 # A provider takes ``(op, *, db_path, user_id)`` and returns either ``None`` (no
 # decision) or a dict with at least ``{"action": "approve"|"reject", "rule": dict}``.
-AutoDecisionProvider = Callable[..., Awaitable[Optional[dict]]]
+AutoDecisionProvider = Callable[..., Awaitable[dict | None]]
 
 # A migration takes an open aiosqlite connection and applies idempotent schema
 # changes (e.g. ADD COLUMN guarded by a PRAGMA check). Run during init_db().
 Migration = Callable[..., Awaitable[None]]
 
-_auto_decision_provider: Optional[AutoDecisionProvider] = None
+_auto_decision_provider: AutoDecisionProvider | None = None
 _migrations: list[Migration] = []
 
 
@@ -75,7 +75,7 @@ def reset_migrations() -> None:
     _migrations.clear()
 
 
-async def run_auto_decision(op: dict, *, db_path, user_id) -> Optional[dict]:
+async def run_auto_decision(op: dict, *, db_path, user_id) -> dict | None:
     """Return an auto-decision for a staged op, or ``None``.
 
     ``None`` means "no decision" — either no provider is registered (open core
@@ -113,13 +113,13 @@ def load_plugins(app=None) -> None:
     # Open core registers no providers at all — operations stay manual-approval.
     try:
         eps = importlib.metadata.entry_points(group="nuvrail.plugins")
-    except Exception:  # noqa: BLE001  (older importlib API / lookup failure)
+    except Exception:
         eps = []
     for ep in eps:
         try:
             ep.load()(app)
             logger.info("[extensions] Loaded plugin: %s", ep.name)
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.exception(
                 "[extensions] Failed to load plugin: %s", getattr(ep, "name", "?")
             )

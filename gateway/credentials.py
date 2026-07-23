@@ -340,13 +340,13 @@ async def purge_agent_upstream_secrets(
         stored_refresh = agent_row.get("oauth2_refresh_token")
         if stored_refresh:
             try:
-                from gateway.oauth2_tokens import (  # noqa: PLC0415
+                from gateway.oauth2_tokens import (
                     revoke_google_refresh_token,
                 )
 
                 plaintext_refresh = await fetch_credential(stored_refresh)
                 await revoke_google_refresh_token(plaintext_refresh)
-            except Exception:  # noqa: BLE001 - revoke is best-effort
+            except Exception:
                 logger.warning(
                     "[credentials] Failed to revoke OAuth2 grant for agent %r "
                     "on deletion; secret-store delete still proceeds",
@@ -360,7 +360,7 @@ async def purge_agent_upstream_secrets(
             continue
         try:
             await delete_credential(stored)
-        except Exception:  # noqa: BLE001 - per-field best-effort
+        except Exception:
             logger.warning(
                 "[credentials] Failed to delete upstream secret %r for agent %r "
                 "on deletion; retention purge is the backstop",

@@ -58,9 +58,8 @@ async def test_init_db_sets_wal_persistently(db_path: Path) -> None:
     """WAL is a property of the file: a raw connection (no pragmas) sees it too."""
     import aiosqlite
 
-    async with aiosqlite.connect(db_path) as db:
-        async with db.execute("PRAGMA journal_mode") as cur:
-            mode = (await cur.fetchone())[0]
+    async with aiosqlite.connect(db_path) as db, db.execute("PRAGMA journal_mode") as cur:
+        mode = (await cur.fetchone())[0]
     assert str(mode).lower() == "wal"
 
 
@@ -86,9 +85,8 @@ async def test_concurrent_writers_do_not_lock(db_path: Path) -> None:
     # Several writers racing on the same file.
     await asyncio.gather(*[_hammer(f"w{w}", 20) for w in range(5)])
 
-    async with get_db(db_path) as db:
-        async with db.execute("SELECT COUNT(*) FROM folders") as cur:
-            count = (await cur.fetchone())[0]
+    async with get_db(db_path) as db, db.execute("SELECT COUNT(*) FROM folders") as cur:
+        count = (await cur.fetchone())[0]
     assert count == 100
 
 
@@ -283,7 +281,7 @@ async def test_get_message_not_found(db_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-async def _seed_messages(db_path: Path, folder_id: int, uids: "list[int]") -> None:
+async def _seed_messages(db_path: Path, folder_id: int, uids: list[int]) -> None:
     for i, uid in enumerate(uids, start=1):
         await upsert_message(folder_id, uid=uid, seq_num=i, db_path=db_path)
 
@@ -442,6 +440,7 @@ async def test_snapshot_preserves_seq_num(db_path: Path) -> None:
 async def test_restore_from_snapshot_restores_flags(db_path: Path) -> None:
     """restore_from_snapshot reverts messages table to pre-op flags."""
     import json
+
     from gateway.staging import create_operation
 
     folder_id = await get_or_create_folder("INBOX", user_id=None, db_path=db_path)
@@ -489,6 +488,7 @@ async def test_restore_from_snapshot_no_snapshot_returns_empty(db_path: Path) ->
 async def test_insert_and_get_pending_reverts(db_path: Path) -> None:
     """insert_pending_reverts creates rows; get_pending_reverts returns undelivered."""
     import json
+
     from gateway.staging import create_operation
     from gateway.state_db import get_pending_reverts, insert_pending_reverts
 
@@ -514,6 +514,7 @@ async def test_insert_and_get_pending_reverts(db_path: Path) -> None:
 async def test_mark_reverts_delivered(db_path: Path) -> None:
     """mark_reverts_delivered sets delivered_at; get_pending_reverts excludes them."""
     import json
+
     from gateway.staging import create_operation
     from gateway.state_db import get_pending_reverts, insert_pending_reverts, mark_reverts_delivered
 
@@ -539,6 +540,7 @@ async def test_mark_reverts_delivered(db_path: Path) -> None:
 async def test_get_pending_reverts_different_folder_not_returned(db_path: Path) -> None:
     """get_pending_reverts only returns rows for the requested folder_id."""
     import json
+
     from gateway.staging import create_operation
     from gateway.state_db import get_pending_reverts, insert_pending_reverts
 
@@ -658,7 +660,7 @@ async def test_get_pending_move_uids_for_folder_returns_nothing_without_function
     db_path: Path,
 ) -> None:
     """Placeholder: verify staged MOVE ops can be queried by folder_from.
-    
+
     This test documents the gap: after staging a MOVE, there is currently no
     function to retrieve pending-move UIDs for a given folder so the u2c pump
     can filter FETCH responses. The function needs to be added.
@@ -682,13 +684,12 @@ async def test_get_pending_move_uids_for_folder_returns_nothing_without_function
     )
 
     # Query staged_operations for pending MOVEs from INBOX
-    async with get_db(db_path) as db:
-        async with db.execute(
-            """SELECT message_ids FROM staged_operations
+    async with get_db(db_path) as db, db.execute(
+        """SELECT message_ids FROM staged_operations
                WHERE status = 'pending' AND op_type = 'move' AND folder_from = ?""",
-            ("INBOX",),
-        ) as cur:
-            rows = await cur.fetchall()
+        ("INBOX",),
+    ) as cur:
+        rows = await cur.fetchall()
 
     import json as _json
     pending_uids: set[int] = set()
@@ -770,11 +771,10 @@ async def test_message_previews_fallback_to_snapshot(db_path: Path) -> None:
 
     # Now simulate what _fetch_message_previews does via the API
     from gateway.state_db import get_db
-    async with get_db(db_path) as db:
-        async with db.execute(
-            "SELECT * FROM staged_operations WHERE id = ?", (op_id,)
-        ) as cur:
-            op_row = dict(await cur.fetchone())
+    async with get_db(db_path) as db, db.execute(
+        "SELECT * FROM staged_operations WHERE id = ?", (op_id,)
+    ) as cur:
+        op_row = dict(await cur.fetchone())
 
     import json as _json
     snap_raw = op_row.get("snapshot")
@@ -879,12 +879,11 @@ async def test_init_db_creates_message_id_index(db_path: Path) -> None:
     staged reply/forward send and must not scan the whole mirror."""
     from gateway.state_db import get_db
 
-    async with get_db(db_path) as db:
-        async with db.execute(
-            "SELECT name FROM sqlite_master"
-            " WHERE type = 'index' AND name = 'idx_messages_message_id'"
-        ) as cur:
-            row = await cur.fetchone()
+    async with get_db(db_path) as db, db.execute(
+        "SELECT name FROM sqlite_master"
+        " WHERE type = 'index' AND name = 'idx_messages_message_id'"
+    ) as cur:
+        row = await cur.fetchone()
     assert row is not None, "idx_messages_message_id missing after init_db"
 
     # Re-running init_db must be a no-op (CREATE INDEX IF NOT EXISTS).
@@ -899,8 +898,8 @@ async def test_init_db_creates_message_id_index(db_path: Path) -> None:
 @pytest.mark.asyncio(loop_scope="session")
 async def test_get_pending_flag_changes_single_uid(db_path: Path) -> None:
     """Returns flags_to_add/remove for a UID with a pending STORE op."""
-    from gateway.state_db import get_pending_flag_changes_for_uid
     from gateway.staging import create_operation
+    from gateway.state_db import get_pending_flag_changes_for_uid
 
     op_id = await create_operation(
         op_type="trash",
@@ -925,8 +924,8 @@ async def test_get_pending_flag_changes_single_uid(db_path: Path) -> None:
 @pytest.mark.asyncio(loop_scope="session")
 async def test_get_pending_flag_changes_wrong_uid(db_path: Path) -> None:
     """Returns empty lists when the UID doesn't match any pending STORE ops."""
-    from gateway.state_db import get_pending_flag_changes_for_uid
     from gateway.staging import create_operation
+    from gateway.state_db import get_pending_flag_changes_for_uid
 
     await create_operation(
         op_type="trash",
@@ -950,8 +949,8 @@ async def test_get_pending_flag_changes_wrong_uid(db_path: Path) -> None:
 @pytest.mark.asyncio(loop_scope="session")
 async def test_get_pending_flag_changes_wrong_folder(db_path: Path) -> None:
     """Returns empty lists when the folder doesn't match."""
-    from gateway.state_db import get_pending_flag_changes_for_uid
     from gateway.staging import create_operation
+    from gateway.state_db import get_pending_flag_changes_for_uid
 
     await create_operation(
         op_type="mark_read",
@@ -965,7 +964,7 @@ async def test_get_pending_flag_changes_wrong_folder(db_path: Path) -> None:
         db_path=db_path,
     )
 
-    flags_add, flags_remove = await get_pending_flag_changes_for_uid(
+    flags_add, _flags_remove = await get_pending_flag_changes_for_uid(
         "INBOX", 7, agent_id="agent-3", db_path=db_path
     )
     assert flags_add == []
@@ -974,8 +973,8 @@ async def test_get_pending_flag_changes_wrong_folder(db_path: Path) -> None:
 @pytest.mark.asyncio(loop_scope="session")
 async def test_get_pending_flag_changes_uid_range(db_path: Path) -> None:
     """Expands UID ranges correctly — UID 5 in range 3:7 should match."""
-    from gateway.state_db import get_pending_flag_changes_for_uid
     from gateway.staging import create_operation
+    from gateway.state_db import get_pending_flag_changes_for_uid
 
     await create_operation(
         op_type="flag",
@@ -989,7 +988,7 @@ async def test_get_pending_flag_changes_uid_range(db_path: Path) -> None:
         db_path=db_path,
     )
 
-    flags_add, flags_remove = await get_pending_flag_changes_for_uid(
+    flags_add, _flags_remove = await get_pending_flag_changes_for_uid(
         "INBOX", 5, agent_id="agent-4", db_path=db_path
     )
     assert "\\Flagged" in flags_add
@@ -1004,8 +1003,8 @@ async def test_get_pending_flag_changes_uid_range(db_path: Path) -> None:
 @pytest.mark.asyncio(loop_scope="session")
 async def test_get_pending_flag_changes_excludes_move_ops(db_path: Path) -> None:
     """Move ops should not appear in flag change results (different op_type)."""
-    from gateway.state_db import get_pending_flag_changes_for_uid
     from gateway.staging import create_operation
+    from gateway.state_db import get_pending_flag_changes_for_uid
 
     await create_operation(
         op_type="move",
@@ -1109,8 +1108,8 @@ async def test_pending_move_uids_scoped_per_agent(db_path: Path) -> None:
 @pytest.mark.asyncio(loop_scope="session")
 async def test_pending_flag_changes_scoped_per_agent(db_path: Path) -> None:
     """One agent's pending flag change in 'INBOX' must not surface for another agent."""
-    from gateway.state_db import get_pending_flag_changes_for_uid
     from gateway.staging import create_operation
+    from gateway.state_db import get_pending_flag_changes_for_uid
 
     await create_operation(
         op_type="flag",

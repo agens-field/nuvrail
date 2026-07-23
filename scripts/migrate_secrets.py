@@ -62,13 +62,12 @@ async def migrate(dry_run: bool) -> None:
             "secret manager. Set aws-sm or gcp-sm to migrate off local storage."
         )
 
-    async with get_db(DB_PATH) as db:
-        async with db.execute(
-            "SELECT id, user_id, agent_username, upstream_password, "
-            "oauth2_refresh_token, oauth2_client_secret, oauth2_access_token "
-            "FROM agent_credentials"
-        ) as cur:
-            rows = [dict(r) for r in await cur.fetchall()]
+    async with get_db(DB_PATH) as db, db.execute(
+        "SELECT id, user_id, agent_username, upstream_password, "
+        "oauth2_refresh_token, oauth2_client_secret, oauth2_access_token "
+        "FROM agent_credentials"
+    ) as cur:
+        rows = [dict(r) for r in await cur.fetchall()]
 
     migrated_rows = 0
     migrated_secrets = 0
@@ -81,7 +80,7 @@ async def migrate(dry_run: bool) -> None:
                 continue  # empty or already in the external store
             try:
                 plaintext = await fetch_credential(val)
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 print(
                     f"ERROR: could not resolve {col} for {row['agent_username']}: {exc}",
                     file=sys.stderr,
@@ -107,10 +106,10 @@ async def migrate(dry_run: bool) -> None:
 
         if updates and not dry_run:
             set_clause = ", ".join(f"{k} = ?" for k in updates)
-            values = list(updates.values()) + [row["id"]]
+            values = [*list(updates.values()), row["id"]]
             async with get_db(DB_PATH) as db:
                 await db.execute(
-                    f"UPDATE agent_credentials SET {set_clause} WHERE id = ?",  # noqa: S608
+                    f"UPDATE agent_credentials SET {set_clause} WHERE id = ?",
                     values,
                 )
                 await db.commit()

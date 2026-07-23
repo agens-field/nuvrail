@@ -15,6 +15,7 @@ Both get_db_path (routes) and get_auth_db_path (auth dependency) are
 overridden so all DB access hits the same isolated test DB.
 """
 from __future__ import annotations
+
 import logging
 from pathlib import Path
 
@@ -22,8 +23,8 @@ import httpx
 import pytest
 
 from api.routes import auth as auth_routes
-from gateway.state_db import get_db
 from gateway.security_controls import AuthAbuseProtector
+from gateway.state_db import get_db
 
 # db_path and client fixtures are provided by tests/api/conftest.py.
 
@@ -295,11 +296,10 @@ async def test_agent_password_stored_encrypted(
     agent_id = resp.json()["id"]
 
     # Read the raw stored value directly from the DB
-    async with get_db(db_path) as db:
-        async with db.execute(
-            "SELECT upstream_password FROM agent_credentials WHERE id = ?", (agent_id,)
-        ) as cur:
-            row = await cur.fetchone()
+    async with get_db(db_path) as db, db.execute(
+        "SELECT upstream_password FROM agent_credentials WHERE id = ?", (agent_id,)
+    ) as cur:
+        row = await cur.fetchone()
 
     assert row is not None, "Agent credential row not found in DB"
     stored = row[0]
@@ -421,16 +421,15 @@ async def test_revoke_agent_purges_secrets_and_nulls_columns(
     assert purged[0]["upstream_password"] is not None
 
     # After the call, every secret column is nulled (no orphaned reference left).
-    async with get_db(db_path) as db:
-        async with db.execute(
-            """
+    async with get_db(db_path) as db, db.execute(
+        """
             SELECT upstream_password, oauth2_refresh_token,
                    oauth2_access_token, oauth2_client_secret, revoked_at
             FROM agent_credentials WHERE id = ?
             """,
-            (agent_id,),
-        ) as cur:
-            row = await cur.fetchone()
+        (agent_id,),
+    ) as cur:
+        row = await cur.fetchone()
     assert row["upstream_password"] is None
     assert row["oauth2_refresh_token"] is None
     assert row["oauth2_access_token"] is None
@@ -486,11 +485,10 @@ async def test_human_token_stored_as_sha256(
     assert login_resp.status_code == 200
     plaintext_token = login_resp.json()["token"]
 
-    async with get_db(db_path) as db:
-        async with db.execute(
-            "SELECT api_token FROM users WHERE email = ?", ("sha@example.com",)
-        ) as cur:
-            row = await cur.fetchone()
+    async with get_db(db_path) as db, db.execute(
+        "SELECT api_token FROM users WHERE email = ?", ("sha@example.com",)
+    ) as cur:
+        row = await cur.fetchone()
 
     assert row is not None
     stored = row[0]
@@ -559,14 +557,13 @@ async def test_create_agent_oauth2_no_password_required(
     assert "agent_token" in data
 
     # Verify OAuth2 fields are stored in DB (encrypted, not plaintext)
-    async with get_db(db_path) as db:
-        async with db.execute(
-            "SELECT oauth2_provider, oauth2_client_id, oauth2_refresh_token, "
-            "oauth2_client_secret, upstream_password "
-            "FROM agent_credentials WHERE upstream_user = ?",
-            ("martin@animalhorde.com",),
-        ) as cur:
-            row = await cur.fetchone()
+    async with get_db(db_path) as db, db.execute(
+        "SELECT oauth2_provider, oauth2_client_id, oauth2_refresh_token, "
+        "oauth2_client_secret, upstream_password "
+        "FROM agent_credentials WHERE upstream_user = ?",
+        ("martin@animalhorde.com",),
+    ) as cur:
+        row = await cur.fetchone()
 
     assert row is not None
     assert row["oauth2_provider"] == "google"

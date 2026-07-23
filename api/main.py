@@ -20,8 +20,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from contextlib import asynccontextmanager
-from typing import AsyncGenerator
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager, suppress
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -30,14 +30,13 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 
 from api.limiter import limiter
-from api.routes import audit, auth, features, health, oauth2, operations, push
+from api.routes import account, audit, auth, features, health, oauth2, operations, push
 from api.signup import resolve_signup_mode
-from api.routes import account
 from gateway.audit import run_audit_verification_loop
 from gateway.expiry import run_expiry_loop
 from gateway.extensions import load_plugins
-from gateway.scheduler import run_scheduled_execution_loop
 from gateway.retention import run_retention_loop
+from gateway.scheduler import run_scheduled_execution_loop
 from gateway.scrubber import run_scrubber_loop
 from gateway.state_db import DB_PATH, init_db
 
@@ -126,10 +125,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Cancel background tasks on shutdown
     for task in (expiry_task, scrubber_task, scheduler_task, retention_task, audit_verify_task):
         task.cancel()
-        try:
+        with suppress(asyncio.CancelledError):
             await task
-        except asyncio.CancelledError:
-            pass
     logger.info("Nuvrail API shutdown — background loops stopped")
 
 

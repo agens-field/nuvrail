@@ -10,9 +10,9 @@ without the proxy in the middle. This isolates whether the
 failure is in the proxy or at Gmail.
 """
 import asyncio
+import os
 import ssl
 import sys
-import os
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -25,16 +25,15 @@ async def main():
 
     agent_username = sys.argv[1]
 
-    from gateway.state_db import get_db
     from gateway.oauth2_tokens import get_xoauth2_string
+    from gateway.state_db import get_db
 
     # Look up the agent's integer id
-    async with get_db(DB) as db:
-        async with db.execute(
-            "SELECT id, upstream_user FROM agent_credentials WHERE agent_username = ?",
-            (agent_username,)
-        ) as cur:
-            row = await cur.fetchone()
+    async with get_db(DB) as db, db.execute(
+        "SELECT id, upstream_user FROM agent_credentials WHERE agent_username = ?",
+        (agent_username,)
+    ) as cur:
+        row = await cur.fetchone()
 
     if not row:
         print(f"ERROR: agent {agent_username!r} not found in DB")
@@ -61,9 +60,9 @@ async def main():
             line = await asyncio.wait_for(reader.readline(), timeout=3.0)
             greeting_lines.append(line)
             print(f"  S: {line!r}")
-            if line.startswith(b"* OK") or line.startswith(b"* BYE"):
+            if line.startswith((b"* OK", b"* BYE")):
                 break
-        except asyncio.TimeoutError:
+        except TimeoutError:
             break
 
     # Send AUTHENTICATE XOAUTH2
@@ -82,7 +81,7 @@ async def main():
             resp_lines.append(line)
             print(f"  S: {line!r}")
             # Stop at tagged response or SASL challenge
-            if line.startswith(f"{tag}".encode()) or line.startswith(b"+ "):
+            if line.startswith((f"{tag}".encode(), b"+ ")):
                 # If SASL challenge, send empty response
                 if line.startswith(b"+ "):
                     print("  C: (sending empty SASL response)")
@@ -93,7 +92,7 @@ async def main():
                     resp_lines.append(final)
                     print(f"  S: {final!r}")
                 break
-        except asyncio.TimeoutError:
+        except TimeoutError:
             print("  (timeout waiting for more lines)")
             break
 
@@ -102,7 +101,7 @@ async def main():
     final_resp = resp_lines[-1] if resp_lines else b""
     if b" OK " in final_resp.upper():
         print("Result: SUCCESS (OK in final line)")
-    elif b"+ " == final_resp[:2]:
+    elif final_resp[:2] == b"+ ":
         print("Result: SASL CHALLENGE (auth failed)")
     else:
         print(f"Result: UNEXPECTED — {final_resp!r}")

@@ -36,23 +36,22 @@ async def main() -> None:
 
     agent_username = sys.argv[1]
 
-    from gateway.state_db import get_db
     from gateway.credentials import fetch_credential
     from gateway.oauth2_tokens import _refresh_google_token
+    from gateway.state_db import get_db
 
     # 1. Load the agent credentials row.
-    async with get_db(DB_PATH) as db:
-        async with db.execute(
-            """
+    async with get_db(DB_PATH) as db, db.execute(
+        """
             SELECT id, agent_username, upstream_user, oauth2_provider,
                    oauth2_refresh_token, oauth2_client_id, oauth2_client_secret,
                    oauth2_access_token, oauth2_access_token_expires_at
             FROM agent_credentials
             WHERE agent_username = ?
             """,
-            (agent_username,),
-        ) as cur:
-            row = await cur.fetchone()
+        (agent_username,),
+    ) as cur:
+        row = await cur.fetchone()
 
     if row is None:
         print(f"ERROR: No agent_credentials row found for {agent_username!r}", file=sys.stderr)

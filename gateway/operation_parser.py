@@ -9,7 +9,6 @@ Sub-milestone: 1.0
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List, Optional
 
 
 @dataclass
@@ -18,14 +17,14 @@ class ParsedOperation:
     op_type: str
     imap_command: str
     description: str
-    message_ids: List[str] = field(default_factory=list)
-    folder_from: Optional[str] = None
-    folder_to: Optional[str] = None
-    flags_add: List[str] = field(default_factory=list)
-    flags_remove: List[str] = field(default_factory=list)
+    message_ids: list[str] = field(default_factory=list)
+    folder_from: str | None = None
+    folder_to: str | None = None
+    flags_add: list[str] = field(default_factory=list)
+    flags_remove: list[str] = field(default_factory=list)
     # Compound verb phrase for rich descriptions (e.g. "Mark as read and star").
     # None → build_rich_description falls back to the per-op_type verb.
-    verb: Optional[str] = None
+    verb: str | None = None
 
 
 # Recognised flag semantics for STORE: normalised flag →
@@ -42,7 +41,7 @@ _STORE_FLAG_SEMANTICS: list[tuple[str, tuple[str, str], tuple[str, str]]] = [
 
 
 def parse_store(
-    tag: str, uid_mode: bool, uid_set: str, flags_op: str, flags: List[str]
+    tag: str, uid_mode: bool, uid_set: str, flags_op: str, flags: list[str]
 ) -> ParsedOperation:
     """Parse STORE/UID STORE command into a ParsedOperation.
 
@@ -135,7 +134,7 @@ def parse_copy(tag: str, uid_set: str, destination_folder: str) -> ParsedOperati
     )
 
 
-def _is_drafts_append(folder: str, flags: List[str]) -> bool:
+def _is_drafts_append(folder: str, flags: list[str]) -> bool:
     """True if an APPEND targets a drafts folder or carries the \\Draft flag.
 
     Name check covers "/" and "." namespaces ("[Gmail]/Drafts", "INBOX.Drafts").
@@ -148,7 +147,7 @@ def _is_drafts_append(folder: str, flags: List[str]) -> bool:
     return name.rsplit("/", 1)[-1].rsplit(".", 1)[-1] in ("drafts", "draft")
 
 
-def parse_append(tag: str, folder: str, flags: List[str], message_size: int) -> ParsedOperation:
+def parse_append(tag: str, folder: str, flags: list[str], message_size: int) -> ParsedOperation:
     """Parse APPEND command into a ParsedOperation.
 
     Only an APPEND into a drafts folder (or with the \\Draft flag) is a draft
@@ -211,9 +210,9 @@ _INTENT_IMPLIES_DEST = {"archive", "delete", "mark_spam", "not_spam", "unarchive
 
 
 def build_rich_description(
-    parsed_op: "ParsedOperation",
-    metadata: "List[dict]",
-    intent_label: "Optional[str]" = None,
+    parsed_op: ParsedOperation,
+    metadata: list[dict],
+    intent_label: str | None = None,
 ) -> str:
     """Build a human-readable description enriched with sender/subject metadata.
 
@@ -261,9 +260,7 @@ def build_rich_description(
     # the destination is the inbox ("Restore from Trash to Receipts").
     folder_suffix = ""
     if op_type in ("move", "copy") and parsed_op.folder_to:
-        if intent_label in _INTENT_IMPLIES_DEST:
-            folder_suffix = ""
-        elif intent_label == "restore_from_trash" and parsed_op.folder_to.strip('"').upper() == "INBOX":
+        if intent_label in _INTENT_IMPLIES_DEST or (intent_label == "restore_from_trash" and parsed_op.folder_to.strip('"').upper() == "INBOX"):
             folder_suffix = ""
         else:
             folder_suffix = f" to {parsed_op.folder_to}"
@@ -281,7 +278,7 @@ def build_rich_description(
         msg = metadata[0]
         sender = msg.get("sender") or ""
         subject = msg.get("subject") or ""
-        parts: List[str] = []
+        parts: list[str] = []
         if subject:
             parts.append(f'"{subject}"')
         if sender:

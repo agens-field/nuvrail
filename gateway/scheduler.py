@@ -48,9 +48,8 @@ _BATCH_SIZE = 100
 async def find_due_scheduled(db_path: Path = DB_PATH) -> list[dict]:
     """Return pending operations whose cool-down deadline has passed."""
     now = int(time.time())
-    async with get_db(db_path) as db:
-        async with db.execute(
-            """
+    async with get_db(db_path) as db, db.execute(
+        """
             SELECT *
             FROM staged_operations
             WHERE status = 'pending'
@@ -59,9 +58,9 @@ async def find_due_scheduled(db_path: Path = DB_PATH) -> list[dict]:
             ORDER BY scheduled_execute_at ASC
             LIMIT ?
             """,
-            (now, _BATCH_SIZE),
-        ) as cur:
-            return [dict(row) for row in await cur.fetchall()]
+        (now, _BATCH_SIZE),
+    ) as cur:
+        return [dict(row) for row in await cur.fetchall()]
 
 
 async def _claim(op_id: str, db_path: Path) -> bool:
@@ -99,7 +98,7 @@ async def execute_due_scheduled(db_path: Path = DB_PATH) -> int:
 
     # Imported lazily to avoid a circular import (gateway.execution imports
     # gateway.staging, which the scheduler does not, but keep the boundary clean).
-    from gateway.execution import ExecutionError, execute_operation  # noqa: PLC0415
+    from gateway.execution import ExecutionError, execute_operation
 
     count = 0
     for op in due:
@@ -147,7 +146,7 @@ async def run_scheduled_execution_loop(
                 record_heartbeat("scheduler", interval_seconds=interval_seconds)
                 if count > 0:
                     logger.info("[scheduler] Executed %d scheduled operation(s)", count)
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 logger.error("[scheduler] Unexpected error during run: %s", exc)
                 record_heartbeat(
                     "scheduler", interval_seconds=interval_seconds, ok=False, detail=str(exc)

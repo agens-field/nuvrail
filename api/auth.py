@@ -6,16 +6,18 @@ Lane 2: AI agent → proxy via agent username + token (IMAP/SMTP password).
 """
 from __future__ import annotations
 
+import logging
 import secrets
 import time
 from pathlib import Path
-from typing import Optional
 
 import bcrypt
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from gateway.state_db import DB_PATH, get_db
+
+logger = logging.getLogger(__name__)
 
 # In-memory throttle: track the last time we updated api_token_last_used_at per user.
 # At most one DB write per user per hour (issue #28).
@@ -55,7 +57,7 @@ def hash_token_for_storage(token: str) -> str:
     bcrypt's per-call overhead.  The token itself has 32 bytes of entropy
     (256 bits), so a fast hash is acceptable — brute-force is infeasible.
     """
-    import hashlib  # noqa: PLC0415
+    import hashlib
     return hashlib.sha256(token.encode()).hexdigest()
 
 
@@ -74,17 +76,16 @@ def verify_password(plain: str, hashed: str) -> bool:
     return bcrypt.checkpw(plain.encode(), hashed.encode())
 
 
-async def get_user_by_token(token: str, db_path: Path = DB_PATH) -> Optional[dict]:
+async def get_user_by_token(token: str, db_path: Path = DB_PATH) -> dict | None:
     """Look up a user row by their API bearer token.
 
     The incoming token is plaintext; the DB stores sha256(token) so we hash
     before querying.  See hash_token_for_storage().
     """
-    async with get_db(db_path) as db:
-        async with db.execute(
-            "SELECT * FROM users WHERE api_token = ?", (hash_token_for_storage(token),)
-        ) as cur:
-            row = await cur.fetchone()
+    async with get_db(db_path) as db, db.execute(
+        "SELECT * FROM users WHERE api_token = ?", (hash_token_for_storage(token),)
+    ) as cur:
+        row = await cur.fetchone()
     return dict(row) if row else None
 
 
@@ -106,12 +107,14 @@ async def touch_last_used_at(user_id: int, db_path: Path = DB_PATH) -> None:
                 (int(now), user_id),
             )
             await db.commit()
-    except Exception:  # noqa: BLE001
-        pass  # non-fatal: stats update failure must not break auth
+    except Exception:
+        # Non-fatal: a last-used stats update must never break auth. Log at debug
+        # so a persistent failure is still observable without failing the request.
+        logger.debug("api_token_last_used_at update failed for user %s", user_id, exc_info=True)
 
 
 async def get_current_user(
-    credentials: Optional[HTTPAuthorizationCredentials] = Depends(_bearer),
+    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer),
     db_path: Path = Depends(get_auth_db_path),
 ) -> dict:
     """FastAPI dependency: validate Bearer token and return the user row.

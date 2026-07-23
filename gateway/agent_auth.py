@@ -12,10 +12,9 @@ from __future__ import annotations
 
 import base64
 from pathlib import Path
-from typing import Optional
 
 
-def decode_sasl_plain(payload: "str | bytes") -> Optional[tuple[str, str]]:
+def decode_sasl_plain(payload: str | bytes) -> tuple[str, str] | None:
     """Decode a SASL PLAIN (RFC 4616) payload into ``(authcid, password)``.
 
     The plaintext form is ``authzid \\x00 authcid \\x00 passwd`` and ``payload``
@@ -28,7 +27,7 @@ def decode_sasl_plain(payload: "str | bytes") -> Optional[tuple[str, str]]:
     """
     try:
         raw = base64.b64decode(payload)
-    except Exception:  # noqa: BLE001 — any decode error is just "invalid creds"
+    except Exception:
         return None
     parts = raw.split(b"\x00")
     if len(parts) < 3:
@@ -39,11 +38,11 @@ def decode_sasl_plain(payload: "str | bytes") -> Optional[tuple[str, str]]:
 
 
 async def get_agent_credential(
-    agent_id: Optional[int],
+    agent_id: int | None,
     db_path: Path,
     *,
     require_active: bool = True,
-) -> Optional[dict]:
+) -> dict | None:
     """Return the agent_credentials row for ``agent_id`` as a dict, or None.
 
     When ``require_active`` is True (the default, used on the execution path),
@@ -58,7 +57,7 @@ async def get_agent_credential(
     """
     if agent_id is None:
         return None
-    from gateway.state_db import get_db  # noqa: PLC0415
+    from gateway.state_db import get_db
 
     if require_active:
         sql = (
@@ -70,15 +69,14 @@ async def get_agent_credential(
     else:
         sql = "SELECT * FROM agent_credentials WHERE id = ?"
 
-    async with get_db(db_path) as db:
-        async with db.execute(sql, (agent_id,)) as cur:
-            row = await cur.fetchone()
+    async with get_db(db_path) as db, db.execute(sql, (agent_id,)) as cur:
+        row = await cur.fetchone()
     return dict(row) if row else None
 
 
 async def verify_agent_login(
     agent_user: str, agent_token: str, db_path: Path
-) -> Optional[dict]:
+) -> dict | None:
     """Verify an agent's username + token against agent_credentials.
 
     Returns the credential row dict when the username exists, is not revoked,
@@ -93,23 +91,22 @@ async def verify_agent_login(
     """
     if not agent_user:
         return None
-    from gateway.state_db import get_db  # noqa: PLC0415
+    from gateway.state_db import get_db
 
-    async with get_db(db_path) as db:
-        async with db.execute(
-            "SELECT ac.* FROM agent_credentials ac "
-            "JOIN users u ON u.id = ac.user_id "
-            "WHERE ac.agent_username = ? AND ac.revoked_at IS NULL "
-            "AND u.suspended_at IS NULL AND u.deleted_at IS NULL",
-            (agent_user,),
-        ) as cur:
-            row = await cur.fetchone()
+    async with get_db(db_path) as db, db.execute(
+        "SELECT ac.* FROM agent_credentials ac "
+        "JOIN users u ON u.id = ac.user_id "
+        "WHERE ac.agent_username = ? AND ac.revoked_at IS NULL "
+        "AND u.suspended_at IS NULL AND u.deleted_at IS NULL",
+        (agent_user,),
+    ) as cur:
+        row = await cur.fetchone()
     if row is None:
         return None
 
     # Imported lazily so the proxy processes don't pull in the API/bcrypt stack
     # at module-import time.
-    from api.auth import verify_password  # noqa: PLC0415
+    from api.auth import verify_password
 
     if not verify_password(agent_token, row["hashed_token"]):
         return None

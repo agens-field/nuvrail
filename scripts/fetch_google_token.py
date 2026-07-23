@@ -36,7 +36,6 @@ import threading
 import urllib.parse
 import urllib.request
 import webbrowser
-from typing import Optional
 
 # ---------------------------------------------------------------------------
 # Config
@@ -52,8 +51,8 @@ TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token"
 # Local redirect-capture server
 # ---------------------------------------------------------------------------
 
-_auth_code: Optional[str] = None
-_server_error: Optional[str] = None
+_auth_code: str | None = None
+_server_error: str | None = None
 
 
 class _CallbackHandler(http.server.BaseHTTPRequestHandler):
@@ -84,7 +83,7 @@ class _CallbackHandler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def log_message(self, format: str, *args: object) -> None:  # noqa: A002
+    def log_message(self, format: str, *args: object) -> None:
         pass  # suppress default request logging
 
 

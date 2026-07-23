@@ -20,7 +20,6 @@ from __future__ import annotations
 import json
 import time
 from pathlib import Path
-from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse
@@ -37,7 +36,7 @@ router = APIRouter()
 def _row_to_entry(row: dict) -> AuditEntry:
     """Convert a raw DB row (audit_log LEFT JOIN staged_operations) to AuditEntry."""
     detail_raw = row.get("detail")
-    detail_parsed: Optional[dict] = None
+    detail_parsed: dict | None = None
     if isinstance(detail_raw, str):
         try:
             detail_parsed = json.loads(detail_raw)
@@ -69,14 +68,14 @@ def _row_to_entry(row: dict) -> AuditEntry:
 async def list_audit(
     limit: int = Query(default=50, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
-    event: Optional[str] = Query(default=None),
-    actor: Optional[str] = Query(default=None),
-    agent_id: Optional[int] = Query(default=None, ge=1),
-    op_type: Optional[str] = Query(default=None, description="Filter by operation type (move, trash, smtp_send, …)"),
-    intent: Optional[str] = Query(default=None, description="Filter by semantic intent (archive, delete, mark_spam, …)"),
-    since: Optional[int] = Query(default=None, description="Unix timestamp — only entries at or after this time"),
-    until: Optional[int] = Query(default=None, description="Unix timestamp — only entries at or before this time"),
-    search: Optional[str] = Query(default=None, description="Case-insensitive substring match on operation description"),
+    event: str | None = Query(default=None),
+    actor: str | None = Query(default=None),
+    agent_id: int | None = Query(default=None, ge=1),
+    op_type: str | None = Query(default=None, description="Filter by operation type (move, trash, smtp_send, …)"),
+    intent: str | None = Query(default=None, description="Filter by semantic intent (archive, delete, mark_spam, …)"),
+    since: int | None = Query(default=None, description="Unix timestamp — only entries at or after this time"),
+    until: int | None = Query(default=None, description="Unix timestamp — only entries at or before this time"),
+    search: str | None = Query(default=None, description="Case-insensitive substring match on operation description"),
     db_path: Path = Depends(get_db_path),
     current_user: dict = Depends(get_current_user),
 ) -> AuditListResponse:
@@ -92,11 +91,13 @@ async def list_audit(
         # audit_log.agent_id → agent_credentials.id → agent_credentials.user_id
         # Also include system/expiry events where agent_id is NULL but the
         # operation itself belongs to this user.
-        "(ac.user_id = ? OR (a.agent_id IS NULL AND op.id IS NOT NULL AND EXISTS ("
-        "  SELECT 1 FROM staged_operations op2"
-        "  JOIN agent_credentials ac2 ON op2.agent_id = ac2.id"
-        "  WHERE op2.id = a.operation_id AND ac2.user_id = ?"
-        ")))"
+        (
+            "(ac.user_id = ? OR (a.agent_id IS NULL AND op.id IS NOT NULL AND EXISTS ("
+            "  SELECT 1 FROM staged_operations op2"
+            "  JOIN agent_credentials ac2 ON op2.agent_id = ac2.id"
+            "  WHERE op2.id = a.operation_id AND ac2.user_id = ?"
+            ")))"
+        )
     ]
     params: list[object] = [user_id, user_id]
 
@@ -188,12 +189,11 @@ async def get_agent_audit(
     user_id = current_user["id"]
 
     # Verify the agent belongs to the current user.
-    async with get_db(db_path) as db:
-        async with db.execute(
-            "SELECT id FROM agent_credentials WHERE id = ? AND user_id = ? AND revoked_at IS NULL",
-            (agent_id, user_id),
-        ) as cur:
-            agent_row = await cur.fetchone()
+    async with get_db(db_path) as db, db.execute(
+        "SELECT id FROM agent_credentials WHERE id = ? AND user_id = ? AND revoked_at IS NULL",
+        (agent_id, user_id),
+    ) as cur:
+        agent_row = await cur.fetchone()
 
     if agent_row is None:
         raise HTTPException(status_code=404, detail=f"Agent {agent_id} not found")
@@ -215,7 +215,7 @@ async def get_agent_audit(
     """
     params: list[object] = [agent_id, agent_id, user_id, user_id]
 
-    count_sql = f"SELECT COUNT(*) {join_clause} {where}"  # noqa: S608
+    count_sql = f"SELECT COUNT(*) {join_clause} {where}"
     select_sql = f"""
         SELECT
             a.id,
@@ -236,7 +236,7 @@ async def get_agent_audit(
         {where}
         ORDER BY a.id DESC
         LIMIT ? OFFSET ?
-    """  # noqa: S608
+    """
 
     async with get_db(db_path) as db:
         async with db.execute(count_sql, params) as cur:
@@ -252,7 +252,7 @@ async def get_agent_audit(
 
 @router.get("/audit/export")
 async def export_audit(
-    agent_id: Optional[int] = Query(default=None, ge=1),
+    agent_id: int | None = Query(default=None, ge=1),
     db_path: Path = Depends(get_db_path),
     current_user: dict = Depends(get_current_user),
 ) -> JSONResponse:
@@ -264,11 +264,13 @@ async def export_audit(
     """
     user_id = current_user["id"]
     conditions: list[str] = [
-        "(ac.user_id = ? OR (a.agent_id IS NULL AND op.id IS NOT NULL AND EXISTS ("
-        "    SELECT 1 FROM staged_operations op2"
-        "    JOIN agent_credentials ac2 ON op2.agent_id = ac2.id"
-        "    WHERE op2.id = a.operation_id AND ac2.user_id = ?"
-        ")))"
+        (
+            "(ac.user_id = ? OR (a.agent_id IS NULL AND op.id IS NOT NULL AND EXISTS ("
+            "    SELECT 1 FROM staged_operations op2"
+            "    JOIN agent_credentials ac2 ON op2.agent_id = ac2.id"
+            "    WHERE op2.id = a.operation_id AND ac2.user_id = ?"
+            ")))"
+        )
     ]
     params: list[object] = [user_id, user_id]
     if agent_id is not None:
@@ -299,9 +301,8 @@ async def export_audit(
         {where}
         ORDER BY a.id ASC
     """
-    async with get_db(db_path) as db:
-        async with db.execute(select_sql, params) as cur:
-            rows = [dict(r) for r in await cur.fetchall()]
+    async with get_db(db_path) as db, db.execute(select_sql, params) as cur:
+        rows = [dict(r) for r in await cur.fetchall()]
 
     entries = [_row_to_entry(r).model_dump() for r in rows]
     return JSONResponse(
@@ -373,9 +374,11 @@ async def get_audit_entry(
               WHERE op2.id = a.operation_id AND ac2.user_id = ?
           )))
     """
-    async with get_db(db_path) as db:
-        async with db.execute(select_sql, (entry_id, user_id, user_id)) as cur:
-            row = await cur.fetchone()
+    async with (
+        get_db(db_path) as db,
+        db.execute(select_sql, (entry_id, user_id, user_id)) as cur,
+    ):
+        row = await cur.fetchone()
 
     if row is None:
         raise HTTPException(status_code=404, detail=f"Audit entry {entry_id} not found")

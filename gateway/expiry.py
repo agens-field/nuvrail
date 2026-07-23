@@ -56,18 +56,17 @@ _BATCH_SIZE = 100
 async def find_expired_pending(db_path: Path = DB_PATH) -> list[dict]:
     """Return pending operations whose expires_at has passed."""
     now = int(time.time())
-    async with get_db(db_path) as db:
-        async with db.execute(
-            """
+    async with get_db(db_path) as db, db.execute(
+        """
             SELECT id, op_type, protocol, description, expires_at, snapshot
             FROM staged_operations
             WHERE status = 'pending' AND expires_at <= ?
             ORDER BY expires_at ASC
             LIMIT ?
             """,
-            (now, _BATCH_SIZE),
-        ) as cur:
-            rows = await cur.fetchall()
+        (now, _BATCH_SIZE),
+    ) as cur:
+        rows = await cur.fetchall()
     return [dict(r) for r in rows]
 
 
@@ -84,7 +83,7 @@ async def _expire_one(op_id: str, db_path: Path) -> None:
                 "[expiry] op=%s: restored snapshot, queued %d pending_reverts",
                 op_id, len(reverts),
             )
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         # Revert failure is non-fatal — we still mark the op expired
         logger.warning("[expiry] op=%s: snapshot revert failed (non-fatal): %s", op_id, exc)
 
@@ -135,7 +134,7 @@ async def expire_stale_operations(db_path: Path = DB_PATH) -> int:
         try:
             await _expire_one(op["id"], db_path)
             count += 1
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.error("[expiry] Failed to expire op=%s: %s", op["id"], exc)
 
     return count
@@ -173,7 +172,7 @@ async def run_expiry_loop(
                     logger.info("[expiry] Expired %d operation(s) this run", count)
                 else:
                     logger.debug("[expiry] No overdue operations found")
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 logger.error("[expiry] Unexpected error during expiry run: %s", exc)
                 record_heartbeat(
                     _LOOP_NAME, interval_seconds=interval_seconds, ok=False, detail=str(exc)

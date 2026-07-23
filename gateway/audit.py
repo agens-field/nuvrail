@@ -35,7 +35,6 @@ import hashlib
 import logging
 import time
 from pathlib import Path
-from typing import Optional
 
 import aiosqlite
 
@@ -57,13 +56,13 @@ def _compute_entry_hash(
     prev_hash: str,
     row_id: int,
     timestamp: int,
-    operation_id: Optional[str],
+    operation_id: str | None,
     event: str,
-    actor: Optional[str],
-    agent_id: Optional[str],
-    op_type: Optional[str],
-    detail: Optional[str],
-    user_id: Optional[int],
+    actor: str | None,
+    agent_id: str | None,
+    op_type: str | None,
+    detail: str | None,
+    user_id: int | None,
 ) -> str:
     """Return SHA-256 hex digest of the canonicalised row fields.
 
@@ -96,13 +95,13 @@ async def insert_audit_event(
     *,
     timestamp: int,
     event: str,
-    actor: Optional[str] = None,
-    operation_id: Optional[str] = None,
-    agent_id: Optional[str] = None,
-    op_type: Optional[str] = None,
-    detail: Optional[str] = None,
-    user_id: Optional[int] = None,
-    intent_label: Optional[str] = None,
+    actor: str | None = None,
+    operation_id: str | None = None,
+    agent_id: str | None = None,
+    op_type: str | None = None,
+    detail: str | None = None,
+    user_id: int | None = None,
+    intent_label: str | None = None,
 ) -> None:
     """Insert a single audit_log row with cryptographic hash chaining.
 
@@ -176,13 +175,13 @@ async def record_audit_event(
     *,
     timestamp: int,
     event: str,
-    actor: Optional[str] = None,
-    operation_id: Optional[str] = None,
-    agent_id: Optional[str] = None,
-    op_type: Optional[str] = None,
-    detail: Optional[str] = None,
-    user_id: Optional[int] = None,
-    intent_label: Optional[str] = None,
+    actor: str | None = None,
+    operation_id: str | None = None,
+    agent_id: str | None = None,
+    op_type: str | None = None,
+    detail: str | None = None,
+    user_id: int | None = None,
+    intent_label: str | None = None,
 ) -> None:
     """Open a connection, append one audit_log row, and commit.
 
@@ -192,7 +191,7 @@ async def record_audit_event(
     operation, or marking an account deleted — use insert_audit_event(db, …)
     inside that existing transaction instead.
     """
-    from gateway.state_db import get_db  # noqa: PLC0415 — avoid import cycle
+    from gateway.state_db import get_db
 
     async with get_db(db_path) as db:
         await insert_audit_event(
@@ -298,7 +297,7 @@ def last_verification_result() -> dict:
     return dict(_last_verification)
 
 
-async def get_chain_head(db_path: Path) -> Optional[str]:
+async def get_chain_head(db_path: Path) -> str | None:
     """Return the entry_hash of the most recent hashed audit row (the chain
     head), or None if the chain is empty.
 
@@ -362,7 +361,7 @@ async def run_audit_verification_loop(
                     )
                 else:
                     logger.debug("[audit-verify] chain intact")
-            except Exception as exc:  # noqa: BLE001 — a sweep error must not kill the loop
+            except Exception as exc:
                 logger.error("[audit-verify] verification run failed: %s", exc)
                 record_heartbeat(
                     "audit-verify", interval_seconds=interval_seconds, ok=False,

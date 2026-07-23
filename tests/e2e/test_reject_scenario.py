@@ -13,9 +13,9 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import re
 import time
-from typing import Optional
 
 import pytest
 
@@ -76,7 +76,7 @@ def _auth_plain_b64(user: str, password: str) -> str:
     return base64.b64encode(f"\x00{user}\x00{password}".encode()).decode()
 
 
-def _extract_op_id(text: str) -> Optional[str]:
+def _extract_op_id(text: str) -> str | None:
     m = re.search(r"(op_[A-Za-z0-9]+)", text)
     return m.group(1) if m else None
 
@@ -88,7 +88,7 @@ async def _smtp_send_via_proxy(
     agent_token: str,
     subject: str,
     envelope_sender: str,
-    envelope_recipient: Optional[str] = None,
+    envelope_recipient: str | None = None,
 ) -> str:
     """Send a message via the SMTP proxy. Returns op_id from STAGED response."""
     recipient = envelope_recipient or envelope_sender
@@ -130,10 +130,8 @@ async def _smtp_send_via_proxy(
         assert op_id is not None, f"No op_id in: {staged_resp!r}"
         return op_id
     finally:
-        try:
+        with contextlib.suppress(OSError):
             await _send(writer, "QUIT\r\n")
-        except OSError:
-            pass
         await _close(writer)
 
 
@@ -169,9 +167,7 @@ async def _imap_raw_read_until_tagged(
         lines.append(decoded)
         upper = decoded.upper()
         if (
-            upper.startswith(tag.upper() + " OK")
-            or upper.startswith(tag.upper() + " NO")
-            or upper.startswith(tag.upper() + " BAD")
+            upper.startswith((tag.upper() + " OK", tag.upper() + " NO", tag.upper() + " BAD"))
         ):
             break
     return lines
@@ -219,10 +215,8 @@ async def _proxy_imap_store_flags(
         op_id = _extract_op_id(full_response) or ""
         return full_response, op_id
     finally:
-        try:
+        with contextlib.suppress(OSError):
             await _imap_raw_send(writer, "t99 LOGOUT")
-        except OSError:
-            pass
         await _imap_raw_close(writer)
 
 
@@ -308,7 +302,7 @@ async def test_imap_write_rejected_flag_unchanged(
     user = e2e_setup["proxy_agent_auth"]["imap"]["username"]
     password = e2e_setup["proxy_agent_auth"]["imap"]["token"]
 
-    uid: Optional[int] = None
+    uid: int | None = None
 
     try:
         # Step 1: Send message via direct SMTP, wait for arrival

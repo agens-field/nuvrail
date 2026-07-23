@@ -34,18 +34,21 @@ Upstream→client direction is still a raw byte pump.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
 import re
 import ssl
 from pathlib import Path
-from typing import Optional
 
 from dotenv import load_dotenv
 
 from gateway.agent_auth import decode_sasl_plain, verify_agent_login
+from gateway.batching import get_or_create_batch
 from gateway.command_router import classify
+from gateway.credentials import fetch_credential
+from gateway.extensions import load_plugins
 from gateway.imap_parser import ParsedCommand, parse_line
 from gateway.imap_response_parser import (
     _HEADER_READ_LIMIT,
@@ -56,7 +59,14 @@ from gateway.imap_response_parser import (
     parse_select_response,
 )
 from gateway.intent import derive_intent, role_from_list_attributes
-from gateway.operation_parser import ParsedOperation, build_rich_description, parse_append, parse_copy, parse_move, parse_store
+from gateway.operation_parser import (
+    ParsedOperation,
+    build_rich_description,
+    parse_append,
+    parse_copy,
+    parse_move,
+    parse_store,
+)
 from gateway.provider_profiles import (
     PendingCopyIntent,
     ProviderProfile,
@@ -64,21 +74,18 @@ from gateway.provider_profiles import (
     detect_provider,
     should_suppress_append,
 )
-from gateway.credentials import fetch_credential
 from gateway.security_controls import build_auth_abuse_protector
-from gateway.batching import get_or_create_batch
-from gateway.extensions import load_plugins
 from gateway.staging import create_operation
 from gateway.state_db import (
     DB_PATH,
     apply_optimistic_flag_update,
     get_message,
+    get_message_metadata_by_uid_set,
     get_pending_flag_changes_for_uid,
     get_pending_move_uids_for_folder,
     get_pending_reverts,
-    init_db,
-    get_message_metadata_by_uid_set,
     get_special_use_folders,
+    init_db,
     mark_reverts_delivered,
     remove_messages_from_folder,
     snapshot_messages,
@@ -103,7 +110,7 @@ _MAX_APPEND_BYTES = int(os.environ.get("NUVRAIL_MAX_APPEND_BYTES", str(10 * 1024
 _LITERAL_RE = re.compile(r"\{(\d+)\+?\}$")
 
 
-def _build_parsed_op(parsed: ParsedCommand) -> Optional[ParsedOperation]:
+def _build_parsed_op(parsed: ParsedCommand) -> ParsedOperation | None:
     """Convert a ParsedCommand into a ParsedOperation for staging.
 
     Returns None for commands that should use generic staging (CREATE, RENAME, etc.).
@@ -162,7 +169,7 @@ async def _load_special_use(session: dict, db_path: Path, peer: str) -> dict:
         )
         session["special_use"] = loaded
         return loaded
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.debug("[%s] special-use lookup failed (non-fatal): %s", peer, exc)
         return {}
 
@@ -178,7 +185,7 @@ async def _read_upstream_until_tagged(
     upstream_reader: asyncio.StreamReader,
     tag: bytes,
     peer: str,
-) -> Optional[list[str]]:
+) -> list[str] | None:
     """Collect upstream response lines until the tagged completion for ``tag``.
 
     Returns the untagged lines (decoded, CRLF-stripped), or None on timeout /
@@ -197,7 +204,7 @@ async def _read_upstream_until_tagged(
             break
         try:
             line = await asyncio.wait_for(upstream_reader.readline(), timeout=remaining)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             break
         if not line:
             break
@@ -216,7 +223,7 @@ async def _discover_special_use(
     upstream_writer: asyncio.StreamWriter,
     known_caps: str,
     *,
-    user_id: Optional[int],
+    user_id: int | None,
     db_path: Path,
     peer: str,
 ) -> None:
@@ -317,7 +324,7 @@ async def _inject_pending_reverts(
             "[%s] Injected %d unsolicited FETCH revert(s) for folder_id=%s",
             peer, len(lines), folder_id,
         )
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.warning("[%s] _inject_pending_reverts failed (non-fatal): %s", peer, exc)
 
 
@@ -390,7 +397,7 @@ async def _sync_upstream_line(
                 "[%s] Synced folder %r: exists=%s uidvalidity=%s",
                 peer, session["folder"], info.exists, info.uidvalidity,
             )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning("[%s] Failed to sync SELECT stats: %s", peer, exc)
         return
 
@@ -426,7 +433,7 @@ async def _sync_upstream_line(
                     "[%s] LIST: upserted folders %s (special-use: %s)",
                     peer, [f.name for f in listed], roles or "none",
                 )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning("[%s] Failed to sync LIST line: %s", peer, exc)
         return
 
@@ -458,7 +465,7 @@ async def _sync_upstream_line(
             logger.debug(
                 "[%s] FETCH synced uid=%s flags=%s", peer, info.uid, info.flags
             )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning("[%s] Failed to sync FETCH line: %s", peer, exc)
 
 
@@ -550,8 +557,8 @@ async def _client_to_upstream(
                     # Persist the raw message (base64) so the APPEND can actually
                     # be replayed upstream on approval. Oversized bodies were
                     # already dropped (logged) during the literal read above.
-                    import base64 as _b64  # noqa: PLC0415
-                    _append_b64: Optional[str] = (
+                    import base64 as _b64
+                    _append_b64: str | None = (
                         _b64.b64encode(literal_data).decode("ascii") if literal_data else None
                     )
                     _append_batch_id = await get_or_create_batch(
@@ -629,7 +636,7 @@ async def _client_to_upstream(
             # non-matching write command arrives before the STORE \Deleted.
             # -----------------------------------------------------------------
             _profile: ProviderProfile = session.get("provider_profile")
-            _pending: Optional[PendingCopyIntent] = session.get("pending_copy_intent")
+            _pending: PendingCopyIntent | None = session.get("pending_copy_intent")
             _is_store_deleted = (
                 parsed.command.upper() == "STORE"
                 and len(parsed.args) >= 3
@@ -682,7 +689,7 @@ async def _client_to_upstream(
                         "[%s] FLUSHED held COPY to %r as staged op %s",
                         peer, _pending.destination, _flush_op_id,
                     )
-                except Exception as _flush_exc:  # noqa: BLE001
+                except Exception as _flush_exc:
                     logger.warning("[%s] Failed to flush held COPY (non-fatal): %s", peer, _flush_exc)
                 finally:
                     session["pending_copy_intent"] = None
@@ -732,7 +739,7 @@ async def _client_to_upstream(
                 # Provider normalization: COPY+STORE(\Deleted) → UID MOVE
                 # If STORE \Deleted matches a held COPY intent, rewrite the pair
                 # as a single UID MOVE to the COPY destination and clear the intent.
-                _pending_now: Optional[PendingCopyIntent] = session.get("pending_copy_intent")
+                _pending_now: PendingCopyIntent | None = session.get("pending_copy_intent")
                 if (
                     _pending_now is not None
                     and _is_store_deleted
@@ -764,7 +771,7 @@ async def _client_to_upstream(
                     # affected messages and apply the optimistic update so the
                     # AI sees the proposed state immediately. The snapshot is
                     # stored in staged_operations for later revert on rejection.
-                    op_snapshot: Optional[dict] = None
+                    op_snapshot: dict | None = None
                     folder_id = session.get("folder_id")
                     is_flag_op = parsed.command.upper() in ("STORE",) and (
                         parsed_op.flags_add or parsed_op.flags_remove
@@ -780,7 +787,7 @@ async def _client_to_upstream(
                                 db_path=db_path,
                             )
                             session["folder_id"] = folder_id
-                        except Exception:
+                        except Exception:  # noqa: S110 — best-effort folder-cache warm; op still staged
                             pass
                     if is_flag_op and folder_id is not None and parsed_op.message_ids:
                         uid_set_str = parsed_op.message_ids[0] if len(parsed_op.message_ids) == 1 else ",".join(parsed_op.message_ids)
@@ -843,7 +850,7 @@ async def _client_to_upstream(
                             op_description = build_rich_description(
                                 parsed_op, msg_meta, op_intent
                             )
-                        except Exception as meta_exc:  # noqa: BLE001
+                        except Exception as meta_exc:
                             logger.debug(
                                 "[%s] Metadata lookup for rich description failed (non-fatal): %s",
                                 peer, meta_exc,
@@ -872,7 +879,7 @@ async def _client_to_upstream(
                                 "[%s] MOVE staged: removed UIDs %s from local state (folder_id=%s)",
                                 peer, uid_set_str, folder_id,
                             )
-                        except Exception as move_exc:  # noqa: BLE001
+                        except Exception as move_exc:
                             logger.warning(
                                 "[%s] MOVE optimistic update failed (non-fatal): %s",
                                 peer, move_exc,
@@ -1009,7 +1016,7 @@ async def _upstream_to_client(
                                 "[%s] EXISTS adjusted %d → %d (%d pending moves)",
                                 peer, _n, _adjusted, len(_pending),
                             )
-                except Exception as exc:  # noqa: BLE001
+                except Exception as exc:
                     logger.warning("[%s] EXISTS adjustment failed (non-fatal): %s", peer, exc)
 
             # Filter * SEARCH results: strip UIDs that are pending MOVE from
@@ -1035,7 +1042,7 @@ async def _upstream_to_client(
                             "[%s] SEARCH filtered %d pending-move UIDs from results",
                             peer, len(_uid_strs) - len(_filtered),
                         )
-                except Exception as exc:  # noqa: BLE001
+                except Exception as exc:
                     logger.warning("[%s] SEARCH filter failed (non-fatal): %s", peer, exc)
 
             # RFC822 literal FETCH: "* N FETCH (UID M RFC822 {size})"
@@ -1110,14 +1117,14 @@ async def _upstream_to_client(
                                     "[%s] RFC822 literal: stored sender=%r subject=%r for uid=%s",
                                     peer, _sender, _subject, _lit_uid,
                                 )
-                        except Exception as _hdr_exc:  # noqa: BLE001
+                        except Exception as _hdr_exc:
                             logger.debug(
                                 "[%s] RFC822 header extraction failed (non-fatal): %s",
                                 peer, _hdr_exc,
                             )
                 except (ConnectionResetError, BrokenPipeError, OSError):
                     return
-                except Exception as _lit_exc:  # noqa: BLE001
+                except Exception as _lit_exc:
                     logger.warning("[%s] RFC822 literal handling error (non-fatal): %s", peer, _lit_exc)
                 # Skip normal forward + sync for this line — already forwarded above.
                 continue
@@ -1143,12 +1150,10 @@ async def _upstream_to_client(
                                     peer, fetch_info.uid,
                                 )
                                 # Still sync state but don't forward to client
-                                try:
+                                with contextlib.suppress(Exception):
                                     await _sync_upstream_line(line, session, db_path, peer)
-                                except Exception:  # noqa: BLE001
-                                    pass
                                 continue
-                    except Exception as exc:  # noqa: BLE001
+                    except Exception as exc:
                         logger.warning("[%s] Pending-move filter error (non-fatal): %s", peer, exc)
 
             # Patch FLAGS in FETCH responses for pending STORE ops.
@@ -1196,7 +1201,7 @@ async def _upstream_to_client(
                                         "[%s] Patched FLAGS for pending STORE UID %s: %s",
                                         peer, fetch_info.uid, new_flags_str,
                                     )
-                    except Exception as exc:  # noqa: BLE001
+                    except Exception as exc:
                         logger.warning("[%s] FETCH flag-patch error (non-fatal): %s", peer, exc)
 
             # Forward this line to the client.
@@ -1209,7 +1214,7 @@ async def _upstream_to_client(
             # State sync (best-effort, errors never propagate).
             try:
                 await _sync_upstream_line(line, session, db_path, peer)
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 logger.warning("[%s] State sync error: %s", peer, exc)
 
         # If there are buffered bytes that don't form a complete line yet
@@ -1265,7 +1270,7 @@ async def handle_client(
     # Safety net: init_db is idempotent.
     try:
         await init_db(_db_path)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.warning("[%s] init_db safety call failed: %s", peer_str, exc)
 
     # --- Step 1: Send synthetic greeting to client (no upstream yet) ----------
@@ -1278,7 +1283,7 @@ async def handle_client(
         return
 
     # --- Step 2: Wait for LOGIN and verify agent credentials ------------------
-    credential: Optional[dict] = None
+    credential: dict | None = None
     login_tag: str = "*"
     login_line_bytes: bytes = b""
 
@@ -1488,7 +1493,7 @@ async def handle_client(
 
     # --- Step 5: Authenticate to upstream (LOGIN or XOAUTH2) ----------------
     if _use_xoauth2:
-        from gateway.oauth2_tokens import OAuth2Error, get_xoauth2_string  # noqa: PLC0415
+        from gateway.oauth2_tokens import OAuth2Error, get_xoauth2_string
         try:
             xoauth2_str = await get_xoauth2_string(str(credential["id"]), _db_path)
         except OAuth2Error as exc:
@@ -1544,7 +1549,7 @@ async def handle_client(
             line = await upstream_reader.readline()
             if not line:
                 break
-            if line.startswith(b"+ ") or line.startswith(_login_tag_prefix):
+            if line.startswith((b"+ ", _login_tag_prefix)):
                 # SASL challenge or tagged completion — stop here.
                 login_resp = line
                 break
@@ -1651,16 +1656,16 @@ async def handle_client(
                 _upstream_caps + " " + login_resp.decode("utf-8", errors="replace"),
                 user_id=credential["user_id"], db_path=_db_path, peer=peer_str,
             )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning("[%s] SPECIAL-USE discovery failed (non-fatal): %s", peer_str, exc)
 
     # Seed the session's intent-derivation cache from the DB — includes roles
     # from the discovery above and from any previous connections.
     try:
-        _session_special_use: Optional[dict] = await get_special_use_folders(
+        _session_special_use: dict | None = await get_special_use_folders(
             user_id=credential["user_id"], db_path=_db_path
         )
-    except Exception:  # noqa: BLE001
+    except Exception:
         _session_special_use = None  # None → _load_special_use falls back to the DB
 
     # Per-connection state shared between c2u (tracks SELECT) and u2c (syncs responses).
@@ -1687,14 +1692,12 @@ async def handle_client(
         _upstream_to_client(upstream_reader, client_writer, session, _db_path, peer_str)
     )
 
-    done, pending = await asyncio.wait({c2u, u2c}, return_when=asyncio.FIRST_COMPLETED)
+    _done, pending = await asyncio.wait({c2u, u2c}, return_when=asyncio.FIRST_COMPLETED)
 
     for task in pending:
         task.cancel()
-        try:
+        with contextlib.suppress(asyncio.CancelledError):
             await task
-        except asyncio.CancelledError:
-            pass
 
     try:
         upstream_writer.close()

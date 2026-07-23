@@ -52,11 +52,9 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from pathlib import Path
-from typing import Optional
-
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable
+from pathlib import Path
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse, RedirectResponse
@@ -71,7 +69,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 _GOOGLE_AUTH_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth"
-_GOOGLE_TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token"
+_GOOGLE_TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token"  # noqa: S105 — endpoint URL, not a secret
 # openid + email: lets us extract upstream_user from the id_token payload
 # without an extra userinfo round-trip.
 _SCOPE = "https://mail.google.com/ openid email"
@@ -220,15 +218,20 @@ def _get_redirect_uri(cfg: ProviderConfig) -> str:
 
 def _urllib_post(url: str, payload: dict) -> tuple[int, str]:
     """Synchronous form POST via urllib (run in executor from async context)."""
+    # Fail closed on any non-https scheme: the only callers pass fixed provider
+    # token endpoints, so a file:/custom scheme here would be a bug or tampering
+    # (this is the S310 concern, enforced rather than suppressed).
+    if not url.startswith("https://"):
+        raise ValueError(f"refusing non-https token endpoint: {url!r}")
     data = urllib.parse.urlencode(payload).encode("ascii")
-    req = urllib.request.Request(
+    req = urllib.request.Request(  # noqa: S310 — https scheme enforced above; fixed provider endpoints
         url,
         data=data,
         headers={"Content-Type": "application/x-www-form-urlencoded"},
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
+        with urllib.request.urlopen(req, timeout=15) as resp:  # noqa: S310 — https enforced above
             return resp.status, resp.read().decode("utf-8")
     except urllib.error.HTTPError as exc:  # type: ignore[attr-defined]
         return exc.code, exc.read().decode("utf-8", errors="replace")
@@ -261,12 +264,14 @@ async def _exchange_code(
     if status_code != 200:
         try:
             err = json.loads(body)
-            raise ValueError(
-                f"{cfg.key} token exchange failed: "
-                f"{err.get('error')} — {err.get('error_description')}"
-            )
         except json.JSONDecodeError:
-            raise ValueError(f"{cfg.key} token exchange failed: HTTP {status_code}")
+            raise ValueError(
+                f"{cfg.key} token exchange failed: HTTP {status_code}"
+            ) from None
+        raise ValueError(
+            f"{cfg.key} token exchange failed: "
+            f"{err.get('error')} — {err.get('error_description')}"
+        )
 
     data = json.loads(body)
     refresh_token = data.get("refresh_token")
@@ -329,7 +334,7 @@ _PROVIDERS: dict[str, ProviderConfig] = {
         token_endpoint=_GOOGLE_TOKEN_ENDPOINT,
         scope=_SCOPE,
         client_id_env="GOOGLE_CLIENT_ID",
-        client_secret_env="GOOGLE_CLIENT_SECRET",
+        client_secret_env="GOOGLE_CLIENT_SECRET",  # noqa: S106 — env var NAME, not the secret value
         redirect_env="GOOGLE_REDIRECT_URI",
         redirect_default="http://localhost:8080/api/v1/oauth2/google/callback",
         imap_host="imap.gmail.com",
@@ -348,7 +353,7 @@ _PROVIDERS: dict[str, ProviderConfig] = {
         token_endpoint=_MICROSOFT_TOKEN_ENDPOINT,
         scope=_MICROSOFT_SCOPE,
         client_id_env="MICROSOFT_CLIENT_ID",
-        client_secret_env="MICROSOFT_CLIENT_SECRET",
+        client_secret_env="MICROSOFT_CLIENT_SECRET",  # noqa: S106 — env var NAME, not the secret value
         redirect_env="MICROSOFT_REDIRECT_URI",
         redirect_default="http://localhost:8080/api/v1/oauth2/microsoft/callback",
         imap_host="outlook.office365.com",
@@ -371,7 +376,7 @@ _PROVIDERS: dict[str, ProviderConfig] = {
 @router.get("/oauth2/{provider}/start")
 async def oauth2_start(
     provider: str,
-    label: Optional[str] = None,
+    label: str | None = None,
     current_user: dict = Depends(get_current_user),
 ) -> JSONResponse:
     """Initiate an OAuth2 XOAUTH2 setup flow for *provider* (google|microsoft).
@@ -412,9 +417,9 @@ async def oauth2_start(
 @router.get("/oauth2/{provider}/callback")
 async def oauth2_callback(
     provider: str,
-    code: Optional[str] = None,
-    state: Optional[str] = None,
-    error: Optional[str] = None,
+    code: str | None = None,
+    state: str | None = None,
+    error: str | None = None,
     db_path: Path = Depends(get_db_path),
 ) -> RedirectResponse:
     """OAuth2 redirect target (unauthenticated — called by the provider).
@@ -534,7 +539,7 @@ async def oauth2_callback(
         for ref in created_refs:
             try:
                 await delete_credential(ref)
-            except Exception:  # noqa: BLE001
+            except Exception:
                 logger.warning("[oauth2] Failed to clean up orphaned secret after callback error")
         _results[state] = {"error": str(exc), "user_id": pending["user_id"]}
 

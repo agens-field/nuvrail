@@ -27,9 +27,9 @@ are absent, so they never break the offline unit-test run.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import re
 import time
-from typing import Optional
 
 import aioimaplib
 import pytest
@@ -74,9 +74,7 @@ async def _raw_read_until_tagged(
         lines.append(decoded)
         upper = decoded.upper()
         if (
-            upper.startswith(tag.upper() + " OK")
-            or upper.startswith(tag.upper() + " NO")
-            or upper.startswith(tag.upper() + " BAD")
+            upper.startswith((tag.upper() + " OK", tag.upper() + " NO", tag.upper() + " BAD"))
         ):
             break
     return lines
@@ -100,7 +98,7 @@ async def _raw_close(writer: asyncio.StreamWriter) -> None:
         pass
 
 
-def _extract_op_id(lines: list[str]) -> Optional[str]:
+def _extract_op_id(lines: list[str]) -> str | None:
     """Pull op_XXXXXX from any line in the response."""
     for line in lines:
         m = re.search(r"(op_[A-Za-z0-9]+)", line)
@@ -163,10 +161,8 @@ async def _uid_in_folder(imap_config: dict, folder: str, uid: int) -> bool:
     except Exception:
         return False
     finally:
-        try:
+        with contextlib.suppress(Exception):
             await client.logout()
-        except Exception:
-            pass
 
 
 async def _search_all_uids_in_folder(imap_config: dict, folder: str) -> list[int]:
@@ -185,10 +181,8 @@ async def _search_all_uids_in_folder(imap_config: dict, folder: str) -> list[int
         uids_str = data[0].decode().strip() if data[0] else ""
         return [int(u) for u in uids_str.split() if u]
     finally:
-        try:
+        with contextlib.suppress(Exception):
             await client.logout()
-        except Exception:
-            pass
 
 
 async def _delete_from_folder(imap_config: dict, folder: str, uid: int) -> None:
@@ -204,10 +198,8 @@ async def _delete_from_folder(imap_config: dict, folder: str, uid: int) -> None:
         await client.uid("store", str(uid), "+FLAGS", r"(\Deleted)")
         await client.expunge()
     finally:
-        try:
+        with contextlib.suppress(Exception):
             await client.logout()
-        except Exception:
-            pass
 
 
 # ---------------------------------------------------------------------------
@@ -241,7 +233,7 @@ async def test_imap_move_staged_then_approved(
     agent_user = e2e_setup["proxy_agent_auth"]["imap"]["username"]
     agent_token = e2e_setup["proxy_agent_auth"]["imap"]["token"]
 
-    trash_uid: Optional[int] = None
+    trash_uid: int | None = None
 
     try:
         # ── Step 1: Plant a message in INBOX via direct SMTP ──────────────
@@ -340,7 +332,7 @@ async def test_imap_append_to_drafts_staged_then_approved(
     agent_user = e2e_setup["proxy_agent_auth"]["imap"]["username"]
     agent_token = e2e_setup["proxy_agent_auth"]["imap"]["token"]
 
-    draft_uid: Optional[int] = None
+    draft_uid: int | None = None
 
     try:
         # ── Step 1: Snapshot Drafts UIDs before the test ──────────────────
@@ -357,7 +349,7 @@ async def test_imap_append_to_drafts_staged_then_approved(
             f"Content-Type: text/plain\r\n"
             f"\r\n"
             f"Draft body for Nuvrail e2e test.\r\n"
-        ).encode("utf-8")
+        ).encode()
         literal_size = len(draft_body)
 
         reader, writer = await _raw_connect(imap_host, imap_port)
@@ -431,7 +423,7 @@ async def test_imap_append_to_drafts_staged_then_approved(
         # ── Step 5: Verify draft appeared in Drafts ───────────────────────
         # Poll for up to 10s for the new draft UID to appear
         deadline = time.monotonic() + 10.0
-        new_uid: Optional[int] = None
+        new_uid: int | None = None
         while time.monotonic() < deadline:
             uids_after = set(
                 await _search_all_uids_in_folder(upstream_imap_cfg, "Drafts")

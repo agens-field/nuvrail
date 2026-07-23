@@ -33,7 +33,6 @@ from gateway.oauth2_tokens import (
 )
 from gateway.state_db import get_db, init_db
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -401,9 +400,8 @@ async def test_revoke_empty_token_is_noop_false() -> None:
 
 async def test_oauth2_columns_in_schema(db_path: Path) -> None:
     """All oauth2 columns must exist in agent_credentials after init_db."""
-    async with get_db(db_path) as db:
-        async with db.execute("PRAGMA table_info(agent_credentials)") as cur:
-            cols = {row["name"] for row in await cur.fetchall()}
+    async with get_db(db_path) as db, db.execute("PRAGMA table_info(agent_credentials)") as cur:
+        cols = {row["name"] for row in await cur.fetchall()}
 
     expected = {
         "oauth2_provider",

@@ -23,9 +23,9 @@ the full Lane 3 authentication stack on every approve/reject call.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import re
 import time
-from typing import Optional
 
 import pytest
 
@@ -73,9 +73,7 @@ async def _imap_raw_read_until_tagged(
         lines.append(decoded)
         upper = decoded.upper()
         if (
-            upper.startswith(tag.upper() + " OK")
-            or upper.startswith(tag.upper() + " NO")
-            or upper.startswith(tag.upper() + " BAD")
+            upper.startswith((tag.upper() + " OK", tag.upper() + " NO", tag.upper() + " BAD"))
         ):
             break
     return lines
@@ -94,7 +92,7 @@ async def _imap_raw_close(writer: asyncio.StreamWriter) -> None:
         pass
 
 
-def _extract_op_id(text: str) -> Optional[str]:
+def _extract_op_id(text: str) -> str | None:
     """Extract op_XXXXXX from a STAGED response."""
     m = re.search(r"(op_[A-Za-z0-9]+)", text)
     return m.group(1) if m else None
@@ -132,10 +130,8 @@ async def _proxy_imap_store_flags(
         op_id = _extract_op_id(full_response)
         return full_response, op_id or ""
     finally:
-        try:
+        with contextlib.suppress(OSError):
             await _imap_raw_send(writer, "t99 LOGOUT")
-        except OSError:
-            pass
         await _imap_raw_close(writer)
 
 
@@ -172,7 +168,7 @@ async def test_imap_archive_staged_not_yet_executed(
     user = proxy_agent["username"]
     password = proxy_agent["token"]
 
-    uid: Optional[int] = None
+    uid: int | None = None
 
     try:
         # Step 1: Send a real message via direct SMTP (bypass proxy)
@@ -246,7 +242,7 @@ async def test_imap_upstream_flag_applied_after_approve(
     user = proxy_agent["username"]
     password = proxy_agent["token"]
 
-    uid: Optional[int] = None
+    uid: int | None = None
 
     try:
         await send_direct_smtp(upstream_smtp_cfg, subject)
@@ -293,7 +289,7 @@ async def test_imap_archive_staging_gate(
     user = proxy_agent["username"]
     password = proxy_agent["token"]
 
-    uid: Optional[int] = None
+    uid: int | None = None
 
     try:
         # Send via direct SMTP so we have a message to work with
@@ -355,7 +351,7 @@ async def test_imap_archive_rejected_state_unchanged(
     user = proxy_agent["username"]
     password = proxy_agent["token"]
 
-    uid: Optional[int] = None
+    uid: int | None = None
 
     try:
         # Step 1: Send message via direct SMTP

@@ -38,7 +38,6 @@ from gateway.send_rate_limiter import (
 )
 from gateway.state_db import get_db, init_db
 
-
 # ---------------------------------------------------------------------------
 # Fixtures + helpers
 # ---------------------------------------------------------------------------

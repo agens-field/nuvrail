@@ -69,11 +69,10 @@ async def test_create_operation_inserts_audit_log(db_path: Path) -> None:
         description="Send email",
         db_path=db_path,
     )
-    async with get_db(db_path) as db:
-        async with db.execute(
-            "SELECT * FROM audit_log WHERE operation_id = ?", (op_id,)
-        ) as cursor:
-            rows = await cursor.fetchall()
+    async with get_db(db_path) as db, db.execute(
+        "SELECT * FROM audit_log WHERE operation_id = ?", (op_id,)
+    ) as cursor:
+        rows = await cursor.fetchall()
     assert len(rows) == 1
     row = dict(rows[0])
     assert row["event"] == "staged"
@@ -136,12 +135,11 @@ async def test_staged_audit_row_carries_intent(db_path: Path) -> None:
         intent_confidence=1.0,
         db_path=db_path,
     )
-    async with get_db(db_path) as db:
-        async with db.execute(
-            "SELECT intent_label FROM audit_log WHERE operation_id = ? AND event = 'staged'",
-            (op_id,),
-        ) as cursor:
-            row = await cursor.fetchone()
+    async with get_db(db_path) as db, db.execute(
+        "SELECT intent_label FROM audit_log WHERE operation_id = ? AND event = 'staged'",
+        (op_id,),
+    ) as cursor:
+        row = await cursor.fetchone()
     assert row is not None
     assert row["intent_label"] == "archive"
 

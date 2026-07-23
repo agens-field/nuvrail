@@ -41,7 +41,6 @@ import asyncio
 import secrets
 import time
 from dataclasses import dataclass, field
-from typing import Optional
 
 # ---------------------------------------------------------------------------
 # In-memory batch registry
@@ -74,7 +73,7 @@ async def get_or_create_batch(
     folder: str,
     protocol: str = "imap",
     window_seconds: int = 30,
-    agent_id: Optional[int] = None,
+    agent_id: int | None = None,
 ) -> str:
     """Return an existing open batch_id for the folder+agent, or create a new one.
 

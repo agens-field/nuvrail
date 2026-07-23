@@ -27,7 +27,6 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import Optional
 
 from gateway.state_db import DB_PATH, get_db
 
@@ -39,7 +38,7 @@ _VAPID_PUBLIC_PEM = _DATA_DIR / "vapid_public.pem"
 _VAPID_EMAIL = os.environ.get("NUVRAIL_VAPID_EMAIL", "").strip() or "mailto:admin@example.com"
 
 # Cached after first load
-_vapid_public_key_b64: Optional[str] = None
+_vapid_public_key_b64: str | None = None
 
 
 def _ensure_vapid_keys() -> None:
@@ -85,7 +84,7 @@ def get_vapid_public_key() -> str:
 
 
 async def _get_subscriptions(
-    user_id: Optional[int], db_path: Path = DB_PATH
+    user_id: int | None, db_path: Path = DB_PATH
 ) -> list[dict]:
     """Fetch a user's push subscriptions from the DB.
 
@@ -94,12 +93,11 @@ async def _get_subscriptions(
     """
     if user_id is None:
         return []
-    async with get_db(db_path) as db:
-        async with db.execute(
-            "SELECT endpoint, p256dh, auth FROM push_subscriptions WHERE user_id = ?",
-            (user_id,),
-        ) as cur:
-            rows = await cur.fetchall()
+    async with get_db(db_path) as db, db.execute(
+        "SELECT endpoint, p256dh, auth FROM push_subscriptions WHERE user_id = ?",
+        (user_id,),
+    ) as cur:
+        rows = await cur.fetchall()
     return [dict(r) for r in rows]
 
 
@@ -108,7 +106,7 @@ async def notify_staged(
     description: str,
     is_urgent: bool = False,
     db_path: Path = DB_PATH,
-    user_id: Optional[int] = None,
+    user_id: int | None = None,
 ) -> None:
     """
     Send a Web Push notification to the owning user's subscriptions only.
@@ -133,8 +131,9 @@ async def notify_staged(
             "url": "/",
         }).encode()
 
-        import asyncio as _asyncio  # noqa: PLC0415
-        from pywebpush import webpush_async, WebPushException  # noqa: PLC0415
+        import asyncio as _asyncio
+
+        from pywebpush import WebPushException, webpush_async
 
         payload_str = payload.decode()
 

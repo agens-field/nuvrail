@@ -363,6 +363,7 @@ async def test_audit_export_respects_agent_filter(
 async def test_audit_entry_includes_undo_expires_at(client: httpx.AsyncClient, db_path: Path) -> None:
     """GET /audit entries include undo_expires_at from staged_operations when present."""
     import time as _time
+
     from gateway.state_db import get_db as _get_db
 
     now = int(_time.time())
@@ -399,6 +400,7 @@ async def test_audit_entry_includes_undo_expires_at(client: httpx.AsyncClient, d
 async def test_audit_filter_by_op_type(client: httpx.AsyncClient, db_path: Path) -> None:
     """?op_type filters entries to only those with a matching operation type."""
     import time as _time
+
     from gateway.state_db import get_db as _get_db
 
     now = int(_time.time())
@@ -433,6 +435,7 @@ async def test_audit_filter_by_op_type(client: httpx.AsyncClient, db_path: Path)
 async def test_audit_filter_by_since_until(client: httpx.AsyncClient, db_path: Path) -> None:
     """?since and ?until filter entries by timestamp."""
     import time as _time
+
     from gateway.state_db import get_db as _get_db
 
     base = int(_time.time())
@@ -461,6 +464,7 @@ async def test_audit_filter_by_since_until(client: httpx.AsyncClient, db_path: P
 async def test_audit_search_by_description(client: httpx.AsyncClient, db_path: Path) -> None:
     """?search filters entries by operation description substring."""
     import time as _time
+
     from gateway.state_db import get_db as _get_db
 
     now = int(_time.time())

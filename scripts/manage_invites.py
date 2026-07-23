@@ -33,8 +33,8 @@ from pathlib import Path
 # Make the package importable when run as a bare script inside the container.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from api.auth import generate_token, hash_token_for_storage  # noqa: E402
-from gateway.state_db import (  # noqa: E402
+from api.auth import generate_token, hash_token_for_storage
+from gateway.state_db import (
     DB_PATH,
     init_db,
     insert_invite_code,

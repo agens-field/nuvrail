@@ -19,7 +19,6 @@ import os
 
 import pytest
 
-
 # ---------------------------------------------------------------------------
 # Fixture: isolate master key per test so tests don't interfere with each
 # other or with any real master.key file on disk.
@@ -84,7 +83,7 @@ def test_round_trip_decrypts_to_original():
 def test_wrong_master_key_raises_value_error(monkeypatch):
     """Decrypting with a different master key must raise ValueError, not silently corrupt."""
     import gateway.credentials as creds_module
-    from gateway.credentials import encrypt_credential, decrypt_credential
+    from gateway.credentials import decrypt_credential, encrypt_credential
 
     password = "correct-horse-battery-staple"
     stored = encrypt_credential(password)
