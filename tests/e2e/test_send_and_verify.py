@@ -3,7 +3,11 @@ E2E tests: SMTP proxy staging → API approve → upstream delivery verification
 
 Flow for each test:
   1. Connect to the in-process SMTP proxy (plain TCP)
-  2. Authenticate with real upstream credentials
+  2. Authenticate with the Nuvrail AGENT credentials (nuvrail_<hex> username +
+     one-time agent token), NOT the real upstream mailbox password. The agent
+     never sees the upstream creds; Nuvrail holds them encrypted and relays on
+     approval. Validation (step 6) is the only place the real upstream creds
+     are used, and only to read ground truth directly.
   3. Send a message — proxy returns 250 OK [STAGED] with an op_id
   4. Verify the op appears in the API as pending
   5. Approve via the API → proxy relays to upstream SMTP

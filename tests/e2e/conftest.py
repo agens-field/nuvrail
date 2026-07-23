@@ -39,6 +39,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
+import secrets
 from pathlib import Path
 
 import httpx
@@ -160,6 +161,15 @@ async def e2e_setup(tmp_path_factory: pytest.TempPathFactory) -> dict:
 
     await init_db(db_path)
 
+    # 2a. Put the in-process app in the same signup mode as the staging
+    #     deployment (invite). current_signup_mode() reads the env at request
+    #     time, so setting it here (and restoring in teardown) makes the
+    #     fixture's register call exercise the real invite gate rather than
+    #     bypassing it. We mint a single-use invite code (step 8) and redeem it
+    #     on register, so the E2E flow proves invite-gated account creation.
+    _prev_signup_mode = os.environ.get("NUVRAIL_SIGNUP_MODE")
+    os.environ["NUVRAIL_SIGNUP_MODE"] = "invite"
+
     # 3. Patch staging function defaults so proxy calls write to the tmp DB.
     staging_originals = _patch_staging_db(db_path)
 
@@ -191,15 +201,25 @@ async def e2e_setup(tmp_path_factory: pytest.TempPathFactory) -> dict:
     transport = httpx.ASGITransport(app=app)
     api_client = httpx.AsyncClient(transport=transport, base_url="http://test")
 
-    # 8. Register a test user and log in to obtain a bearer token.
-    #    This exercises the full Lane 3 auth stack. The token is included in
-    #    every e2e API call via auth_headers so all authenticated endpoints work.
+    # 8. Register a test user (invite-gated) and log in to obtain a bearer
+    #    token. This exercises the full Lane 3 auth stack AND the invite gate:
+    #    we mint a single-use code, redeem it on register, and the account is
+    #    only created if the code is valid — mirroring the staging deployment
+    #    (NUVRAIL_SIGNUP_MODE=invite). The token is included in every e2e API
+    #    call via auth_headers so all authenticated endpoints work.
+    from api.auth import hash_token_for_storage
+    from gateway.state_db import insert_invite_code
+
+    invite_code = "e2e-invite-" + secrets.token_hex(8)
+    await insert_invite_code(hash_token_for_storage(invite_code), db_path=db_path)
+
     register_resp = await api_client.post(
         "/api/v1/auth/register",
         json={
             "email": "e2e-test@example.com",
             "password": "e2e-test-password",
             "display_name": "E2E Test User",
+            "invite_code": invite_code,
         },
     )
     assert register_resp.status_code == 201, (
@@ -290,6 +310,13 @@ async def e2e_setup(tmp_path_factory: pytest.TempPathFactory) -> dict:
         await smtp_task
 
     _restore_staging_db(staging_originals)
+
+    # Restore the signup mode we set in step 2a so the env doesn't leak into
+    # other tests/fixtures sharing this process.
+    if _prev_signup_mode is None:
+        os.environ.pop("NUVRAIL_SIGNUP_MODE", None)
+    else:
+        os.environ["NUVRAIL_SIGNUP_MODE"] = _prev_signup_mode
 
 
 # ---------------------------------------------------------------------------
