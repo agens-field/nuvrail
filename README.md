@@ -164,6 +164,31 @@ Required environment variables:
 > ⚠️ **Back up `NUVRAIL_MASTER_KEY`.** It encrypts every upstream credential in the
 > database. Losing it makes all stored agent credentials unrecoverable.
 
+**Choose your signup mode now** — it decides who can create an account on this
+deployment and it is fail-closed, so a fresh `.env` is already private. Pick one
+and put the matching lines in `.env`:
+
+```bash
+# closed (DEFAULT) — no public sign-up; you provision users from the admin CLI.
+# This is also what you get if you set nothing at all. Best for a private /
+# single-tenant instance.
+NUVRAIL_SIGNUP_MODE=closed
+
+# invite — public /auth/register works ONLY with a valid single-use invite code
+# that you mint from the admin CLI. Best for onboarding a known group.
+NUVRAIL_SIGNUP_MODE=invite
+
+# open — anyone can self-register. REQUIRES the explicit ack below, or the API
+# refuses to start. Only for a genuinely public deployment.
+NUVRAIL_SIGNUP_MODE=open
+NUVRAIL_ALLOW_OPEN_SIGNUP=1
+```
+
+You operate each mode in [Step 6 — Create your account](#step-6--create-your-account);
+the full reference is [Account creation (signup modes)](#account-creation-signup-modes).
+You can change the mode later on a live box — see
+[Switching modes on a running deployment](#switching-modes-on-a-running-deployment).
+
 ---
 
 ### Step 2 — nginx (HTTP first) + TLS certificates
@@ -330,7 +355,17 @@ docker compose logs gateway --tail=30
 #   Nuvrail IMAP proxy listening on 0.0.0.0:10143
 #   Nuvrail SMTP proxy listening on 0.0.0.0:10587
 #   Application startup complete.
+#
+# The startup log also prints the effective signup mode, e.g.
+#   Human account signup mode: closed
+# Confirm it matches what you set in Step 1.
 ```
+
+> If you set `NUVRAIL_SIGNUP_MODE=open` **without** `NUVRAIL_ALLOW_OPEN_SIGNUP=1`,
+> the gateway **refuses to start** (you'll see a `RuntimeError` about the missing
+> ack in the logs, and `docker compose ps` shows the container restarting). That
+> is intentional fail-closed behavior — either add the ack var or pick a
+> non-open mode, then `docker compose up -d` again.
 
 ---
 
@@ -356,32 +391,82 @@ openssl s_client -connect nuvrail.example.com:465 -quiet 2>/dev/null
 
 ### Step 6 — Create your account
 
-How accounts get created depends on this deployment's signup mode
-(see [Account creation](#account-creation-signup-modes) below). **By default a
-Nuvrail deployment is `closed`** — there is no public sign-up, and you create
-the first account from the admin CLI:
+How you create the first account depends on the signup mode you chose in Step 1.
+Follow the subsection for your mode. After you have a bearer token, every mode
+logs in the same way:
 
 ```bash
-# closed mode (default): provision the first account from inside the container
-docker compose exec gateway python3 scripts/manage_users.py create you@yourdomain.com --name "Your Name"
-# (prompts for a password; prints a bearer token once)
-
-# then log in any time to get a fresh bearer token
+# Log in any time to get a fresh bearer token (works in every mode)
 TOKEN=$(curl -s -X POST https://nuvrail.example.com/api/v1/auth/login \
   -H 'Content-Type: application/json' \
   -d '{"email": "you@yourdomain.com", "password": "your-strong-password"}' \
   | python3 -c "import sys,json; print(json.load(sys.stdin)['token'])")
 ```
 
-If you have set `NUVRAIL_SIGNUP_MODE=open` (and acknowledged it), you can
-instead register over the API or the web first-run screen:
+#### 6a. Closed mode (default) — provision from the admin CLI
+
+There is no public sign-up. Bootstrap the first account from inside the gateway
+container, then use that account to add any others:
+
+```bash
+# create the first account (prompts for a password; prints a bearer token ONCE)
+docker compose exec gateway python3 scripts/manage_users.py create you@yourdomain.com --name "Your Name"
+
+# add more accounts the same way
+docker compose exec gateway python3 scripts/manage_users.py create alice@example.com --name "Alice"
+
+# see who exists
+docker compose exec gateway python3 scripts/manage_users.py list
+```
+
+Verify the endpoint is actually closed (should print `403`):
+
+```bash
+curl -s -o /dev/null -w "%{http_code}\n" -X POST https://nuvrail.example.com/api/v1/auth/register \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"stranger@example.com","password":"x"}'
+# → 403
+```
+
+#### 6b. Invite mode — mint a code, then the user registers with it
+
+With `NUVRAIL_SIGNUP_MODE=invite`, public registration works **only** with a
+valid single-use code you mint. End-to-end:
+
+```bash
+# 1) mint a code (the raw code is shown ONCE — copy it; only its hash is stored)
+docker compose exec gateway python3 scripts/manage_invites.py mint --note "for alice"
+#   Invite code (shown once — copy it now):
+#       <THE-CODE>
+
+# 2) hand <THE-CODE> to the person out-of-band; they register with it:
+curl -s -X POST https://nuvrail.example.com/api/v1/auth/register \
+  -H 'Content-Type: application/json' \
+  -d '{"email": "alice@example.com", "password": "her-strong-password", "display_name": "Alice", "invite_code": "<THE-CODE>"}' \
+  | python3 -m json.tool
+#   → 201 with the new user; the code is now spent
+```
+
+Registering without a code (or with a spent/expired/revoked one) returns a
+uniform `403`. See [Operating invite codes](#operating-invite-codes) below for
+TTLs, listing, and revocation.
+
+#### 6c. Open mode — public self-registration
+
+With `NUVRAIL_SIGNUP_MODE=open` **and** `NUVRAIL_ALLOW_OPEN_SIGNUP=1` set (Step 1),
+anyone can self-register from the web first-run screen or the API:
 
 ```bash
 curl -s -X POST https://nuvrail.example.com/api/v1/auth/register \
   -H 'Content-Type: application/json' \
   -d '{"email": "you@yourdomain.com", "password": "your-strong-password", "display_name": "Your Name"}' \
   | python3 -m json.tool
+# → 201 with the new user
 ```
+
+> ⚠️ **Open means open.** Every stranger who can reach this URL can create an
+> account and start proxying mailboxes through your instance. Use it only for a
+> deployment you actually intend to be public; prefer `invite` for a known group.
 
 ---
 
@@ -441,6 +526,72 @@ Codes are **single-use** — spent atomically at redemption, so a code cannot be
 used twice even under concurrent requests. A bad, expired, revoked, or
 already-used code is rejected with a uniform `403` (the endpoint never reveals
 which codes exist).
+
+#### Operating invite codes
+
+Day-to-day operator tasks for `invite` mode. All commands run inside the gateway
+container so they talk to the same DB the API uses.
+
+```bash
+# Mint with an optional expiry. TTL is Nd / Nh / Nm (days/hours/minutes);
+# omit --expires-in for a code that never expires.
+docker compose exec gateway python3 scripts/manage_invites.py mint --expires-in 7d --note "onboarding-batch"
+
+# List every code with its status and a hash prefix (never the raw code):
+docker compose exec gateway python3 scripts/manage_invites.py list
+#   status    created               expires               redeemed_by              code_hash
+#   active    2026-07-23T...        2026-07-30T...         -                        3f9a...
+#   redeemed  2026-07-20T...        never                 alice@example.com        7c21...
+```
+
+Status meanings:
+
+| Status | Meaning |
+|---|---|
+| `active` | mintable/usable now — not yet redeemed, not expired, not revoked |
+| `redeemed` | already spent by the shown account (single-use — cannot be reused) |
+| `expired` | passed its `--expires-in` TTL before being redeemed |
+| `revoked` | you killed it early (below) — permanently unusable |
+
+```bash
+# Kill an unspent code early. Use the FULL code_hash from `list`
+# (revoking an already-redeemed/revoked/unknown hash is a no-op, exits non-zero):
+docker compose exec gateway python3 scripts/manage_invites.py revoke <code_hash>
+```
+
+Operator guarantees to rely on: codes are **single-use** and spent atomically
+(no double-spend under concurrency); only the **SHA-256 hash** is stored, so a
+DB leak never reveals a usable code; and every rejection (bad / expired /
+revoked / already-used / missing) returns an **identical `403`**, so the
+endpoint never leaks which codes exist.
+
+#### Switching modes on a running deployment
+
+Signup mode is read from the environment, so changing it is: edit `.env`, then
+recreate the gateway container.
+
+```bash
+# 1) edit .env — set the new NUVRAIL_SIGNUP_MODE (and NUVRAIL_ALLOW_OPEN_SIGNUP=1
+#    if and only if the new mode is `open`)
+nano .env
+
+# 2) recreate the gateway so it picks up the new env, then confirm the mode:
+docker compose up -d gateway
+docker compose logs gateway --tail=10   # look for "Human account signup mode: <mode>"
+```
+
+Safety notes:
+
+- **closed/invite → open** widens access immediately on restart. Double-check
+  you meant to; remember `open` needs `NUVRAIL_ALLOW_OPEN_SIGNUP=1` or the
+  gateway refuses to boot (fail-loud).
+- **open → closed/invite** locks down new sign-ups on restart. **Existing
+  accounts are unaffected** — this only closes the front door; it does not
+  delete or disable anyone who already registered. Review existing accounts
+  (`manage_users.py list`) if you are locking down after a public window.
+- Switching **into `invite`** does not auto-mint anything — mint codes
+  (above) before you tell users to register, or their `/auth/register` calls
+  get a `403`.
 
 ---
 
