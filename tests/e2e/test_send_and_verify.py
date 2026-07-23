@@ -63,6 +63,40 @@ async def _read_response(reader: asyncio.StreamReader, timeout: float = _TIMEOUT
     return lines
 
 
+async def _drain_rejection_notices(reader: asyncio.StreamReader) -> list[str]:
+    """Consume any in-band 214 rejection notices sent right after AUTH.
+
+    Nuvrail delivers rejections for prior sends as RFC 2821 informational 214
+    lines immediately after the 235 auth success (SMTP has no out-of-band
+    push). A correct agent client must drain these before its first envelope
+    command; if it does not, the leftover 214 lines shift every subsequent
+    response read by one (e.g. RCPT's '250 Accepted' surfaces where DATA's
+    '354' is expected). Only reachable when a prior test rejected a send on
+    this (session-scoped, shared) agent — hence it only bit the full suite.
+
+    Reads only lines already buffered (short timeout); returns the notices.
+    """
+    notices: list[str] = []
+    while True:
+        try:
+            raw = await asyncio.wait_for(reader.readline(), timeout=0.5)
+        except TimeoutError:
+            break
+        if not raw:
+            break
+        line = raw.decode("utf-8", errors="replace").rstrip("\r\n")
+        if line.startswith("214"):
+            notices.append(line)
+            continue
+        # Not a notice: we over-read one line. This shouldn't happen in the
+        # test flow (nothing else is sent unsolicited), but fail loudly rather
+        # than silently swallow a real response.
+        raise AssertionError(
+            f"Unexpected non-214 line while draining notices: {line!r}"
+        )
+    return notices
+
+
 async def _send(writer: asyncio.StreamWriter, text: str) -> None:
     writer.write(text.encode())
     await writer.drain()
@@ -111,6 +145,9 @@ async def _smtp_send_via_proxy(
         await _send(writer, f"AUTH PLAIN {creds}\r\n")
         auth_resp = await _read_response(reader)
         assert auth_resp[-1].startswith("235"), f"AUTH failed: {auth_resp!r}"
+        # Drain any 214 rejection notices Nuvrail emits post-auth, so they don't
+        # desync the responses to the envelope commands that follow.
+        await _drain_rejection_notices(reader)
 
         await _send(writer, f"MAIL FROM:<{user}>\r\n")
         await _read_response(reader)
