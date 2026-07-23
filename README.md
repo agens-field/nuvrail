@@ -150,6 +150,8 @@ Required environment variables:
 |---|---|
 | `NUVRAIL_MASTER_KEY` | 64 hex chars — `python3 -c "import secrets; print(secrets.token_bytes(32).hex())"` |
 | `NUVRAIL_CORS_ORIGINS` | `https://nuvrail.example.com` |
+| `NUVRAIL_SIGNUP_MODE` | Who may create accounts: `closed` (default), `invite`, or `open`. See [Account creation](#account-creation-signup-modes). |
+| `NUVRAIL_ALLOW_OPEN_SIGNUP` | Required ack (`1`) **only** when `NUVRAIL_SIGNUP_MODE=open`; the API refuses to start with `open` unless this is set. |
 | `NUVRAIL_VAPID_EMAIL` | Admin contact email, e.g. `mailto:you@yourdomain.com` |
 | `GOOGLE_CLIENT_ID` | GCP OAuth2 client ID (required for Gmail agent setup) |
 | `GOOGLE_CLIENT_SECRET` | GCP OAuth2 client secret (required for Gmail agent setup) |
@@ -354,21 +356,91 @@ openssl s_client -connect nuvrail.example.com:465 -quiet 2>/dev/null
 
 ### Step 6 — Create your account
 
-Open `https://nuvrail.example.com` in your browser and complete the first-run setup, or use the API directly:
+How accounts get created depends on this deployment's signup mode
+(see [Account creation](#account-creation-signup-modes) below). **By default a
+Nuvrail deployment is `closed`** — there is no public sign-up, and you create
+the first account from the admin CLI:
 
 ```bash
-# Register your account
-curl -s -X POST https://nuvrail.example.com/api/v1/auth/register \
-  -H 'Content-Type: application/json' \
-  -d '{"email": "you@yourdomain.com", "password": "your-strong-password", "display_name": "Your Name"}' \
-  | python3 -m json.tool
+# closed mode (default): provision the first account from inside the container
+docker compose exec gateway python3 scripts/manage_users.py create you@yourdomain.com --name "Your Name"
+# (prompts for a password; prints a bearer token once)
 
-# Log in to get a bearer token
+# then log in any time to get a fresh bearer token
 TOKEN=$(curl -s -X POST https://nuvrail.example.com/api/v1/auth/login \
   -H 'Content-Type: application/json' \
   -d '{"email": "you@yourdomain.com", "password": "your-strong-password"}' \
   | python3 -c "import sys,json; print(json.load(sys.stdin)['token'])")
 ```
+
+If you have set `NUVRAIL_SIGNUP_MODE=open` (and acknowledged it), you can
+instead register over the API or the web first-run screen:
+
+```bash
+curl -s -X POST https://nuvrail.example.com/api/v1/auth/register \
+  -H 'Content-Type: application/json' \
+  -d '{"email": "you@yourdomain.com", "password": "your-strong-password", "display_name": "Your Name"}' \
+  | python3 -m json.tool
+```
+
+---
+
+### Account creation (signup modes)
+
+A Nuvrail deployment holds other people's mailboxes, so **who can create an
+account is a first-class, fail-closed setting**, controlled by
+`NUVRAIL_SIGNUP_MODE`:
+
+| Mode | Public `/auth/register` | How accounts are created | Use for |
+|---|---|---|---|
+| `closed` **(default)** | disabled (403) | admin CLI only (`manage_users.py`) | private / single-tenant instances |
+| `invite` | requires a valid single-use invite code | admin mints codes (`manage_invites.py`), user redeems one at registration | onboarding a known group without a manual step per person |
+| `open` | enabled | anyone can self-register | genuinely public deployments |
+
+Fail-closed by design:
+
+- An **unset or unrecognized** `NUVRAIL_SIGNUP_MODE` resolves to `closed` — the
+  safe state is the one you get by doing nothing.
+- `open` additionally requires `NUVRAIL_ALLOW_OPEN_SIGNUP=1`. Setting
+  `NUVRAIL_SIGNUP_MODE=open` **without** that ack makes the API **refuse to
+  start**, so an intended-open box fails loudly instead of an intended-closed
+  box silently opening.
+
+**Closed mode — provision users (admin CLI):**
+
+```bash
+docker compose exec gateway python3 scripts/manage_users.py create alice@example.com --name "Alice"
+docker compose exec gateway python3 scripts/manage_users.py list
+```
+
+**Invite mode — mint / list / revoke single-use codes (admin CLI):**
+
+```bash
+# mint a code (raw code is shown ONCE — copy it; only its hash is stored)
+docker compose exec gateway python3 scripts/manage_invites.py mint --note "for alice"
+
+# optional TTL: Nd / Nh / Nm (default: never expires)
+docker compose exec gateway python3 scripts/manage_invites.py mint --expires-in 7d
+
+# see all codes and their status (active / redeemed / expired / revoked)
+docker compose exec gateway python3 scripts/manage_invites.py list
+
+# kill an unspent code early (use the code_hash from `list`)
+docker compose exec gateway python3 scripts/manage_invites.py revoke <code_hash>
+```
+
+The user then registers with the code:
+
+```bash
+curl -s -X POST https://nuvrail.example.com/api/v1/auth/register \
+  -H 'Content-Type: application/json' \
+  -d '{"email": "alice@example.com", "password": "her-strong-password", "invite_code": "<the-code>"}'
+```
+
+Codes are **single-use** — spent atomically at redemption, so a code cannot be
+used twice even under concurrent requests. A bad, expired, revoked, or
+already-used code is rejected with a uniform `403` (the endpoint never reveals
+which codes exist).
 
 ---
 

@@ -230,6 +230,31 @@ CREATE TABLE IF NOT EXISTS pending_reverts (
     created_at   INTEGER NOT NULL,
     delivered_at INTEGER                    -- NULL until proxy injects the unsolicited FETCH
 );
+
+-- Invite codes for NUVRAIL_SIGNUP_MODE=invite. A code is single-use: it is
+-- "spent" atomically at redemption (redeemed_at set in the same UPDATE...WHERE
+-- redeemed_at IS NULL that gates the register), so two concurrent registrations
+-- cannot both consume one code. Codes are stored as a SHA-256 hex digest, never
+-- plaintext (same discipline as api_token) — the raw code is shown once at mint
+-- time on the admin CLI and never persisted.
+--
+--   mint (CLI)          redeem (/auth/register, invite mode)
+--   ----------          -------------------------------------
+--   INSERT row     ->   UPDATE ... SET redeemed_at=?, redeemed_by_email=?
+--   (hash only)         WHERE code_hash=? AND redeemed_at IS NULL
+--                         AND revoked_at IS NULL
+--                         AND (expires_at IS NULL OR expires_at > now)
+--                       rowcount==1 => valid & now spent; 0 => reject (403)
+CREATE TABLE IF NOT EXISTS invite_codes (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    code_hash         TEXT NOT NULL UNIQUE,  -- SHA-256 hex of the raw code; never plaintext
+    created_at        INTEGER NOT NULL,
+    expires_at        INTEGER,               -- NULL = no expiry (opt-in TTL)
+    note              TEXT,                  -- optional admin label (e.g. "for alice")
+    redeemed_at       INTEGER,               -- NULL until spent; single-use
+    redeemed_by_email TEXT,                  -- who consumed it (audit)
+    revoked_at        INTEGER                 -- NULL unless an admin killed it early
+);
 """
 
 
@@ -1273,4 +1298,88 @@ async def mark_reverts_delivered(
             [now, *revert_ids],
         )
         await db.commit()
+
+
+# ---------------------------------------------------------------------------
+# Invite codes (NUVRAIL_SIGNUP_MODE=invite)
+#
+# Single-use contract: redeem_invite_code() spends a code in ONE atomic
+# UPDATE...WHERE redeemed_at IS NULL. SQLite serializes writes, so two
+# concurrent registrations racing on the same code cannot both see rowcount==1
+# — exactly one wins, the other gets 0 and is rejected. This is why redemption
+# is a conditional UPDATE and not SELECT-then-UPDATE.
+# ---------------------------------------------------------------------------
+
+
+async def insert_invite_code(
+    code_hash: str,
+    expires_at: "int | None" = None,
+    note: "str | None" = None,
+    db_path: Path = DB_PATH,
+) -> int:
+    """Store a new invite code (hash only) and return its row id."""
+    now = int(time.time())
+    async with get_db(db_path) as db:
+        cur = await db.execute(
+            "INSERT INTO invite_codes (code_hash, created_at, expires_at, note) "
+            "VALUES (?, ?, ?, ?)",
+            (code_hash, now, expires_at, note),
+        )
+        await db.commit()
+        return cur.lastrowid  # type: ignore[return-value]
+
+
+async def redeem_invite_code(
+    code_hash: str,
+    redeemed_by_email: str,
+    db_path: Path = DB_PATH,
+) -> bool:
+    """Atomically spend a single-use invite code.
+
+    Returns True iff a currently-valid code (unspent, unrevoked, unexpired) was
+    consumed by this call. The validity check and the spend happen in a single
+    conditional UPDATE so concurrent redemptions cannot double-spend one code.
+    """
+    now = int(time.time())
+    async with get_db(db_path) as db:
+        cur = await db.execute(
+            "UPDATE invite_codes "
+            "SET redeemed_at = ?, redeemed_by_email = ? "
+            "WHERE code_hash = ? "
+            "  AND redeemed_at IS NULL "
+            "  AND revoked_at IS NULL "
+            "  AND (expires_at IS NULL OR expires_at > ?)",
+            (now, redeemed_by_email, code_hash, now),
+        )
+        await db.commit()
+        return cur.rowcount == 1
+
+
+async def revoke_invite_code(code_hash: str, db_path: Path = DB_PATH) -> bool:
+    """Revoke an unspent invite code. Returns True iff a code was revoked.
+
+    A code that is already redeemed or already revoked is left untouched
+    (rowcount 0 -> False): redemption is terminal, and re-revoking is a no-op.
+    """
+    now = int(time.time())
+    async with get_db(db_path) as db:
+        cur = await db.execute(
+            "UPDATE invite_codes SET revoked_at = ? "
+            "WHERE code_hash = ? AND redeemed_at IS NULL AND revoked_at IS NULL",
+            (now, code_hash),
+        )
+        await db.commit()
+        return cur.rowcount == 1
+
+
+async def list_invite_codes(db_path: Path = DB_PATH) -> "list[dict]":
+    """Return all invite codes (hashes, not raw codes) with their status."""
+    async with get_db(db_path) as db:
+        async with db.execute(
+            "SELECT id, code_hash, created_at, expires_at, note, "
+            "redeemed_at, redeemed_by_email, revoked_at "
+            "FROM invite_codes ORDER BY created_at DESC"
+        ) as cur:
+            rows = await cur.fetchall()
+    return [dict(r) for r in rows]
 
