@@ -169,8 +169,17 @@ async def e2e_setup(tmp_path_factory: pytest.TempPathFactory) -> dict:
     db_path = tmp_dir / "nuvrail.db"
 
     # 2. Initialise DB tables.
+    #    Load plugins BEFORE init_db: the enterprise plugin's setup() registers
+    #    schema migrations (e.g. users.plan_tier) via register_migration(), and
+    #    init_db runs those registered plugin migrations. If we init the DB
+    #    first, the plugin's columns are missing and the entitlements provider
+    #    (which reads plan_tier) 500s on the first agent-create. load_plugins()
+    #    is idempotent + app=None-safe, and a no-op in the pure-core build
+    #    (no plugin installed => no extra migrations => nothing changes).
+    from gateway.extensions import load_plugins
     from gateway.state_db import init_db
 
+    load_plugins()
     await init_db(db_path)
 
     # 2a. Put the in-process app in the same signup mode as the staging
