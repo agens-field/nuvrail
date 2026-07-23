@@ -287,6 +287,11 @@ async def e2e_setup(tmp_path_factory: pytest.TempPathFactory) -> dict:
         "token": agent_resp.json()["agent_token"],
     }
     proxy_agent_auth = {"smtp": _agent, "imap": _agent}
+    # Internal credential id (str form matches audit_log.agent_id). The send
+    # rate-limit test needs it to read the agent's current window usage so its
+    # cap boundary is computed relative to any sends earlier tests already made
+    # on this shared (session-scoped) agent.
+    agent_id = str(agent_resp.json()["id"])
 
     yield {
         "imap_host": imap_host,
@@ -297,6 +302,7 @@ async def e2e_setup(tmp_path_factory: pytest.TempPathFactory) -> dict:
         "db_path": db_path,
         "auth_headers": auth_headers,
         "proxy_agent_auth": proxy_agent_auth,
+        "agent_id": agent_id,
     }
 
     # 10. Teardown — close everything and restore patches.
