@@ -6,6 +6,7 @@ and unknown commands; UID prefix does not affect classification.
 """
 
 import pytest
+
 from gateway.command_router import (
     BLOCKED_COMMANDS,
     READ_COMMANDS,

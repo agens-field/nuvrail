@@ -34,7 +34,11 @@ dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.23.0",
     "httpx>=0.27.0",
-    "ruff>=0.3.0",
+    # Pinned exactly: ruff's DEFAULT rule set changes between releases, so an
+    # unpinned floor (>=) let CI silently pull a new ruff and turn the whole
+    # tree red on an unrelated merge (see the [tool.ruff.lint] block below,
+    # which now makes the rule set explicit so upgrades are deliberate).
+    "ruff==0.16.0",
 ]
 # Secret-store backends (Pattern B). Install the one matching
 # NUVRAIL_SECRET_BACKEND; the default `local` backend needs neither.
@@ -53,6 +57,66 @@ norecursedirs = ["scripts", "web", ".venv", "node_modules"]
 
 [tool.ruff]
 line-length = 100
+target-version = "py311"
+
+# EXPLICIT rule set. Do NOT rely on ruff's implicit defaults — they drift
+# between versions. Any ruff upgrade must be a deliberate, reviewed change:
+# bump the pin above, re-run `ruff check`, and reconcile this block.
+[tool.ruff.lint]
+select = [
+    "E", "F", "W",   # pyflakes + pycodestyle core
+    "I",             # import sorting
+    "UP",            # pyupgrade (modern syntax)
+    "B",             # bugbear
+    "SIM",           # simplify
+    "S",             # bandit (security) — kept ON: this is a security product
+    "ASYNC",         # async footguns
+    "PIE", "C4",     # misc correctness/comprehensions
+    "FA", "ISC",     # future-annotations, implicit-str-concat
+    "EXE",           # shebang/executable hygiene
+    "PLW",           # pylint warnings subset (real footguns; PLC conventions
+                     # intentionally NOT selected — PLC0415 alone is 173 hits,
+                     # nearly all deliberate lazy imports for circular/optional deps)
+    "RUF",           # ruff-native
+]
+ignore = [
+    # FastAPI's dependency-injection idiom is a function call in an argument
+    # default (Depends(), Query(), ...). Bugbear flags it, but the framework
+    # *requires* it — a global false positive for this codebase.
+    "B008",
+    # Line length is enforced via `line-length` + the formatter; E501 as a lint
+    # error is redundant noise on top of that.
+    "E501",
+    # Async function with a `timeout` parameter — a fine, deliberate API in our
+    # test helpers and gateway; the rule is stylistic, not a correctness issue.
+    "ASYNC109",
+    # Ambiguous-unicode rules fight normal human typography in prose (e.g. "10×"
+    # with a multiplication sign, en-dashes in comments). Our source is UTF-8
+    # and these are intentional — not homoglyph attacks in identifiers.
+    "RUF001", "RUF002", "RUF003",
+    # `global` for a module-level singleton/cache (master-key cache, plugin
+    # registry, VAPID key) is a deliberate, reviewed pattern here — the rule
+    # flags 13 intentional uses with no safer alternative that fits.
+    "PLW0603",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests: asserts are the point; broad-except / try-pass in fixture teardown is
+# intentional (best-effort cleanup must not mask the real test failure).
+"tests/**" = ["S101", "S105", "S106", "S107", "BLE001", "S110", "S112", "SIM117"]
+# Operator/diagnostic CLIs: they print to stdout, build shell/SQL strings, and
+# make blocking HTTP calls for a human to run by design; not request-path code.
+"scripts/**" = [
+    "EXE001", "S608", "S607", "S310", "S105", "S110", "S112",
+    "BLE001", "ASYNC210", "PLW1510", "PLW2901",
+]
+# S608 (SQL-injection) in these two: the query text is assembled ONLY from
+# fixed literal fragments / generated `?` placeholders; every user-supplied
+# value is bound as a parameter, never string-interpolated. Verified by review.
+# Scoped per-file (vs. a line noqa) because the flag lands on a multi-line
+# f-string. S608 stays enabled everywhere else.
+"api/routes/audit.py" = ["S608"]
+"api/routes/operations.py" = ["S608"]
 
 [tool.setuptools.packages.find]
 include = ["gateway*", "api*"]

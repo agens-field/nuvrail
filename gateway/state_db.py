@@ -35,9 +35,9 @@ Sub-milestone: 1.0 (staged_operations + audit_log tables)
 import json
 import os
 import time
-from contextlib import asynccontextmanager
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
-from typing import AsyncGenerator
 
 import aiosqlite
 
@@ -260,7 +260,7 @@ CREATE TABLE IF NOT EXISTS invite_codes (
 
 async def init_db(path: Path = DB_PATH) -> None:
     """Initialize the database, creating tables if they don't exist."""
-    import hashlib  # noqa: PLC0415
+    import hashlib
     path.parent.mkdir(parents=True, exist_ok=True)
     async with aiosqlite.connect(path) as db:
         db.row_factory = aiosqlite.Row
@@ -352,7 +352,7 @@ async def init_db(path: Path = DB_PATH) -> None:
         for col_name, col_type in new_columns:
             if col_name not in existing_cols:
                 await db.execute(
-                    f"ALTER TABLE agent_credentials ADD COLUMN {col_name} {col_type}"  # noqa: S608
+                    f"ALTER TABLE agent_credentials ADD COLUMN {col_name} {col_type}"
                 )
 
         # Migration: add reset_token columns to users if absent (issue #16),
@@ -374,7 +374,7 @@ async def init_db(path: Path = DB_PATH) -> None:
         ]:
             if col_name not in user_cols:
                 await db.execute(
-                    f"ALTER TABLE users ADD COLUMN {col_name} {col_type}"  # noqa: S608
+                    f"ALTER TABLE users ADD COLUMN {col_name} {col_type}"
                 )
 
         # Migration: add per-agent columns to audit_log (issue #5 — Phase 2a).
@@ -392,7 +392,7 @@ async def init_db(path: Path = DB_PATH) -> None:
         ]:
             if col_name not in audit_cols:
                 await db.execute(
-                    f"ALTER TABLE audit_log ADD COLUMN {col_name} {col_type}"  # noqa: S608
+                    f"ALTER TABLE audit_log ADD COLUMN {col_name} {col_type}"
                 )
         # Idempotent index for per-agent queries.
         await db.execute(
@@ -548,7 +548,7 @@ async def init_db(path: Path = DB_PATH) -> None:
 
         # Run migrations registered by plugins (e.g. the enterprise plan_tier
         # column). No-op in the public build where nothing is registered.
-        from gateway.extensions import get_migrations  # noqa: PLC0415
+        from gateway.extensions import get_migrations
         for migrate in get_migrations():
             await migrate(db)
 
@@ -628,7 +628,7 @@ async def update_folder_stats(
     folder_id = await get_or_create_folder(name, user_id=user_id, db_path=db_path)
 
     # Build UPDATE only for non-None fields
-    updates: "list[tuple[str, object]]" = [("last_synced", int(time.time()))]
+    updates: list[tuple[str, object]] = [("last_synced", int(time.time()))]
     if exists_count is not None:
         updates.append(("exists_count", exists_count))
     if recent_count is not None:
@@ -706,9 +706,8 @@ async def find_message_by_message_id(
     if not bare:
         return None
     bracketed = f"<{bare}>"
-    async with get_db(db_path) as db:
-        async with db.execute(
-            """
+    async with get_db(db_path) as db, db.execute(
+        """
             SELECT m.uid, m.subject, m.sender, f.name AS folder_name
             FROM messages m
             JOIN folders f ON m.folder_id = f.id
@@ -716,9 +715,9 @@ async def find_message_by_message_id(
             ORDER BY m.last_updated DESC
             LIMIT 1
             """,
-            (user_id, bare, bracketed),
-        ) as cur:
-            row = await cur.fetchone()
+        (user_id, bare, bracketed),
+    ) as cur:
+        row = await cur.fetchone()
     return dict(row) if row is not None else None
 
 
@@ -732,13 +731,12 @@ async def get_special_use_folders(
     The keys are lower-cased so the mapping can be passed directly to
     gateway.intent.classify_folder / derive_intent.
     """
-    async with get_db(db_path) as db:
-        async with db.execute(
-            "SELECT name, special_use FROM folders "
-            "WHERE user_id IS ? AND special_use IS NOT NULL",
-            (user_id,),
-        ) as cur:
-            rows = await cur.fetchall()
+    async with get_db(db_path) as db, db.execute(
+        "SELECT name, special_use FROM folders "
+        "WHERE user_id IS ? AND special_use IS NOT NULL",
+        (user_id,),
+    ) as cur:
+        rows = await cur.fetchall()
     return {row["name"].lower(): row["special_use"] for row in rows}
 
 
@@ -793,7 +791,7 @@ async def upsert_message(
             )
         else:
             # UPDATE only non-None fields
-            updates: "list[tuple[str, object]]" = [("last_updated", now)]
+            updates: list[tuple[str, object]] = [("last_updated", now)]
             if seq_num is not None:
                 updates.append(("sequence_num", seq_num))
             if flags is not None:
@@ -810,7 +808,7 @@ async def upsert_message(
                 updates.append(("message_id", message_id))
 
             set_clause = ", ".join(f"{col} = ?" for col, _ in updates)
-            values: "list[object]" = [v for _, v in updates]
+            values: list[object] = [v for _, v in updates]
             values.append(folder_id)
             values.append(uid)
             await db.execute(
@@ -827,12 +825,11 @@ async def get_message(
     db_path: Path = DB_PATH,
 ) -> "dict | None":
     """Fetch a single message row by UID. Returns dict or None."""
-    async with get_db(db_path) as db:
-        async with db.execute(
-            "SELECT * FROM messages WHERE folder_id = ? AND uid = ?",
-            (folder_id, uid),
-        ) as cur:
-            row = await cur.fetchone()
+    async with get_db(db_path) as db, db.execute(
+        "SELECT * FROM messages WHERE folder_id = ? AND uid = ?",
+        (folder_id, uid),
+    ) as cur:
+        row = await cur.fetchone()
     if row is None:
         return None
     return dict(row)
@@ -853,10 +850,10 @@ def _expand_uid_set(uid_set_str: str, known_uids: "list[int]") -> "list[int]":
 
     max_uid = max(known_uids)
     known_set = set(known_uids)
-    result: "set[int]" = set()
+    result: set[int] = set()
 
     for part in uid_set_str.split(","):
-        part = part.strip()
+        part = part.strip()  # noqa: PLW2901 — intentional normalize-in-place of the loop token
         if ":" in part:
             low_str, high_str = part.split(":", 1)
             low = max_uid if low_str == "*" else int(low_str)
@@ -892,12 +889,11 @@ async def get_messages_by_uid_set(
     Pulls all known UIDs for the folder from DB, then filters to the set.
     Returns [] if no messages match.
     """
-    async with get_db(db_path) as db:
-        async with db.execute(
-            "SELECT uid FROM messages WHERE folder_id = ? ORDER BY uid",
-            (folder_id,),
-        ) as cur:
-            rows = await cur.fetchall()
+    async with get_db(db_path) as db, db.execute(
+        "SELECT uid FROM messages WHERE folder_id = ? ORDER BY uid",
+        (folder_id,),
+    ) as cur:
+        rows = await cur.fetchall()
 
     known_uids = [int(r["uid"]) for r in rows]
     target_uids = _expand_uid_set(uid_set_str, known_uids)
@@ -906,13 +902,12 @@ async def get_messages_by_uid_set(
         return []
 
     placeholders = ",".join("?" * len(target_uids))
-    async with get_db(db_path) as db:
-        async with db.execute(
-            f"SELECT * FROM messages WHERE folder_id = ? AND uid IN ({placeholders})"  # noqa: S608
-            " ORDER BY uid",
-            [folder_id, *target_uids],
-        ) as cur:
-            rows2 = await cur.fetchall()
+    async with get_db(db_path) as db, db.execute(
+        f"SELECT * FROM messages WHERE folder_id = ? AND uid IN ({placeholders})"  # noqa: S608
+        " ORDER BY uid",
+        [folder_id, *target_uids],
+    ) as cur:
+        rows2 = await cur.fetchall()
 
     return [dict(r) for r in rows2]
 
@@ -953,14 +948,13 @@ async def get_pending_move_uids_for_folder(
     another tenant's FETCH lines (issue #73). Folder names are not globally
     unique once the mirror is per-user, so name alone is not a safe key.
     """
-    async with get_db(db_path) as db:
-        async with db.execute(
-            """SELECT message_ids FROM staged_operations
+    async with get_db(db_path) as db, db.execute(
+        """SELECT message_ids FROM staged_operations
                WHERE status = 'pending' AND op_type = 'move'
                  AND folder_from = ? AND agent_id IS ?""",
-            (folder_name, agent_id),
-        ) as cur:
-            rows = await cur.fetchall()
+        (folder_name, agent_id),
+    ) as cur:
+        rows = await cur.fetchall()
 
     pending: set[int] = set()
     for row in rows:
@@ -969,7 +963,7 @@ async def get_pending_move_uids_for_folder(
             continue
         try:
             ids = json.loads(raw)
-        except Exception:
+        except Exception:  # noqa: S112 — skip a malformed stored row; not a control-flow secret
             continue
         for uid_str in ids:
             # message_ids stores raw uid_set strings like "377" or "1:5"
@@ -1007,14 +1001,13 @@ async def get_pending_flag_changes_for_uid(
     """
     FLAG_OP_TYPES = ("store", "trash", "mark_read", "mark_unread", "flag", "unflag")
     placeholders = ",".join("?" * len(FLAG_OP_TYPES))
-    async with get_db(db_path) as db:
-        async with db.execute(
-            f"SELECT message_ids, flags_add, flags_remove FROM staged_operations "  # noqa: S608
-            f"WHERE status = 'pending' AND op_type IN ({placeholders}) "
-            f"AND folder_from = ? AND agent_id IS ?",
-            (*FLAG_OP_TYPES, folder_name, agent_id),
-        ) as cur:
-            rows = await cur.fetchall()
+    async with get_db(db_path) as db, db.execute(
+        f"SELECT message_ids, flags_add, flags_remove FROM staged_operations "  # noqa: S608
+        f"WHERE status = 'pending' AND op_type IN ({placeholders}) "
+        f"AND folder_from = ? AND agent_id IS ?",
+        (*FLAG_OP_TYPES, folder_name, agent_id),
+    ) as cur:
+        rows = await cur.fetchall()
 
     flags_to_add: list[str] = []
     flags_to_remove: list[str] = []
@@ -1026,9 +1019,13 @@ async def get_pending_flag_changes_for_uid(
                 return True
             if ":" in s:
                 parts = s.split(":")
-                if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
-                    if int(parts[0]) <= uid <= int(parts[1]):
-                        return True
+                if (
+                    len(parts) == 2
+                    and parts[0].isdigit()
+                    and parts[1].isdigit()
+                    and int(parts[0]) <= uid <= int(parts[1])
+                ):
+                    return True
         return False
 
     for row in rows:
@@ -1039,20 +1036,16 @@ async def get_pending_flag_changes_for_uid(
             continue
         try:
             ids = json.loads(raw_ids)
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: S112 — skip a malformed stored row; not a control-flow secret
             continue
         if not _uid_in_set(ids):
             continue
         if raw_add:
-            try:
+            with suppress(Exception):
                 flags_to_add.extend(json.loads(raw_add))
-            except Exception:  # noqa: BLE001
-                pass
         if raw_remove:
-            try:
+            with suppress(Exception):
                 flags_to_remove.extend(json.loads(raw_remove))
-            except Exception:  # noqa: BLE001
-                pass
 
     return flags_to_add, flags_to_remove
 
@@ -1170,12 +1163,11 @@ async def restore_from_snapshot(
     If snapshot is NULL or empty (operation had no snapshot — e.g. CREATE,
     RENAME, or APPEND), returns an empty list (no-op revert).
     """
-    async with get_db(db_path) as db:
-        async with db.execute(
-            "SELECT snapshot FROM staged_operations WHERE id = ?",
-            (operation_id,),
-        ) as cur:
-            row = await cur.fetchone()
+    async with get_db(db_path) as db, db.execute(
+        "SELECT snapshot FROM staged_operations WHERE id = ?",
+        (operation_id,),
+    ) as cur:
+        row = await cur.fetchone()
 
     if row is None or row["snapshot"] is None:
         return []
@@ -1268,17 +1260,16 @@ async def get_pending_reverts(
     Only returns rows where delivered_at IS NULL.
     Ordered by creation time so the proxy injects them in staging order.
     """
-    async with get_db(db_path) as db:
-        async with db.execute(
-            """
+    async with get_db(db_path) as db, db.execute(
+        """
             SELECT id, operation_id, folder_id, uid, true_flags, created_at, delivered_at
             FROM pending_reverts
             WHERE folder_id = ? AND delivered_at IS NULL
             ORDER BY created_at ASC
             """,
-            (folder_id,),
-        ) as cur:
-            rows = await cur.fetchall()
+        (folder_id,),
+    ) as cur:
+        rows = await cur.fetchall()
     return [dict(r) for r in rows]
 
 
@@ -1374,12 +1365,11 @@ async def revoke_invite_code(code_hash: str, db_path: Path = DB_PATH) -> bool:
 
 async def list_invite_codes(db_path: Path = DB_PATH) -> "list[dict]":
     """Return all invite codes (hashes, not raw codes) with their status."""
-    async with get_db(db_path) as db:
-        async with db.execute(
-            "SELECT id, code_hash, created_at, expires_at, note, "
-            "redeemed_at, redeemed_by_email, revoked_at "
-            "FROM invite_codes ORDER BY created_at DESC"
-        ) as cur:
-            rows = await cur.fetchall()
+    async with get_db(db_path) as db, db.execute(
+        "SELECT id, code_hash, created_at, expires_at, note, "
+        "redeemed_at, redeemed_by_email, revoked_at "
+        "FROM invite_codes ORDER BY created_at DESC"
+    ) as cur:
+        rows = await cur.fetchall()
     return [dict(r) for r in rows]
 

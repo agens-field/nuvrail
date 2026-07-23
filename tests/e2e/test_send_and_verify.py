@@ -17,9 +17,9 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import re
 import time
-from typing import Optional
 
 import pytest
 
@@ -76,7 +76,7 @@ def _auth_plain_b64(user: str, password: str) -> str:
     return base64.b64encode(f"\x00{user}\x00{password}".encode()).decode()
 
 
-def _extract_op_id(response_line: str) -> Optional[str]:
+def _extract_op_id(response_line: str) -> str | None:
     """Extract op_XXXXXX from a STAGED response line."""
     m = re.search(r"(op_[A-Za-z0-9]+)", response_line)
     return m.group(1) if m else None
@@ -88,7 +88,7 @@ async def _smtp_send_via_proxy(
     user: str,
     password: str,
     subject: str,
-    to_addr: Optional[str] = None,
+    to_addr: str | None = None,
 ) -> str:
     """
     Perform a full SMTP session via the proxy:
@@ -136,10 +136,8 @@ async def _smtp_send_via_proxy(
         assert op_id is not None, f"Could not extract op_id from: {staged_resp!r}"
         return op_id
     finally:
-        try:
+        with contextlib.suppress(OSError):
             await _send(writer, "QUIT\r\n")
-        except OSError:
-            pass
         await _close(writer)
 
 
@@ -170,7 +168,7 @@ async def test_smtp_send_staged_then_approved_arrives(
     agent_token = e2e_setup["proxy_agent_auth"]["smtp"]["token"]
     recipient = upstream_smtp_cfg["user"]
 
-    uid_to_delete: Optional[int] = None
+    uid_to_delete: int | None = None
 
     try:
         # Step 1–3: Send via proxy, get staged op_id

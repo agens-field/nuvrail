@@ -16,9 +16,7 @@ summary reflects the real blast radius of approving the batch.
 """
 from __future__ import annotations
 
-from typing import Optional
-
-from gateway.operation_parser import INTENT_VERBS, _OP_VERB
+from gateway.operation_parser import _OP_VERB, INTENT_VERBS
 from gateway.state_db import decode_json_list
 
 # Fragment phrasing per effective label (intent_label, falling back to
@@ -56,7 +54,7 @@ _MESSAGE_LABELS = {
 }
 
 
-def count_uid_set(uid_set: Optional[str]) -> int:
+def count_uid_set(uid_set: str | None) -> int:
     """Count the messages a UID-set string addresses ("5"→1, "1:5"→5, "1,3"→2).
 
     Open-ended ranges ("12:*") and malformed tokens count as 1 — the summary
@@ -66,7 +64,7 @@ def count_uid_set(uid_set: Optional[str]) -> int:
         return 0
     total = 0
     for token in str(uid_set).split(","):
-        token = token.strip()
+        token = token.strip()  # noqa: PLW2901 — intentional normalize-in-place of the loop token
         if not token:
             continue
         if ":" in token:

@@ -15,6 +15,7 @@ Lane 2: AI agent → proxy (agent_username + agent_token as IMAP/SMTP password)
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import imaplib
 import logging
 import os
@@ -23,13 +24,10 @@ import socket
 import ssl
 import time
 from pathlib import Path
-from typing import List, Union
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 
-from api.limiter import limiter
-from api.signup import current_signup_mode
 from api.auth import (
     generate_token,
     get_current_user,
@@ -38,9 +36,7 @@ from api.auth import (
     hash_token_for_storage,
     verify_password,
 )
-from gateway.credentials import delete_credential, purge_agent_upstream_secrets, store_credential
-from gateway.entitlements import entitlements
-from gateway.security_controls import build_auth_abuse_protector
+from api.limiter import limiter
 from api.models import (
     AgentCreateRequest,
     AgentCreateResponse,
@@ -58,6 +54,10 @@ from api.models import (
     UserResponse,
 )
 from api.routes.operations import get_db_path
+from api.signup import current_signup_mode
+from gateway.credentials import delete_credential, purge_agent_upstream_secrets, store_credential
+from gateway.entitlements import entitlements
+from gateway.security_controls import build_auth_abuse_protector
 from gateway.state_db import get_db
 
 logger = logging.getLogger(__name__)
@@ -100,10 +100,8 @@ def _verify_imap_connection_sync(
             raise imaplib.IMAP4.error("Failed to select INBOX folder")
     finally:
         if client is not None:
-            try:
+            with contextlib.suppress(Exception):
                 client.logout()
-            except Exception:
-                pass
 
 
 async def _verify_imap_connection(
@@ -123,17 +121,13 @@ async def _verify_imap_connection(
             ),
             timeout=10,
         )
-    except asyncio.TimeoutError as exc:
+    except TimeoutError as exc:
         raise ImapValidationError(
             "imap_timeout", "Timed out while verifying IMAP connection (10s limit)."
         ) from exc
     except ssl.SSLError as exc:
         raise ImapValidationError(
             "imap_ssl_error", "IMAP SSL/TLS handshake failed. Check host and IMAP SSL port."
-        ) from exc
-    except socket.timeout as exc:
-        raise ImapValidationError(
-            "imap_timeout", "Timed out while verifying IMAP connection (10s limit)."
         ) from exc
     except imaplib.IMAP4.abort as exc:
         raise ImapValidationError(
@@ -279,11 +273,10 @@ async def login(
             headers={"Retry-After": str(decision.retry_after_seconds)},
         )
 
-    async with get_db(db_path) as db:
-        async with db.execute(
-            "SELECT * FROM users WHERE email = ?", (body.email,)
-        ) as cur:
-            row = await cur.fetchone()
+    async with get_db(db_path) as db, db.execute(
+        "SELECT * FROM users WHERE email = ?", (body.email,)
+    ) as cur:
+        row = await cur.fetchone()
 
     if row is None or not verify_password(body.password, row["hashed_password"]):
         failure = await LOGIN_ABUSE_PROTECTOR.record_failure(ip=client_host, account=body.email)
@@ -320,7 +313,7 @@ async def login(
 
     return LoginResponse(
         token=fresh_token,  # plaintext - shown once, not stored
-        token_type="bearer",
+        token_type="bearer",  # noqa: S106 — OAuth2 response field, not a secret
         user_id=user["id"],
         email=user["email"],
     )
@@ -351,7 +344,7 @@ async def create_agent(
     request: Request,
     current_user: dict = Depends(get_current_user),
     db_path: Path = Depends(get_db_path),
-) -> Union[AgentCreateResponse, JSONResponse]:
+) -> AgentCreateResponse | JSONResponse:
     """Register upstream email credentials and generate an agent token.
 
     Supports two auth modes (mutually exclusive):
@@ -410,13 +403,12 @@ async def create_agent(
     # public build never caps agents. The enterprise provider raises 402 when a
     # plan's agent limit is reached. Checked before the upstream IMAP probe so a
     # capped request fails fast.
-    async with get_db(db_path) as db:
-        async with db.execute(
-            "SELECT COUNT(*) AS c FROM agent_credentials "
-            "WHERE user_id = ? AND revoked_at IS NULL",
-            (current_user["id"],),
-        ) as cur:
-            agent_count = (await cur.fetchone())["c"]
+    async with get_db(db_path) as db, db.execute(
+        "SELECT COUNT(*) AS c FROM agent_credentials "
+        "WHERE user_id = ? AND revoked_at IS NULL",
+        (current_user["id"],),
+    ) as cur:
+        agent_count = (await cur.fetchone())["c"]
     await entitlements().assert_can_create_agent(current_user, agent_count)
 
     # --- Validate IMAP connectivity (password path only) --------------------
@@ -496,7 +488,7 @@ async def create_agent(
         for ref in created_refs:
             try:
                 await delete_credential(ref)
-            except Exception:  # noqa: BLE001
+            except Exception:
                 logger.warning("[agents] Failed to clean up orphaned secret after insert error")
         raise
 
@@ -510,15 +502,14 @@ async def create_agent(
     )
 
 
-@router.get("/agents", response_model=List[AgentResponse])
+@router.get("/agents", response_model=list[AgentResponse])
 async def list_agents(
     current_user: dict = Depends(get_current_user),
     db_path: Path = Depends(get_db_path),
-) -> List[AgentResponse]:
+) -> list[AgentResponse]:
     """List agent credentials for the current user. Token is never returned."""
-    async with get_db(db_path) as db:
-        async with db.execute(
-            """
+    async with get_db(db_path) as db, db.execute(
+        """
             SELECT ac.id, ac.agent_username, ac.label,
                    ac.upstream_host, ac.upstream_user,
                    ac.created_at, ac.revoked_at,
@@ -531,9 +522,9 @@ async def list_agents(
             WHERE ac.user_id = ?
             ORDER BY ac.created_at ASC
             """,
-            (current_user["id"],),
-        ) as cur:
-            rows = [dict(r) for r in await cur.fetchall()]
+        (current_user["id"],),
+    ) as cur:
+        rows = [dict(r) for r in await cur.fetchall()]
 
     return [AgentResponse(**r) for r in rows]
 
@@ -664,11 +655,10 @@ async def reset_request(
     import logging as _logging
     _log = _logging.getLogger(__name__)
 
-    async with get_db(db_path) as db:
-        async with db.execute(
-            "SELECT id FROM users WHERE email = ?", (body.email,)
-        ) as cur:
-            row = await cur.fetchone()
+    async with get_db(db_path) as db, db.execute(
+        "SELECT id FROM users WHERE email = ?", (body.email,)
+    ) as cur:
+        row = await cur.fetchone()
 
     if row is None:
         # Return 200 - no account enumeration

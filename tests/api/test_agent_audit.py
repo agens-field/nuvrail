@@ -140,12 +140,11 @@ async def test_approve_populates_agent_id(db_path: Path) -> None:
         )
         await db.commit()
 
-    async with get_db(db_path) as db:
-        async with db.execute(
-            "SELECT agent_id, op_type FROM audit_log WHERE operation_id = ? AND event = 'executed'",
-            (op_id,),
-        ) as cur:
-            row = await cur.fetchone()
+    async with get_db(db_path) as db, db.execute(
+        "SELECT agent_id, op_type FROM audit_log WHERE operation_id = ? AND event = 'executed'",
+        (op_id,),
+    ) as cur:
+        row = await cur.fetchone()
 
     assert row is not None
     assert str(row["agent_id"]) == str(_AGENT_A1)
@@ -164,12 +163,11 @@ async def test_reject_populates_agent_id(db_path: Path) -> None:
         )
         await db.commit()
 
-    async with get_db(db_path) as db:
-        async with db.execute(
-            "SELECT agent_id, op_type FROM audit_log WHERE operation_id = ? AND event = 'rejected'",
-            (op_id,),
-        ) as cur:
-            row = await cur.fetchone()
+    async with get_db(db_path) as db, db.execute(
+        "SELECT agent_id, op_type FROM audit_log WHERE operation_id = ? AND event = 'rejected'",
+        (op_id,),
+    ) as cur:
+        row = await cur.fetchone()
 
     assert row is not None
     assert str(row["agent_id"]) == str(_AGENT_A2)

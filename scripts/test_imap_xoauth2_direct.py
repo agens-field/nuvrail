@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import json
 import os
 import sys
@@ -31,17 +32,16 @@ async def main() -> None:
 
     agent_username = sys.argv[1]
 
-    from gateway.state_db import get_db
     from gateway.credentials import fetch_credential
     from gateway.oauth2_tokens import _refresh_google_token
+    from gateway.state_db import get_db
 
     # Load credentials from DB.
-    async with get_db(DB_PATH) as db:
-        async with db.execute(
-            "SELECT * FROM agent_credentials WHERE agent_username = ?",
-            (agent_username,),
-        ) as cur:
-            row = dict(await cur.fetchone() or {})
+    async with get_db(DB_PATH) as db, db.execute(
+        "SELECT * FROM agent_credentials WHERE agent_username = ?",
+        (agent_username,),
+    ) as cur:
+        row = dict(await cur.fetchone() or {})
 
     if not row:
         print(f"ERROR: agent {agent_username!r} not found", file=sys.stderr)
@@ -126,10 +126,8 @@ async def main() -> None:
         print("\n? Unexpected response — neither a challenge nor OK.")
 
     writer.close()
-    try:
+    with contextlib.suppress(Exception):
         await writer.wait_closed()
-    except Exception:
-        pass
 
 
 if __name__ == "__main__":

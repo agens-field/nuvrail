@@ -40,7 +40,7 @@ import os
 import sqlite3
 import subprocess
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
@@ -54,7 +54,7 @@ ENCRYPTION_KEY = os.environ.get("NUVRAIL_BACKUP_KEY", "")
 
 
 def _log(msg: str) -> None:
-    ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    ts = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     print(f"[{ts}] {msg}", flush=True)
 
 
@@ -70,9 +70,8 @@ def _abort(msg: str, code: int = 1) -> None:
 
 def take_backup(db_path: Path, backup_path: Path) -> None:
     """Use the SQLite Online Backup API for a consistent live snapshot."""
-    with sqlite3.connect(str(db_path)) as src:
-        with sqlite3.connect(str(backup_path)) as dst:
-            src.backup(dst, pages=100)  # 100 pages at a time; yields GIL between chunks
+    with sqlite3.connect(str(db_path)) as src, sqlite3.connect(str(backup_path)) as dst:
+        src.backup(dst, pages=100)  # 100 pages at a time; yields GIL between chunks
 
 
 def verify_backup(backup_path: Path) -> None:
@@ -138,7 +137,7 @@ def main() -> None:
     BACKUP_DIR.mkdir(parents=True, exist_ok=True)
 
     # Create backup filename
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    stamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
     backup_path = BACKUP_DIR / f"nuvrail_{stamp}.db"
 
     # Take online backup

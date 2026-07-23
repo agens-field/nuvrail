@@ -23,6 +23,7 @@ Auth notes (post-auth milestone):
 
 import asyncio
 import base64
+import contextlib
 import os
 import tempfile
 import time
@@ -103,7 +104,7 @@ async def smtp_integration_db(upstream_smtp_config: dict) -> tuple[Path, str, st
 @pytest_asyncio.fixture(loop_scope="session")
 async def smtp_proxy_server(smtp_integration_db: tuple):
     """Start SMTP proxy on an ephemeral port; yield (host, port, agent_user, agent_token)."""
-    db_path, agent_username, agent_token = smtp_integration_db
+    _db_path, agent_username, agent_token = smtp_integration_db
     server = await asyncio.start_server(handle_smtp_client, "127.0.0.1", 0)
     host, port = server.sockets[0].getsockname()
     task = asyncio.create_task(server.serve_forever())
@@ -111,10 +112,8 @@ async def smtp_proxy_server(smtp_integration_db: tuple):
     server.close()
     await server.wait_closed()
     task.cancel()
-    try:
+    with contextlib.suppress(asyncio.CancelledError, Exception):
         await task
-    except (asyncio.CancelledError, Exception):
-        pass
 
 
 # ---------------------------------------------------------------------------
@@ -233,10 +232,8 @@ async def test_smtp_auth_valid_credentials(
             f"Expected 235 after valid AUTH, got: {lines!r}"
         )
     finally:
-        try:
+        with contextlib.suppress(OSError):
             await _send(writer, "QUIT\r\n")
-        except OSError:
-            pass
         await _close(writer)
 
 
@@ -316,10 +313,8 @@ async def test_smtp_data_returns_staged(
             f"Expected STAGED in response, got: {staged_resp!r}"
         )
     finally:
-        try:
+        with contextlib.suppress(OSError):
             await _send(writer, "QUIT\r\n")
-        except OSError:
-            pass
         await _close(writer)
 
 

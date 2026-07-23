@@ -75,9 +75,8 @@ async def test_register_migration_runs_in_init_db(tmp_path):
     await init_db(db_path)
 
     assert ran.get("called") is True
-    async with get_db(db_path) as db:
-        async with db.execute("PRAGMA table_info(_ext_probe)") as cur:
-            cols = await cur.fetchall()
+    async with get_db(db_path) as db, db.execute("PRAGMA table_info(_ext_probe)") as cur:
+        cols = await cur.fetchall()
     assert cols, "migration-created table should exist after init_db"
 
 

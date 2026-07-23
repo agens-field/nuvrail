@@ -8,8 +8,8 @@ Fixtures derived from real MXrouting session captures.
 """
 
 import pytest
-from gateway.imap_parser import parse_line
 
+from gateway.imap_parser import parse_line
 
 # ---------------------------------------------------------------------------
 # Parametrized happy-path tests

@@ -208,11 +208,10 @@ async def test_export_writes_audit_event(
     token, _ = await _register_and_login(client)
     await client.get("/api/v1/account/export", headers=_auth(token))
 
-    async with get_db(db_path) as db:
-        async with db.execute(
-            "SELECT event FROM audit_log WHERE event = 'export_requested'"
-        ) as cur:
-            row = await cur.fetchone()
+    async with get_db(db_path) as db, db.execute(
+        "SELECT event FROM audit_log WHERE event = 'export_requested'"
+    ) as cur:
+        row = await cur.fetchone()
     assert row is not None
     assert row["event"] == "export_requested"
 
@@ -342,11 +341,10 @@ async def test_delete_account_sets_deleted_at(
     )
 
     # Email is tombstoned on deletion (R5), so query by deleted_at, not email.
-    async with get_db(db_path) as db:
-        async with db.execute(
-            "SELECT deleted_at FROM users WHERE deleted_at IS NOT NULL"
-        ) as cur:
-            row = await cur.fetchone()
+    async with get_db(db_path) as db, db.execute(
+        "SELECT deleted_at FROM users WHERE deleted_at IS NOT NULL"
+    ) as cur:
+        row = await cur.fetchone()
     assert row is not None
     assert row["deleted_at"] is not None
 
@@ -366,12 +364,11 @@ async def test_delete_account_scrubs_sensitive_fields(
 
     # The original email is pseudonymized to a tombstone on deletion (R5), so
     # the row is no longer findable by it — look it up by deleted_at instead.
-    async with get_db(db_path) as db:
-        async with db.execute(
-            "SELECT email, hashed_password, api_token, display_name\n"
-            "             FROM users WHERE deleted_at IS NOT NULL"
-        ) as cur:
-            row = await cur.fetchone()
+    async with get_db(db_path) as db, db.execute(
+        "SELECT email, hashed_password, api_token, display_name\n"
+        "             FROM users WHERE deleted_at IS NOT NULL"
+    ) as cur:
+        row = await cur.fetchone()
     assert row is not None
     assert row["api_token"] is None
     assert row["display_name"] is None
@@ -413,11 +410,10 @@ async def test_delete_account_writes_audit_event(
         headers=_auth(token),
     )
 
-    async with get_db(db_path) as db:
-        async with db.execute(
-            "SELECT event FROM audit_log WHERE event = 'account_deleted'"
-        ) as cur:
-            row = await cur.fetchone()
+    async with get_db(db_path) as db, db.execute(
+        "SELECT event FROM audit_log WHERE event = 'account_deleted'"
+    ) as cur:
+        row = await cur.fetchone()
     assert row is not None
 
 
@@ -475,11 +471,10 @@ async def test_delete_account_cancels_pending_ops(
         headers=_auth(token),
     )
 
-    async with get_db(db_path) as db:
-        async with db.execute(
-            "SELECT status FROM staged_operations WHERE id = ?", (op_id,)
-        ) as cur:
-            row = await cur.fetchone()
+    async with get_db(db_path) as db, db.execute(
+        "SELECT status FROM staged_operations WHERE id = ?", (op_id,)
+    ) as cur:
+        row = await cur.fetchone()
     assert row is not None
     assert row["status"] == "cancelled"
 
@@ -618,11 +613,10 @@ async def test_delete_account_deletes_external_secrets_and_revokes_oauth2(
         assert revoked == ["secret-oauth2_refresh_token"]
 
         # Columns are nulled afterward (refs already consumed, no orphans).
-        async with get_db(db_path) as db:
-            async with db.execute(
-                "SELECT id FROM users WHERE email LIKE 'deleted+%@nuvrail.invalid'"
-            ) as cur:
-                assert await cur.fetchone() is not None
+        async with get_db(db_path) as db, db.execute(
+            "SELECT id FROM users WHERE email LIKE 'deleted+%@nuvrail.invalid'"
+        ) as cur:
+            assert await cur.fetchone() is not None
     finally:
         _ss.reset_secret_store_cache()
         _creds._cached_master_key = None

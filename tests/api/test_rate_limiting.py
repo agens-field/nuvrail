@@ -15,10 +15,10 @@ from unittest.mock import AsyncMock
 import httpx
 import pytest
 
+from api.auth import get_auth_db_path
 from api.limiter import limiter
 from api.main import app
 from api.routes import auth as auth_routes
-from api.auth import get_auth_db_path
 from api.routes.operations import get_db_path
 from gateway.security_controls import AuthAbuseProtector
 from gateway.state_db import init_db

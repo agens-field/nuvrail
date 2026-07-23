@@ -29,14 +29,16 @@ import time
 from dataclasses import dataclass
 from email.mime.text import MIMEText
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     import email.message
 
+import contextlib
+
 import aioimaplib
-from aioimaplib import quoted as imap_quoted
 import aiosmtplib
+from aioimaplib import quoted as imap_quoted
 
 from gateway.agent_auth import get_agent_credential
 from gateway.audit import record_audit_event
@@ -72,9 +74,9 @@ class ImapCredentials:
     host: str
     port: int
     user: str
-    password: Optional[str]          # decrypted; None for OAuth2 agents
-    oauth2_provider: Optional[str]   # e.g. 'google'; None for password auth
-    cred: Optional[dict]             # the agent_credentials row, or None (env fallback)
+    password: str | None          # decrypted; None for OAuth2 agents
+    oauth2_provider: str | None   # e.g. 'google'; None for password auth
+    cred: dict | None             # the agent_credentials row, or None (env fallback)
 
 
 async def resolve_imap_credentials(row: dict, db_path: Path) -> ImapCredentials:
@@ -86,7 +88,7 @@ async def resolve_imap_credentials(row: dict, db_path: Path) -> ImapCredentials:
 
     Raises RuntimeError if neither an agent nor a fallback host is available.
     """
-    from gateway.credentials import fetch_credential  # noqa: PLC0415
+    from gateway.credentials import fetch_credential
 
     agent_id = row.get("agent_id")
     cred = await get_agent_credential(agent_id, db_path)
@@ -141,7 +143,7 @@ _LIST_LINE_RE = re.compile(
 )
 
 
-def _parse_list_line(line: bytes) -> "tuple[set[str], str | None]":
+def _parse_list_line(line: bytes) -> tuple[set[str], str | None]:
     """
     Parse one raw ``* LIST`` response line into (flags, folder_name).
 
@@ -163,11 +165,11 @@ def _parse_list_line(line: bytes) -> "tuple[set[str], str | None]":
         folder = m.group(2) or m.group(3)
         flags = {f.strip().lower() for f in raw_flags.split() if f.strip()}
         return flags, folder
-    except Exception:  # noqa: BLE001
+    except Exception:
         return set(), None
 
 
-async def _discover_sent_folder(client: "aioimaplib.IMAP4_SSL") -> "str | None":
+async def _discover_sent_folder(client: aioimaplib.IMAP4_SSL) -> str | None:
     """
     Discover the Sent folder on an already-authenticated IMAP client.
 
@@ -224,7 +226,7 @@ async def _update_agent_sent_folder(cred_id: int, folder: str, db_path: Path) ->
 
 
 async def _save_to_sent_folder(
-    msg: "email.message.Message",
+    msg: email.message.Message,
     op_id: str,
     cred: dict,
     db_path: Path,
@@ -252,7 +254,7 @@ async def _save_to_sent_folder(
     Skipped entirely for providers that auto-save on relay (Gmail, Outlook —
     their profile has ``sent_folder = None``).
     """
-    from gateway.provider_profiles import detect_provider  # noqa: PLC0415
+    from gateway.provider_profiles import detect_provider
 
     imap_host = cred["upstream_host"]
     profile = detect_provider(imap_host)
@@ -270,7 +272,7 @@ async def _save_to_sent_folder(
     is_oauth2 = bool(cred.get("oauth2_provider"))
 
     # Use cached folder if already discovered; otherwise discover via IMAP LIST
-    target_folder: "str | None" = cred.get("sent_folder") or None
+    target_folder: str | None = cred.get("sent_folder") or None
     if target_folder:
         logger.info(
             "[approve] Sent-folder APPEND start op=%s host=%s folder=%r (cached)",
@@ -288,7 +290,7 @@ async def _save_to_sent_folder(
 
         # Authenticate
         if is_oauth2:
-            from gateway.oauth2_tokens import OAuth2Error, get_access_token  # noqa: PLC0415
+            from gateway.oauth2_tokens import OAuth2Error, get_access_token
             try:
                 imap_email, access_token = await get_access_token(str(cred["id"]), db_path)
             except OAuth2Error as exc:
@@ -304,7 +306,7 @@ async def _save_to_sent_folder(
                 )
                 return
         else:
-            from gateway.credentials import fetch_credential as _fc  # noqa: PLC0415
+            from gateway.credentials import fetch_credential as _fc
             raw_pass = cred.get("upstream_password")
             if not raw_pass:
                 logger.warning(
@@ -359,10 +361,8 @@ async def _save_to_sent_folder(
             "[approve] Sent-folder APPEND failed (non-fatal) op=%s: %s", op_id, exc
         )
     finally:
-        try:
+        with contextlib.suppress(Exception):
             await client.logout()
-        except Exception:
-            pass
 
 
 async def _execute_imap_upstream(row: dict, db_path: Path) -> None:
@@ -409,7 +409,7 @@ async def _execute_imap_upstream(row: dict, db_path: Path) -> None:
         await client.wait_hello_from_server()
         if creds.oauth2_provider:
             # OAuth2 agent — use AUTHENTICATE XOAUTH2 instead of LOGIN.
-            from gateway.oauth2_tokens import OAuth2Error, get_access_token  # noqa: PLC0415
+            from gateway.oauth2_tokens import OAuth2Error, get_access_token
             try:
                 _email, _access_token = await get_access_token(str(creds.cred["id"]), db_path)
             except OAuth2Error as exc:
@@ -505,7 +505,7 @@ async def _execute_imap_upstream(row: dict, db_path: Path) -> None:
             # Replay the stored message into the target folder. The raw RFC822
             # bytes were captured by the proxy and base64-encoded into
             # append_message; flags_add carries the original APPEND flags.
-            import base64 as _b64  # noqa: PLC0415
+            import base64 as _b64
             raw_b64 = row.get("append_message")
             if not raw_b64:
                 # The legacy guard at the top should have returned already.
@@ -540,10 +540,8 @@ async def _execute_imap_upstream(row: dict, db_path: Path) -> None:
         logger.info("[imap_execute] Op %s (%s) executed successfully", row["id"], op_type)
 
     finally:
-        try:
+        with contextlib.suppress(Exception):
             await client.logout()
-        except Exception:
-            pass
 
 
 async def _record_execution_failure(
@@ -592,7 +590,7 @@ async def execute_operation(
         # before this field was introduced.
         body_text = envelope.get("body") or envelope.get("body_preview", "")
 
-        from gateway.credentials import fetch_credential  # noqa: PLC0415
+        from gateway.credentials import fetch_credential
         agent_id = row.get("agent_id")
         cred = await get_agent_credential(agent_id, db_path)
         # Fail CLOSED on a blocked agent (issue #65): a real agent_id with no
@@ -632,7 +630,7 @@ async def execute_operation(
         # (headers + blank line + body). Parse it properly so we don't wrap
         # the original headers as the text body of a new MIMEText.
         # If it has no recognisable headers, fall back to a plain MIMEText.
-        import email as _email_stdlib  # noqa: PLC0415
+        import email as _email_stdlib
         _parsed = _email_stdlib.message_from_string(body_text or "")
         if _parsed.keys():  # at least one header present — treat as full RFC 2822
             msg = _parsed
@@ -694,7 +692,7 @@ async def execute_operation(
         try:
             if is_oauth2:
                 # OAuth2 agents: authenticate with XOAUTH2 via aiosmtplib native support.
-                from gateway.oauth2_tokens import OAuth2Error, get_access_token  # noqa: PLC0415
+                from gateway.oauth2_tokens import OAuth2Error, get_access_token
                 try:
                     _email, access_token = await get_access_token(str(cred["id"]), db_path)
                 except OAuth2Error as exc:
@@ -705,7 +703,7 @@ async def execute_operation(
                     hostname=smtp_host, port=smtp_port, start_tls=True
                 ) as smtp:
                     await smtp.auth_xoauth2(smtp_user, access_token)
-                    errors, server_msg = await smtp.sendmail(
+                    errors, _server_msg = await smtp.sendmail(
                         smtp_user, relay_recipients, msg.as_string()
                     )
                     if errors:
@@ -761,7 +759,7 @@ async def execute_operation(
     # anti-spam send-rate limiter (gateway.send_rate_limiter) can SUM messages
     # — not operations — when counting an agent's recent sends.
     await update_operation_status(op_id, "executed", db_path=db_path)
-    executed_detail: Optional[str] = None
+    executed_detail: str | None = None
     if protocol == "smtp":
         executed_detail = json.dumps({"recipient_count": len(relay_recipients)})
     await record_audit_event(

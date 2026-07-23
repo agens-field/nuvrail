@@ -14,7 +14,6 @@ import pytest
 
 from gateway.execution import _discover_sent_folder, _parse_list_line
 
-
 # ---------------------------------------------------------------------------
 # _parse_list_line
 # ---------------------------------------------------------------------------

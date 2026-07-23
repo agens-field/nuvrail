@@ -13,7 +13,6 @@ from gateway.imap_response_parser import (
     parse_select_response,
 )
 
-
 # ---------------------------------------------------------------------------
 # parse_select_response
 # ---------------------------------------------------------------------------
@@ -300,7 +299,7 @@ def test_extract_headers_encoded_subject() -> None:
 def test_extract_headers_encoded_sender() -> None:
     """RFC2047 encoded-word display names in From are decoded."""
     data = _make_rfc822("=?UTF-8?Q?Alice_Smith?= <alice@example.com>", "Hi")
-    sender, subject, _msgid = extract_headers_from_rfc822(data)
+    sender, _subject, _msgid = extract_headers_from_rfc822(data)
     assert sender is not None
     assert "alice@example.com" in sender
 
@@ -338,7 +337,7 @@ def test_extract_headers_message_id() -> None:
         b"\r\n"
         b"Body"
     )
-    sender, subject, msgid = extract_headers_from_rfc822(data)
+    sender, _subject, msgid = extract_headers_from_rfc822(data)
     assert sender == "alice@example.com"
     assert msgid == "<abc.123@mail.example.com>"
 
@@ -373,7 +372,7 @@ def test_extract_headers_multiline_subject() -> None:
         b"\r\n"
         b"Body"
     )
-    sender, subject, _msgid = extract_headers_from_rfc822(data)
+    _sender, subject, _msgid = extract_headers_from_rfc822(data)
     assert subject is not None
     assert "long subject" in subject
     assert "wraps" in subject

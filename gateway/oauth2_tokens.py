@@ -59,16 +59,14 @@ from gateway.state_db import get_db
 
 logger = logging.getLogger(__name__)
 
-_GOOGLE_TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token"
+_GOOGLE_TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token"  # noqa: S105 — endpoint URL, not a secret
 _GOOGLE_REVOKE_ENDPOINT = "https://oauth2.googleapis.com/revoke"
 
 # Microsoft identity platform (Azure AD v2.0). The tenant segment is
 # "common" for multi-tenant + personal Microsoft accounts, which is what we
 # use for consumer Outlook.com and most Office 365 tenants; a single-tenant
 # deployment can override it via MICROSOFT_TENANT (see api/routes/oauth2.py).
-_MICROSOFT_TOKEN_ENDPOINT = (
-    "https://login.microsoftonline.com/common/oauth2/v2.0/token"
-)
+_MICROSOFT_TOKEN_ENDPOINT = "https://login.microsoftonline.com/common/oauth2/v2.0/token"  # noqa: S105 — endpoint URL, not a secret
 # Scopes required on the refresh exchange. offline_access keeps the refresh
 # token alive; IMAP.AccessAsUser.All + SMTP.Send grant mailbox access; openid
 # email let us read the account address. Microsoft — unlike Google — requires
@@ -141,9 +139,8 @@ async def get_access_token(agent_id: str, db_path: Path) -> tuple[str, str]:
         if cached is not None and (cached[2] - time.time()) > _EXPIRY_BUFFER_SECONDS:
             return cached[0], cached[1]
 
-        async with get_db(db_path) as db:
-            async with db.execute(
-                """
+        async with get_db(db_path) as db, db.execute(
+            """
                 SELECT upstream_user,
                        oauth2_provider,
                        oauth2_refresh_token,
@@ -152,9 +149,9 @@ async def get_access_token(agent_id: str, db_path: Path) -> tuple[str, str]:
                 FROM agent_credentials
                 WHERE id = ?
                 """,
-                (agent_id,),
-            ) as cur:
-                row = await cur.fetchone()
+            (agent_id,),
+        ) as cur:
+            row = await cur.fetchone()
 
         if row is None:
             raise OAuth2Error(f"Agent credential {agent_id!r} not found")
@@ -238,7 +235,7 @@ async def _refresh_google_token(
     }
 
     try:
-        import httpx  # noqa: PLC0415
+        import httpx
         async with httpx.AsyncClient(timeout=15) as client:
             resp = await client.post(_GOOGLE_TOKEN_ENDPOINT, data=payload)
         status_code = resp.status_code
@@ -310,7 +307,7 @@ async def _refresh_microsoft_token(
     }
 
     try:
-        import httpx  # noqa: PLC0415
+        import httpx
         async with httpx.AsyncClient(timeout=15) as client:
             resp = await client.post(_MICROSOFT_TOKEN_ENDPOINT, data=payload)
         status_code = resp.status_code
@@ -358,19 +355,23 @@ async def _refresh_microsoft_token(
 
 def _urllib_post(url: str, payload: dict) -> tuple[int, str]:
     """Synchronous POST via urllib — used as fallback when httpx is absent."""
-    import urllib.error  # noqa: PLC0415
-    import urllib.parse  # noqa: PLC0415
-    import urllib.request  # noqa: PLC0415
+    import urllib.error
+    import urllib.parse
+    import urllib.request
 
+    # Fail closed on any non-https scheme (the S310 concern): callers only pass
+    # fixed provider token endpoints, so anything else is a bug or tampering.
+    if not url.startswith("https://"):
+        raise ValueError(f"refusing non-https token endpoint: {url!r}")
     encoded = urllib.parse.urlencode(payload).encode("ascii")
-    req = urllib.request.Request(
+    req = urllib.request.Request(  # noqa: S310 — https scheme enforced above; fixed provider endpoints
         url,
         data=encoded,
         headers={"Content-Type": "application/x-www-form-urlencoded"},
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
+        with urllib.request.urlopen(req, timeout=15) as resp:  # noqa: S310 — https enforced above
             return resp.status, resp.read().decode("utf-8")
     except urllib.error.HTTPError as exc:  # type: ignore[attr-defined]
         return exc.code, exc.read().decode("utf-8", errors="replace")
@@ -406,7 +407,7 @@ async def revoke_google_refresh_token(refresh_token: str) -> bool:
     payload = {"token": refresh_token}
     try:
         try:
-            import httpx  # noqa: PLC0415
+            import httpx
             async with httpx.AsyncClient(timeout=15) as client:
                 resp = await client.post(_GOOGLE_REVOKE_ENDPOINT, data=payload)
             status_code = resp.status_code
@@ -414,7 +415,7 @@ async def revoke_google_refresh_token(refresh_token: str) -> bool:
             status_code, _ = await asyncio.get_event_loop().run_in_executor(
                 None, _urllib_post, _GOOGLE_REVOKE_ENDPOINT, payload
             )
-    except Exception as exc:  # noqa: BLE001 - revoke is best-effort
+    except Exception as exc:
         # Log the exception type only — never the token or response body.
         logger.warning(
             "[oauth2] Refresh-token revoke call failed (%s); "

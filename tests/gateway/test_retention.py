@@ -15,12 +15,11 @@ Tests for the GDPR data-retention purge (R5) — gateway.retention.
 """
 from __future__ import annotations
 
+import json
+import os
 from pathlib import Path
 
 import pytest
-
-import json
-import os
 
 import gateway.secret_store as ss
 from gateway import credentials as creds
@@ -102,8 +101,8 @@ async def _counts_for_user(db_path: Path, user_id: int) -> dict[str, int]:
             ("rules", "SELECT COUNT(*) FROM auto_approval_rules WHERE user_id = ?", (user_id,)),
             ("subs", "SELECT COUNT(*) FROM push_subscriptions WHERE user_id = ?", (user_id,)),
             ("audit", "SELECT COUNT(*) FROM audit_log WHERE user_id = ?", (user_id,)),
-            ("ops", "SELECT COUNT(*) FROM staged_operations WHERE agent_id IN "
-                    "(SELECT CAST(id AS TEXT) FROM agent_credentials WHERE user_id = ?)", (user_id,)),
+            ("ops", ("SELECT COUNT(*) FROM staged_operations WHERE agent_id IN "
+                    "(SELECT CAST(id AS TEXT) FROM agent_credentials WHERE user_id = ?)"), (user_id,)),
         ]:
             async with db.execute(sql, params) as cur:
                 out[label] = (await cur.fetchone())[0]
@@ -123,14 +122,13 @@ async def test_purges_user_past_window_completely(db_path: Path) -> None:
     assert purged == 1
 
     after = await _counts_for_user(db_path, uid)
-    assert after == {k: 0 for k in after}, after
+    assert after == dict.fromkeys(after, 0), after
     # The op's pending_reverts row is gone too (child via operation_id).
-    async with get_db(db_path) as db:
-        async with db.execute(
-            "SELECT COUNT(*) FROM pending_reverts WHERE operation_id = ?",
-            (f"op-{uid}",),
-        ) as cur:
-            assert (await cur.fetchone())[0] == 0
+    async with get_db(db_path) as db, db.execute(
+        "SELECT COUNT(*) FROM pending_reverts WHERE operation_id = ?",
+        (f"op-{uid}",),
+    ) as cur:
+        assert (await cur.fetchone())[0] == 0
 
 
 async def test_within_window_user_survives(db_path: Path) -> None:

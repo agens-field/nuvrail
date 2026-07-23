@@ -109,12 +109,11 @@ async def test_scrub_nulls_append_message(db_path: Path) -> None:
     scrubbed = await scrub_expired_body_previews(db_path=db_path)
     assert scrubbed >= 1
 
-    async with get_db(db_path) as db:
-        async with db.execute(
-            "SELECT append_message, body_scrubbed_at FROM staged_operations WHERE id = ?",
-            (op_id,),
-        ) as cur:
-            row = await cur.fetchone()
+    async with get_db(db_path) as db, db.execute(
+        "SELECT append_message, body_scrubbed_at FROM staged_operations WHERE id = ?",
+        (op_id,),
+    ) as cur:
+        row = await cur.fetchone()
     assert row["append_message"] is None
     assert row["body_scrubbed_at"] is not None
 
@@ -185,12 +184,11 @@ async def test_scrub_nulls_body_preview(db_path: Path) -> None:
     count = await scrub_expired_body_previews(db_path=db_path)
     assert count == 1
 
-    async with get_db(db_path) as db:
-        async with db.execute(
-            "SELECT smtp_envelope, body_scrubbed_at FROM staged_operations WHERE id = ?",
-            (op_id,),
-        ) as cur:
-            row = await cur.fetchone()
+    async with get_db(db_path) as db, db.execute(
+        "SELECT smtp_envelope, body_scrubbed_at FROM staged_operations WHERE id = ?",
+        (op_id,),
+    ) as cur:
+        row = await cur.fetchone()
 
     assert row is not None
     envelope = json.loads(row["smtp_envelope"])
@@ -206,12 +204,11 @@ async def test_scrub_writes_audit_event(db_path: Path) -> None:
     op_id = await _make_terminal_op(db_path)
     await scrub_expired_body_previews(db_path=db_path)
 
-    async with get_db(db_path) as db:
-        async with db.execute(
-            "SELECT event, actor FROM audit_log WHERE operation_id = ? AND event = 'body_scrubbed'",
-            (op_id,),
-        ) as cur:
-            row = await cur.fetchone()
+    async with get_db(db_path) as db, db.execute(
+        "SELECT event, actor FROM audit_log WHERE operation_id = ? AND event = 'body_scrubbed'",
+        (op_id,),
+    ) as cur:
+        row = await cur.fetchone()
 
     assert row is not None
     assert row["event"] == "body_scrubbed"
@@ -226,12 +223,11 @@ async def test_scrub_idempotent(db_path: Path) -> None:
     assert count1 == 1
     assert count2 == 0  # nothing eligible on second run
 
-    async with get_db(db_path) as db:
-        async with db.execute(
-            "SELECT COUNT(*) AS n FROM audit_log WHERE operation_id = ? AND event = 'body_scrubbed'",
-            (op_id,),
-        ) as cur:
-            row = await cur.fetchone()
+    async with get_db(db_path) as db, db.execute(
+        "SELECT COUNT(*) AS n FROM audit_log WHERE operation_id = ? AND event = 'body_scrubbed'",
+        (op_id,),
+    ) as cur:
+        row = await cur.fetchone()
     assert row["n"] == 1
 
 

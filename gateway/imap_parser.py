@@ -35,7 +35,6 @@ Non-sync literals ``{N+}`` are returned as an ordinary arg token.
 
 import re
 from dataclasses import dataclass, field
-from typing import Optional
 
 
 @dataclass
@@ -169,7 +168,7 @@ def _tokenize_args(s: str) -> list[str]:
     return tokens
 
 
-def parse_line(line: str) -> Optional[ParsedCommand]:
+def parse_line(line: str) -> ParsedCommand | None:
     """Parse a single IMAP command line (no trailing CRLF).
 
     Returns ``None`` if the line ends with a sync literal ``{N}`` — the caller

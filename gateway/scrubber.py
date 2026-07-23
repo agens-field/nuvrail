@@ -65,9 +65,8 @@ async def find_scrubable_operations(db_path: Path = DB_PATH) -> list[dict]:
     """Return terminal ops with unscrubbed body_preview old enough to scrub."""
     cutoff = _scrub_cutoff()
     placeholders = ",".join("?" * len(_TERMINAL_STATUSES))
-    async with get_db(db_path) as db:
-        async with db.execute(
-            f"""
+    async with get_db(db_path) as db, db.execute(
+        f"""
             SELECT id, smtp_envelope, append_message, agent_id, op_type, intent_label
             FROM staged_operations
             WHERE status IN ({placeholders})
@@ -77,9 +76,9 @@ async def find_scrubable_operations(db_path: Path = DB_PATH) -> list[dict]:
             ORDER BY COALESCE(decided_at, created_at) ASC
             LIMIT ?
             """,  # noqa: S608
-            (*_TERMINAL_STATUSES, cutoff, _BATCH_SIZE),
-        ) as cur:
-            rows = await cur.fetchall()
+        (*_TERMINAL_STATUSES, cutoff, _BATCH_SIZE),
+    ) as cur:
+        rows = await cur.fetchall()
     return [dict(r) for r in rows]
 
 
@@ -143,7 +142,7 @@ async def scrub_expired_body_previews(db_path: Path = DB_PATH) -> int:
         try:
             await _scrub_one(op, db_path)
             count += 1
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.error("[scrubber] Failed to scrub op=%s: %s", op["id"], exc)
 
     return count
@@ -176,7 +175,7 @@ async def run_scrubber_loop(
                     logger.info("[scrubber] Scrubbed %d operation(s) this run", count)
                 else:
                     logger.debug("[scrubber] No eligible operations to scrub")
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 logger.error("[scrubber] Unexpected error during scrub run: %s", exc)
                 record_heartbeat(
                     "scrubber", interval_seconds=interval_seconds, ok=False, detail=str(exc)

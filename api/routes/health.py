@@ -17,7 +17,7 @@ fly.toml wires this at [checks.api_health] path = "/health".
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from fastapi import APIRouter
 
@@ -36,7 +36,7 @@ async def health_check() -> dict:
     loop_health = get_loop_health()
     return {
         "status": "ok",
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": datetime.now(UTC).isoformat(),
         "loops_ok": loop_health["ok"],
         "loops": loop_health["loops"],
     }

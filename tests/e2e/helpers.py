@@ -7,12 +7,13 @@ to verify ground truth — did a message actually arrive? was a flag actually se
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import time
+from email.mime.text import MIMEText
 
 import aioimaplib
 import aiosmtplib
-from email.mime.text import MIMEText
 
 logger = logging.getLogger(__name__)
 
@@ -60,10 +61,8 @@ async def wait_for_message(
         except Exception as exc:
             logger.debug("wait_for_message poll error: %s", exc)
         finally:
-            try:
+            with contextlib.suppress(Exception):
                 await client.logout()
-            except Exception:
-                pass
 
         remaining = deadline - time.monotonic()
         if remaining > 0:
@@ -88,10 +87,8 @@ async def delete_message_by_uid(imap_config: dict, uid: int) -> None:
         await client.uid("store", str(uid), "+FLAGS", r"(\Deleted)")
         await client.expunge()
     finally:
-        try:
+        with contextlib.suppress(Exception):
             await client.logout()
-        except Exception:
-            pass
 
 
 async def send_direct_smtp(
@@ -150,10 +147,8 @@ async def get_message_flags(imap_config: dict, uid: int) -> list[str]:
             return flags_str.split() if flags_str else []
         return []
     finally:
-        try:
+        with contextlib.suppress(Exception):
             await client.logout()
-        except Exception:
-            pass
 
 
 async def check_message_exists(imap_config: dict, uid: int) -> bool:
@@ -176,7 +171,5 @@ async def check_message_exists(imap_config: dict, uid: int) -> bool:
         result = data[0].decode().strip() if data[0] else ""
         return str(uid) in result.split()
     finally:
-        try:
+        with contextlib.suppress(Exception):
             await client.logout()
-        except Exception:
-            pass

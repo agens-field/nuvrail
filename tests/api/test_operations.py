@@ -477,6 +477,7 @@ async def test_reject_restores_snapshot_and_queues_pending_reverts(
       - inserts pending_reverts rows for the proxy to inject
     """
     import json
+
     from gateway.state_db import (
         apply_optimistic_flag_update,
         get_message,
@@ -645,6 +646,7 @@ async def test_batch_approve_continues_after_failure(
 ) -> None:
     """Batch approve: one fails (mocked _do_approve raises), others still processed."""
     from unittest.mock import patch
+
     from api.models import ApproveResponse
 
     op_ids = []

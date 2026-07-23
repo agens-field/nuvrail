@@ -59,7 +59,7 @@ class _RedactingFilter(logging.Filter):
     Applied to the root logger so every logger in the process is covered.
     """
 
-    def filter(self, record: logging.LogRecord) -> bool:  # noqa: A003
+    def filter(self, record: logging.LogRecord) -> bool:
         # Materialise the message so we can inspect it.
         # We operate on record.msg + record.args separately to handle both
         # %-style and pre-formatted messages.

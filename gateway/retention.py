@@ -70,18 +70,17 @@ async def find_purgeable_users(
     """Return user ids whose deletion is older than the retention window."""
     now_ts = now if now is not None else int(time.time())
     cutoff = now_ts - int(_RETENTION_DAYS * 86400)
-    async with get_db(db_path) as db:
-        async with db.execute(
-            """
+    async with get_db(db_path) as db, db.execute(
+        """
             SELECT id FROM users
             WHERE deleted_at IS NOT NULL
               AND deleted_at <= ?
             ORDER BY deleted_at ASC
             LIMIT ?
             """,
-            (cutoff, _BATCH_SIZE),
-        ) as cur:
-            return [int(row["id"]) for row in await cur.fetchall()]
+        (cutoff, _BATCH_SIZE),
+    ) as cur:
+        return [int(row["id"]) for row in await cur.fetchall()]
 
 
 async def _purge_user(user_id: int, db_path: Path) -> None:
@@ -196,7 +195,7 @@ async def purge_expired_deleted_users(
             await _purge_user(user_id, db_path)
             count += 1
             logger.info("[retention] purged user id=%d", user_id)
-        except Exception as exc:  # noqa: BLE001 — one bad row must not stop the sweep
+        except Exception as exc:
             logger.error("[retention] failed to purge user id=%d: %s", user_id, exc)
     return count
 
@@ -227,7 +226,7 @@ async def run_retention_loop(
                 record_heartbeat("retention", interval_seconds=interval_seconds)
                 if count > 0:
                     logger.info("[retention] Purged %d account(s)", count)
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 logger.error("[retention] Unexpected error during sweep: %s", exc)
                 record_heartbeat(
                     "retention", interval_seconds=interval_seconds, ok=False, detail=str(exc)

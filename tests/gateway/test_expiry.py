@@ -121,12 +121,11 @@ async def test_expire_stale_writes_audit_entry(db_path: Path) -> None:
     op_id = await _make_expired_op(db_path)
     await expire_stale_operations(db_path=db_path)
 
-    async with get_db(db_path) as db:
-        async with db.execute(
-            "SELECT event, actor FROM audit_log WHERE operation_id = ? AND event = 'expired'",
-            (op_id,),
-        ) as cur:
-            row = await cur.fetchone()
+    async with get_db(db_path) as db, db.execute(
+        "SELECT event, actor FROM audit_log WHERE operation_id = ? AND event = 'expired'",
+        (op_id,),
+    ) as cur:
+        row = await cur.fetchone()
 
     assert row is not None
     assert row["event"] == "expired"

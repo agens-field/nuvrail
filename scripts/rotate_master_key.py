@@ -53,11 +53,12 @@ def generate_key() -> str:
 
 
 async def rotate(new_key_hex: str) -> None:
-    from gateway.state_db import get_db
-    from gateway.credentials import decrypt_credential, is_encrypted
+    import json
 
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-    import json
+
+    from gateway.credentials import decrypt_credential, is_encrypted
+    from gateway.state_db import get_db
 
     new_key = bytes.fromhex(new_key_hex)
     if len(new_key) != 32:
@@ -100,9 +101,9 @@ async def rotate(new_key_hex: str) -> None:
 
             if updates:
                 set_clause = ", ".join(f"{k} = ?" for k in updates)
-                values = list(updates.values()) + [row["id"]]
+                values = [*list(updates.values()), row["id"]]
                 await db.execute(
-                    f"UPDATE agent_credentials SET {set_clause} WHERE id = ?",  # noqa: S608
+                    f"UPDATE agent_credentials SET {set_clause} WHERE id = ?",
                     values,
                 )
                 updated += 1

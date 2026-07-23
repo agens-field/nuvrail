@@ -62,15 +62,14 @@ import logging
 import os
 import re
 import ssl
-from typing import Optional
 
 from dotenv import load_dotenv
 
 from gateway.agent_auth import decode_sasl_plain, verify_agent_login
 from gateway.credentials import fetch_credential
+from gateway.extensions import load_plugins
 from gateway.intent import derive_send_intent, extract_message_ids, strip_subject_prefixes
 from gateway.security_controls import build_auth_abuse_protector
-from gateway.extensions import load_plugins
 from gateway.staging import create_operation
 from gateway.state_db import find_message_by_message_id, get_db
 from logging_config import redact_protocol_line
@@ -167,10 +166,10 @@ def _extract_subject(body_lines: list[bytes]) -> str:
 
 
 def _build_send_description(
-    intent_label: Optional[str],
+    intent_label: str | None,
     subject: str,
     recipients: list[str],
-    original: Optional[dict],
+    original: dict | None,
 ) -> str:
     """Human description for a staged send, intent-aware.
 
@@ -289,7 +288,7 @@ async def _send_smtp_rejection_notices(
     Phase 2 note: relies on a rejection_notified column added by migration.
     If the column is absent (pre-migration DB), notices are skipped silently.
     """
-    from pathlib import Path  # noqa: PLC0415
+    from pathlib import Path
 
     if not isinstance(db_path, Path):
         db_path = Path(str(db_path))
@@ -376,7 +375,7 @@ async def handle_smtp_client(
     # Resolve the DB path once at connection start. Read from the module
     # attribute (not the import-time DB_PATH) so integration tests that patch
     # gateway.state_db.DB_PATH before connecting are honoured.
-    import gateway.state_db as _state_db_mod  # noqa: PLC0415
+    import gateway.state_db as _state_db_mod
     _db_path = _state_db_mod.DB_PATH
 
     # --- Step 1: Send synthetic greeting — no upstream connection yet --------
@@ -388,12 +387,12 @@ async def handle_smtp_client(
         client_writer.close()
         return
 
-    upstream_reader: Optional[asyncio.StreamReader] = None
-    upstream_writer: Optional[asyncio.StreamWriter] = None
-    upstream_credential: Optional[dict] = None
+    upstream_reader: asyncio.StreamReader | None = None
+    upstream_writer: asyncio.StreamWriter | None = None
+    upstream_credential: dict | None = None
 
     # --- Envelope tracking -------------------------------------------------
-    sender: Optional[str] = None
+    sender: str | None = None
     recipients: list[str] = []
 
     # --- Command loop ------------------------------------------------------
@@ -430,7 +429,7 @@ async def handle_smtp_client(
             if cmd == "AUTH":
                 parts = line.split()
                 mech = parts[1].upper() if len(parts) > 1 else ""
-                cred: Optional[dict] = None
+                cred: dict | None = None
 
                 if mech == "PLAIN" and len(parts) >= 3:
                     agent_user, agent_pass_plain = decode_sasl_plain(parts[2]) or ("", "")
@@ -503,7 +502,7 @@ async def handle_smtp_client(
 
                 elif mech == "LOGIN":
                     # AUTH LOGIN multi-step
-                    import base64 as _b64l  # noqa: PLC0415
+                    import base64 as _b64l
                     client_writer.write(b"334 " + _b64l.b64encode(b"Username:") + b"\r\n")
                     await client_writer.drain()
                     user_b64 = await client_reader.readline()
@@ -587,8 +586,11 @@ async def handle_smtp_client(
                 # Authenticate to upstream: XOAUTH2 if oauth2_provider is set,
                 # else AUTH PLAIN with real credentials.
                 if cred.get("oauth2_provider"):
-                    import gateway.state_db as _state_db_mod  # noqa: PLC0415
-                    from gateway.oauth2_tokens import OAuth2Error, get_xoauth2_string  # noqa: PLC0415
+                    import gateway.state_db as _state_db_mod
+                    from gateway.oauth2_tokens import (
+                        OAuth2Error,
+                        get_xoauth2_string,
+                    )
                     try:
                         xoauth2_str = await get_xoauth2_string(str(cred["id"]), _state_db_mod.DB_PATH)
                     except OAuth2Error as exc:
@@ -609,7 +611,7 @@ async def handle_smtp_client(
                         await client_writer.drain()
                         break
                 else:
-                    import base64 as _b64u  # noqa: PLC0415
+                    import base64 as _b64u
                     up_pass = await fetch_credential(cred["upstream_password"])
                     rewritten_b64 = _b64u.b64encode(
                         f"\x00{up_user}\x00{up_pass}".encode()
@@ -636,12 +638,12 @@ async def handle_smtp_client(
                 # as informational 214 lines immediately after auth success.
                 # The agent sees them before its first command is accepted.
                 try:
-                    import gateway.state_db as _state_db_mod2  # noqa: PLC0415
+                    import gateway.state_db as _state_db_mod2
                     await _send_smtp_rejection_notices(
                         client_writer, str(cred["id"]),
                         _state_db_mod2.DB_PATH,
                     )
-                except Exception as _notice_exc:  # noqa: BLE001
+                except Exception as _notice_exc:
                     logger.warning(
                         "[%s] Failed to send rejection notices: %s",
                         peer_str, _notice_exc,
@@ -748,7 +750,7 @@ async def handle_smtp_client(
                 # the original message. A miss only lowers confidence; the
                 # intent still derives from the outgoing headers.
                 parent_ids = extract_message_ids(in_reply_to) or extract_message_ids(references)
-                original: Optional[dict] = None
+                original: dict | None = None
                 if parent_ids and upstream_credential is not None:
                     try:
                         original = await find_message_by_message_id(
@@ -756,7 +758,7 @@ async def handle_smtp_client(
                             user_id=upstream_credential["user_id"],
                             db_path=_db_path,
                         )
-                    except Exception as _lookup_exc:  # noqa: BLE001
+                    except Exception as _lookup_exc:
                         logger.debug(
                             "[%s] Original-message lookup failed (non-fatal): %s",
                             peer_str, _lookup_exc,

@@ -209,8 +209,7 @@ async def test_redeem_unknown_code_returns_false(db_path: Path) -> None:
 async def test_stored_invite_is_hash_not_plaintext(db_path: Path) -> None:
     raw = "plaintext_should_not_appear"
     await insert_invite_code(hash_token_for_storage(raw), db_path=db_path)
-    async with get_db(db_path) as db:
-        async with db.execute("SELECT code_hash FROM invite_codes") as cur:
-            row = await cur.fetchone()
+    async with get_db(db_path) as db, db.execute("SELECT code_hash FROM invite_codes") as cur:
+        row = await cur.fetchone()
     assert row["code_hash"] != raw
     assert row["code_hash"] == hash_token_for_storage(raw)

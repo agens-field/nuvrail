@@ -223,9 +223,8 @@ async def _count_recent_sends(
           AND agent_id IS ?
           AND timestamp >= ?
     """
-    async with get_db(db_path) as db:
-        async with db.execute(sql, (agent_id, since_ts)) as cur:
-            row = await cur.fetchone()
+    async with get_db(db_path) as db, db.execute(sql, (agent_id, since_ts)) as cur:
+        row = await cur.fetchone()
     return int(row[0]) if row and row[0] is not None else 0
 
 
@@ -255,9 +254,8 @@ async def _count_recent_sends_for_user(
           AND ac.user_id = ?
           AND a.timestamp >= ?
     """
-    async with get_db(db_path) as db:
-        async with db.execute(sql, (user_id, since_ts)) as cur:
-            row = await cur.fetchone()
+    async with get_db(db_path) as db, db.execute(sql, (user_id, since_ts)) as cur:
+        row = await cur.fetchone()
     return int(row[0]) if row and row[0] is not None else 0
 
 
@@ -271,11 +269,10 @@ async def _resolve_owner_user_id(
     """
     if agent_id is None:
         return None
-    async with get_db(db_path) as db:
-        async with db.execute(
-            "SELECT user_id FROM agent_credentials WHERE id = ?", (agent_id,)
-        ) as cur:
-            row = await cur.fetchone()
+    async with get_db(db_path) as db, db.execute(
+        "SELECT user_id FROM agent_credentials WHERE id = ?", (agent_id,)
+    ) as cur:
+        row = await cur.fetchone()
     return int(row[0]) if row and row[0] is not None else None
 
 

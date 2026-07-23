@@ -38,6 +38,7 @@ Operations NOT undoable in Phase 2:
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import time
@@ -77,11 +78,10 @@ async def undo_operation(operation_id: str, db_path: Path) -> dict[str, Any]:
     """
     now = int(time.time())
 
-    async with get_db(db_path) as db:
-        async with db.execute(
-            "SELECT * FROM staged_operations WHERE id = ?", (operation_id,)
-        ) as cur:
-            row = await cur.fetchone()
+    async with get_db(db_path) as db, db.execute(
+        "SELECT * FROM staged_operations WHERE id = ?", (operation_id,)
+    ) as cur:
+        row = await cur.fetchone()
 
     if row is None:
         raise UndoError(f"Operation {operation_id!r} not found.")
@@ -231,7 +231,5 @@ async def _execute_undo_imap(
             raise UndoError(f"No undo strategy defined for op_type {op_type!r}.")
 
     finally:
-        try:
+        with contextlib.suppress(Exception):
             await client.logout()
-        except Exception:
-            pass

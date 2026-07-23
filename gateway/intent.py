@@ -33,7 +33,6 @@ the op_type itself (mark_read, flag, copy, smtp_send, ...).
 from __future__ import annotations
 
 import re
-from typing import Optional, Tuple
 
 from gateway.operation_parser import ParsedOperation
 from gateway.provider_profiles import ProviderProfile
@@ -69,7 +68,7 @@ _SPECIAL_USE_TO_ROLE = {
 }
 
 
-def role_from_list_attributes(attributes: list[str]) -> Optional[str]:
+def role_from_list_attributes(attributes: list[str]) -> str | None:
     """Map LIST mailbox attributes to a folder role, or None.
 
     >>> role_from_list_attributes(["\\\\HasNoChildren", "\\\\Trash"])
@@ -84,10 +83,10 @@ def role_from_list_attributes(attributes: list[str]) -> Optional[str]:
 
 
 def classify_folder(
-    folder: Optional[str],
-    profile: Optional[ProviderProfile] = None,
-    special_use: Optional[dict] = None,
-) -> Tuple[Optional[str], float]:
+    folder: str | None,
+    profile: ProviderProfile | None = None,
+    special_use: dict | None = None,
+) -> tuple[str | None, float]:
     """Classify a folder into a role: inbox|archive|trash|junk|drafts|sent|None.
 
     Returns (role, confidence). Server-declared SPECIAL-USE roles and
@@ -144,7 +143,7 @@ _RE_FORWARD_PREFIX = re.compile(r"^\s*(fwd?|wg|vs)(\[\d+\])?\s*:", re.IGNORECASE
 _RE_ANY_PREFIX = re.compile(r"^\s*(re|sv|aw|antw|fwd?|wg|vs)(\[\d+\])?\s*:\s*", re.IGNORECASE)
 
 
-def extract_message_ids(header_value: Optional[str]) -> list[str]:
+def extract_message_ids(header_value: str | None) -> list[str]:
     """Extract msg-id tokens from an In-Reply-To / References header value.
 
     >>> extract_message_ids("<a@x> <b@y>")
@@ -155,7 +154,7 @@ def extract_message_ids(header_value: Optional[str]) -> list[str]:
     return _RE_MSGID.findall(header_value or "")
 
 
-def strip_subject_prefixes(subject: Optional[str]) -> str:
+def strip_subject_prefixes(subject: str | None) -> str:
     """Strip leading Re:/Fwd:-style prefixes (repeatedly) from a subject.
 
     >>> strip_subject_prefixes("Re: Fwd: Re: Invoice #1234")
@@ -170,11 +169,11 @@ def strip_subject_prefixes(subject: Optional[str]) -> str:
 
 
 def derive_send_intent(
-    subject: Optional[str],
-    in_reply_to: Optional[str],
-    references: Optional[str],
+    subject: str | None,
+    in_reply_to: str | None,
+    references: str | None,
     original_found: bool,
-) -> Tuple[Optional[str], Optional[float]]:
+) -> tuple[str | None, float | None]:
     """Derive (intent_label, confidence) for an outbound SMTP send.
 
     forward — Fwd:/FW: subject prefix. Checked first: a forwarded reply keeps
@@ -198,10 +197,10 @@ def derive_send_intent(
 
 def derive_intent(
     parsed_op: ParsedOperation,
-    profile: Optional[ProviderProfile] = None,
-    folder_from: Optional[str] = None,
-    special_use: Optional[dict] = None,
-) -> Tuple[Optional[str], Optional[float]]:
+    profile: ProviderProfile | None = None,
+    folder_from: str | None = None,
+    special_use: dict | None = None,
+) -> tuple[str | None, float | None]:
     """Derive (intent_label, intent_confidence) for a parsed operation.
 
     ``folder_from`` is the currently-selected mailbox (the parser doesn't know

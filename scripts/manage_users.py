@@ -26,12 +26,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from api.auth import (  # noqa: E402
+from api.auth import (
     generate_token,
     hash_password,
     hash_token_for_storage,
 )
-from gateway.state_db import DB_PATH, get_db, init_db  # noqa: E402
+from gateway.state_db import DB_PATH, get_db, init_db
 
 
 async def _create(email: str, password: str, display_name: str | None) -> None:
@@ -57,11 +57,10 @@ async def _create(email: str, password: str, display_name: str | None) -> None:
 
 async def _list() -> None:
     await init_db(DB_PATH)
-    async with get_db(DB_PATH) as db:
-        async with db.execute(
-            "SELECT id, email, display_name, created_at FROM users ORDER BY id"
-        ) as cur:
-            rows = await cur.fetchall()
+    async with get_db(DB_PATH) as db, db.execute(
+        "SELECT id, email, display_name, created_at FROM users ORDER BY id"
+    ) as cur:
+        rows = await cur.fetchall()
     if not rows:
         print("No users.")
         return

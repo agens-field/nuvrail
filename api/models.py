@@ -6,7 +6,6 @@ Sub-milestone: 1.0
 from __future__ import annotations
 
 import json
-from typing import List, Optional
 
 from pydantic import BaseModel, field_validator
 
@@ -14,9 +13,9 @@ from pydantic import BaseModel, field_validator
 class MessagePreview(BaseModel):
     """Sender and subject for a single message affected by an IMAP operation."""
     uid: int
-    sender: Optional[str] = None
-    subject: Optional[str] = None
-    date_sent: Optional[int] = None
+    sender: str | None = None
+    subject: str | None = None
+    date_sent: int | None = None
 
 
 class OperationResponse(BaseModel):
@@ -27,23 +26,23 @@ class OperationResponse(BaseModel):
     description: str
     created_at: int
     expires_at: int
-    decided_at: Optional[int] = None
-    scheduled_execute_at: Optional[int] = None  # cool-down deadline (approve_after)
-    imap_command: Optional[str] = None
-    smtp_envelope: Optional[dict] = None
-    message_ids: List[str] = []
-    folder_from: Optional[str] = None
-    folder_to: Optional[str] = None
-    flags_add: List[str] = []
-    flags_remove: List[str] = []
+    decided_at: int | None = None
+    scheduled_execute_at: int | None = None  # cool-down deadline (approve_after)
+    imap_command: str | None = None
+    smtp_envelope: dict | None = None
+    message_ids: list[str] = []
+    folder_from: str | None = None
+    folder_to: str | None = None
+    flags_add: list[str] = []
+    flags_remove: list[str] = []
     is_urgent: int = 0
-    error: Optional[str] = None
-    message_previews: List[MessagePreview] = []
-    batch_id: Optional[str] = None
+    error: str | None = None
+    message_previews: list[MessagePreview] = []
+    batch_id: str | None = None
     # Semantic intent derived at staging time (gateway.intent): 'archive',
     # 'delete', 'mark_spam', ... None = the op_type already says everything.
-    intent_label: Optional[str] = None
-    intent_confidence: Optional[float] = None
+    intent_label: str | None = None
+    intent_confidence: float | None = None
 
     @field_validator("smtp_envelope", mode="before")
     @classmethod
@@ -65,7 +64,7 @@ class OperationResponse(BaseModel):
 
 
 class OperationListResponse(BaseModel):
-    operations: List[OperationResponse]
+    operations: list[OperationResponse]
     total: int
     # batch_id → one-line human summary, for batches with 2+ operations in
     # this response (gateway.batch_summary). The UI shows it as the batch
@@ -76,8 +75,8 @@ class OperationListResponse(BaseModel):
 class ApproveResponse(BaseModel):
     id: str
     status: str
-    executed_at: Optional[int] = None
-    error: Optional[str] = None
+    executed_at: int | None = None
+    error: str | None = None
 
 
 class RejectResponse(BaseModel):
@@ -98,37 +97,37 @@ class UndoResponse(BaseModel):
 
 
 class BatchApproveRequest(BaseModel):
-    operation_ids: List[str]
+    operation_ids: list[str]
 
 
 class BatchRejectRequest(BaseModel):
-    operation_ids: List[str]
+    operation_ids: list[str]
 
 
 class BatchApproveResult(BaseModel):
     id: str
     status: str  # 'executed' | 'failed' | 'skipped'
-    executed_at: Optional[int] = None
-    error: Optional[str] = None  # set if status='failed'
+    executed_at: int | None = None
+    error: str | None = None  # set if status='failed'
 
 
 class BatchRejectResult(BaseModel):
     id: str
     status: str  # 'rejected' | 'failed' | 'skipped'
-    error: Optional[str] = None
+    error: str | None = None
 
 
 class BatchApproveResponse(BaseModel):
-    approved: List[BatchApproveResult]
-    failed: List[BatchApproveResult]
-    skipped: List[BatchApproveResult]  # not pending (already decided) or not found
+    approved: list[BatchApproveResult]
+    failed: list[BatchApproveResult]
+    skipped: list[BatchApproveResult]  # not pending (already decided) or not found
     total: int
 
 
 class BatchRejectResponse(BaseModel):
-    rejected: List[BatchRejectResult]
-    failed: List[BatchRejectResult]
-    skipped: List[BatchRejectResult]  # not pending (already decided) or not found
+    rejected: list[BatchRejectResult]
+    failed: list[BatchRejectResult]
+    skipped: list[BatchRejectResult]  # not pending (already decided) or not found
     total: int
 
 
@@ -142,25 +141,25 @@ class BatchRejectResponse(BaseModel):
 class AuditEntry(BaseModel):
     id: int
     timestamp: int
-    operation_id: Optional[str] = None
+    operation_id: str | None = None
     event: str
-    actor: Optional[str] = None
-    agent_id: Optional[str] = None
-    agent_label: Optional[str] = None
-    detail: Optional[dict] = None       # parsed JSON from audit_log.detail
+    actor: str | None = None
+    agent_id: str | None = None
+    agent_label: str | None = None
+    detail: dict | None = None       # parsed JSON from audit_log.detail
     # Joined from staged_operations (None if operation record no longer exists)
-    op_description: Optional[str] = None
-    op_type: Optional[str] = None
-    op_protocol: Optional[str] = None
-    op_status: Optional[str] = None
-    undo_expires_at: Optional[int] = None  # null if not executed or undo window unknown
+    op_description: str | None = None
+    op_type: str | None = None
+    op_protocol: str | None = None
+    op_status: str | None = None
+    undo_expires_at: int | None = None  # null if not executed or undo window unknown
     # Semantic intent (gateway.intent): denormalized on audit_log, falls back
     # to the joined operation row for entries written before the column existed.
-    intent_label: Optional[str] = None
+    intent_label: str | None = None
 
 
 class AuditListResponse(BaseModel):
-    entries: List[AuditEntry]
+    entries: list[AuditEntry]
     total: int
     limit: int
     offset: int
@@ -174,18 +173,18 @@ class AuditListResponse(BaseModel):
 class UserCreateRequest(BaseModel):
     email: str
     password: str
-    display_name: Optional[str] = None
+    display_name: str | None = None
     # Required only when the deployment runs NUVRAIL_SIGNUP_MODE=invite;
     # ignored in open mode and rejected (as unnecessary) is not enforced.
-    invite_code: Optional[str] = None
+    invite_code: str | None = None
 
 
 class UserResponse(BaseModel):
     user_id: int
     email: str
-    display_name: Optional[str] = None
+    display_name: str | None = None
     created_at: int
-    token: Optional[str] = None  # included on registration so client can auto-login
+    token: str | None = None  # included on registration so client can auto-login
 
 
 class LoginRequest(BaseModel):
@@ -195,25 +194,25 @@ class LoginRequest(BaseModel):
 
 class LoginResponse(BaseModel):
     token: str
-    token_type: str = "bearer"
+    token_type: str = "bearer"  # noqa: S105 — OAuth2 token_type field name, not a secret
     user_id: int
     email: str
 
 
 class AgentCreateRequest(BaseModel):
-    label: Optional[str] = "default"
+    label: str | None = "default"
     upstream_host: str
-    upstream_smtp_host: Optional[str] = None  # defaults to upstream_host if not set (e.g. smtp.gmail.com)
+    upstream_smtp_host: str | None = None  # defaults to upstream_host if not set (e.g. smtp.gmail.com)
     upstream_imap_port: int = 993
     upstream_smtp_port: int = 587
     upstream_user: str
     # Password auth (mutually exclusive with OAuth2 fields below)
-    upstream_password: Optional[str] = None
+    upstream_password: str | None = None
     # OAuth2 / XOAUTH2 fields (all required together if oauth2_provider is set)
-    oauth2_provider: Optional[str] = None          # "google" | "microsoft"
-    oauth2_client_id: Optional[str] = None
-    oauth2_client_secret: Optional[str] = None
-    oauth2_refresh_token: Optional[str] = None
+    oauth2_provider: str | None = None          # "google" | "microsoft"
+    oauth2_client_id: str | None = None
+    oauth2_client_secret: str | None = None
+    oauth2_refresh_token: str | None = None
 
 
 class AgentCreateResponse(BaseModel):
@@ -232,8 +231,8 @@ class AgentResponse(BaseModel):
     upstream_host: str
     upstream_user: str
     created_at: int
-    revoked_at: Optional[int] = None
-    last_activity_at: Optional[int] = None  # most recent staged op; None = never connected
+    revoked_at: int | None = None
+    last_activity_at: int | None = None  # most recent staged op; None = never connected
 
 
 # ---------------------------------------------------------------------------
@@ -307,14 +306,14 @@ class LogoutResponse(BaseModel):
 
 class TokenInfoResponse(BaseModel):
     """Response for GET /api/v1/account/token."""
-    created_at: Optional[int] = None
-    last_used_at: Optional[int] = None
+    created_at: int | None = None
+    last_used_at: int | None = None
 
 
 class TokenRotateResponse(BaseModel):
     """Response for POST /api/v1/account/token/rotate — same shape as LoginResponse."""
     token: str
-    token_type: str = "bearer"
+    token_type: str = "bearer"  # noqa: S105 — OAuth2 token_type field name, not a secret
     user_id: int
     email: str
 
@@ -326,7 +325,7 @@ class TokenRotateResponse(BaseModel):
 
 class ExportAccount(BaseModel):
     email: str
-    display_name: Optional[str] = None
+    display_name: str | None = None
     created_at: int
 
 
@@ -336,7 +335,7 @@ class ExportAgent(BaseModel):
     upstream_host: str
     upstream_user: str
     created_at: int
-    revoked_at: Optional[int] = None
+    revoked_at: int | None = None
 
 
 class ExportOperation(BaseModel):
@@ -347,24 +346,24 @@ class ExportOperation(BaseModel):
     op_type: str
     protocol: str
     description: str
-    agent_id: Optional[str] = None
-    decided_at: Optional[int] = None
-    executed_at: Optional[int] = None
-    error: Optional[str] = None
+    agent_id: str | None = None
+    decided_at: int | None = None
+    executed_at: int | None = None
+    error: str | None = None
 
 
 class ExportAuditEntry(BaseModel):
     id: int
     timestamp: int
-    operation_id: Optional[str] = None
+    operation_id: str | None = None
     event: str
-    actor: Optional[str] = None
-    agent_id: Optional[str] = None
-    op_type: Optional[str] = None
-    detail: Optional[dict] = None
+    actor: str | None = None
+    agent_id: str | None = None
+    op_type: str | None = None
+    detail: dict | None = None
     # Hash-chain fields so the exported audit trail is independently verifiable.
-    prev_hash: Optional[str] = None
-    entry_hash: Optional[str] = None
+    prev_hash: str | None = None
+    entry_hash: str | None = None
 
     @field_validator("detail", mode="before")
     @classmethod
@@ -372,7 +371,7 @@ class ExportAuditEntry(BaseModel):
         if isinstance(v, str):
             try:
                 return json.loads(v)
-            except Exception:  # noqa: BLE001
+            except Exception:
                 return None
         return v
 
@@ -386,10 +385,10 @@ class ExportMailboxMessage(BaseModel):
     """
     folder: str
     uid: int
-    subject: Optional[str] = None
-    sender: Optional[str] = None
-    date_sent: Optional[int] = None
-    flags: Optional[str] = None
+    subject: str | None = None
+    sender: str | None = None
+    date_sent: int | None = None
+    flags: str | None = None
 
 
 class ExportPushSubscription(BaseModel):
@@ -402,9 +401,9 @@ class ExportAutoApprovalRule(BaseModel):
     id: int
     enabled: bool
     priority: int
-    op_type: Optional[str] = None
-    sender_pattern: Optional[str] = None
-    folder_from: Optional[str] = None
+    op_type: str | None = None
+    sender_pattern: str | None = None
+    folder_from: str | None = None
     action: str
     description: str
     created_at: int
@@ -413,15 +412,15 @@ class ExportAutoApprovalRule(BaseModel):
 class DataExportResponse(BaseModel):
     exported_at: int
     account: ExportAccount
-    agents: List[ExportAgent]
-    operations: List[ExportOperation]
-    audit_log: List[ExportAuditEntry]
-    auto_approval_rules: List[ExportAutoApprovalRule]
-    mailbox_messages: List[ExportMailboxMessage] = []
-    push_subscriptions: List[ExportPushSubscription] = []
+    agents: list[ExportAgent]
+    operations: list[ExportOperation]
+    audit_log: list[ExportAuditEntry]
+    auto_approval_rules: list[ExportAutoApprovalRule]
+    mailbox_messages: list[ExportMailboxMessage] = []
+    push_subscriptions: list[ExportPushSubscription] = []
     # The audit-log chain head at export time, so the holder can later detect a
     # rewrite of the log up to this point.
-    audit_chain_head: Optional[str] = None
+    audit_chain_head: str | None = None
 
 
 # ---------------------------------------------------------------------------

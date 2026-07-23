@@ -23,6 +23,7 @@ Auth notes (post-auth milestone):
 """
 
 import asyncio
+import contextlib
 import os
 import re
 import tempfile
@@ -106,7 +107,7 @@ async def imap_integration_db(upstream_imap_config: dict) -> tuple[Path, str, st
 @pytest_asyncio.fixture(loop_scope="session")
 async def proxy_server(imap_integration_db: tuple):
     """Start the proxy on an ephemeral port; yield (host, port, agent_username, agent_token); tear down."""
-    db_path, agent_username, agent_token = imap_integration_db
+    _db_path, agent_username, agent_token = imap_integration_db
     server = await asyncio.start_server(handle_client, "127.0.0.1", 0)
     host, port = server.sockets[0].getsockname()
     task = asyncio.create_task(server.serve_forever())
@@ -114,10 +115,8 @@ async def proxy_server(imap_integration_db: tuple):
     server.close()
     await server.wait_closed()
     task.cancel()
-    try:
+    with contextlib.suppress(asyncio.CancelledError, Exception):
         await task
-    except (asyncio.CancelledError, Exception):
-        pass
 
 
 async def _connect(host: str, port: int) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
@@ -147,7 +146,7 @@ async def _read_until_ok_or_no(
         decoded = line.decode("utf-8", errors="replace").rstrip("\r\n")
         lines.append(decoded)
         upper = decoded.upper()
-        if upper.startswith(tag.upper() + " OK") or upper.startswith(tag.upper() + " NO") or upper.startswith(tag.upper() + " BAD"):
+        if upper.startswith((tag.upper() + " OK", tag.upper() + " NO", tag.upper() + " BAD")):
             break
     return lines
 
@@ -202,10 +201,8 @@ async def test_login_valid_credentials(
         assert "A001 OK" in last, f"Expected OK after LOGIN, got: {lines!r}"
     finally:
         writer.write(b"a099 LOGOUT\r\n")
-        try:
+        with contextlib.suppress(OSError):
             await writer.drain()
-        except OSError:
-            pass
         await _close(writer)
 
 
@@ -252,10 +249,8 @@ async def test_select_inbox_after_login(
         assert "A004 OK" in last, f"Expected OK after SELECT INBOX, got: {lines!r}"
     finally:
         writer.write(b"a099 LOGOUT\r\n")
-        try:
+        with contextlib.suppress(OSError):
             await writer.drain()
-        except OSError:
-            pass
         await _close(writer)
 
 
@@ -330,10 +325,8 @@ async def test_non_uid_store_rejected(
         )
     finally:
         writer.write(b"b099 LOGOUT\r\n")
-        try:
+        with contextlib.suppress(OSError):
             await writer.drain()
-        except OSError:
-            pass
         await _close(writer)
 
 

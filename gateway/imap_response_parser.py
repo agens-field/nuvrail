@@ -36,7 +36,6 @@ import email.header
 import logging
 import re
 from dataclasses import dataclass, field
-from typing import Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -47,11 +46,11 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class SelectInfo:
-    exists: Optional[int] = None
-    recent: Optional[int] = None
-    uidvalidity: Optional[int] = None
-    uidnext: Optional[int] = None
-    unseen: Optional[int] = None
+    exists: int | None = None
+    recent: int | None = None
+    uidvalidity: int | None = None
+    uidnext: int | None = None
+    unseen: int | None = None
 
 
 @dataclass
@@ -71,13 +70,13 @@ class ListedFolder:
 @dataclass
 class FetchInfo:
     seq_num: int
-    uid: Optional[int] = None
+    uid: int | None = None
     flags: list[str] = field(default_factory=list)
-    subject: Optional[str] = None
-    sender: Optional[str] = None  # "Display Name <email>" or just "email"
-    date_str: Optional[str] = None
-    size: Optional[int] = None
-    message_id: Optional[str] = None
+    subject: str | None = None
+    sender: str | None = None  # "Display Name <email>" or just "email"
+    date_str: str | None = None
+    size: int | None = None
+    message_id: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -206,7 +205,7 @@ def parse_list_response(lines: list[str]) -> list[str]:
     return [f.name for f in parse_list_folders(lines)]
 
 
-def parse_fetch_line(line: str) -> Optional[FetchInfo]:
+def parse_fetch_line(line: str) -> FetchInfo | None:
     """Parse a single untagged FETCH response line.
 
     Returns None if the line isn't a FETCH response or cannot be parsed.
@@ -268,7 +267,7 @@ def parse_fetch_line(line: str) -> Optional[FetchInfo]:
             msgid_matches = _RE_ENV_MSGID.findall(payload)
             if msgid_matches:
                 info.message_id = msgid_matches[-1]
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.debug("parse_fetch_line: ENVELOPE parsing failed: %s", exc)
 
     return info
@@ -296,13 +295,13 @@ def _decode_header(raw: str) -> str:
             else:
                 decoded.append(part)
         return "".join(decoded).strip()
-    except Exception:  # noqa: BLE001
+    except Exception:
         return raw.strip()
 
 
 def extract_headers_from_rfc822(
     data: bytes,
-) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+) -> tuple[str | None, str | None, str | None]:
     """Extract (sender, subject, message_id) from the start of a raw RFC822 message.
 
     Parses only the header block (everything before the first blank line).
@@ -334,6 +333,6 @@ def extract_headers_from_rfc822(
         message_id = raw_message_id.strip() if raw_message_id else None
 
         return sender or None, subject or None, message_id or None
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.debug("extract_headers_from_rfc822: failed: %s", exc)
         return None, None, None

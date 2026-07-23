@@ -26,8 +26,8 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import time
 import tempfile
+import time
 from pathlib import Path
 
 import pytest
@@ -74,9 +74,7 @@ async def _read_until_tagged(
         lines.append(decoded)
         upper = decoded.upper()
         if (
-            upper.startswith(tag.upper() + " OK")
-            or upper.startswith(tag.upper() + " NO")
-            or upper.startswith(tag.upper() + " BAD")
+            upper.startswith((tag.upper() + " OK", tag.upper() + " NO", tag.upper() + " BAD"))
         ):
             break
     return lines
@@ -277,7 +275,7 @@ async def test_imap_bad_credentials(
             decoded = line.decode("utf-8", errors="replace").rstrip("\r\n")
             lines.append(decoded)
             upper = decoded.upper()
-            if upper.startswith("A1 NO") or upper.startswith("A1 BAD"):
+            if upper.startswith(("A1 NO", "A1 BAD")):
                 break
         response = " ".join(lines)
 
@@ -308,12 +306,12 @@ async def test_imap_upstream_unreachable(
         for _ in range(5):
             try:
                 line = await asyncio.wait_for(reader.readline(), timeout=_TIMEOUT)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 break
             decoded = line.decode("utf-8", errors="replace").rstrip("\r\n")
             lines.append(decoded)
             upper = decoded.upper()
-            if upper.startswith("A1 NO") or upper.startswith("A1 BAD"):
+            if upper.startswith(("A1 NO", "A1 BAD")):
                 break
         response = " ".join(lines)
 

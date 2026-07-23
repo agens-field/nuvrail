@@ -14,7 +14,7 @@ policy, not a property of the open product. Core only exposes the seam
 """
 from __future__ import annotations
 
-from typing import Protocol, runtime_checkable
+from typing import ClassVar, Protocol, runtime_checkable
 
 # Canonical feature keys reported by GET /api/v1/features and checked by gates.
 KNOWN_FEATURES = ("auto_approval_rules", "multi_agent")
@@ -41,7 +41,8 @@ class OpenCoreEntitlements:
     """
 
     # Features whose implementation ships in the open-core build.
-    _OPEN_CORE_FEATURES = {
+    # ClassVar: shared, read-only lookup table — never mutated per-instance (RUF012).
+    _OPEN_CORE_FEATURES: ClassVar[dict[str, bool]] = {
         "multi_agent": True,
         "auto_approval_rules": False,  # provided by the enterprise plugin
     }

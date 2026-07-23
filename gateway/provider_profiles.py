@@ -26,7 +26,6 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -69,11 +68,11 @@ class ProviderProfile:
     """
 
     name: str
-    archive_folder: Optional[str] = None
-    trash_folder: Optional[str] = None
-    junk_folder: Optional[str] = None
+    archive_folder: str | None = None
+    trash_folder: str | None = None
+    junk_folder: str | None = None
     sent_suppress_folders: list[str] = field(default_factory=list)
-    sent_folder: Optional[str] = None
+    sent_folder: str | None = None
     move_capable: bool = True
 
 
@@ -211,7 +210,7 @@ def should_suppress_append(folder: str, profile: ProviderProfile) -> bool:
 def copy_archive_intent(
     copy_destination: str,
     profile: ProviderProfile,
-) -> Optional[str]:
+) -> str | None:
     """Return the normalized MOVE destination if this COPY represents archive/delete/spam intent.
 
     For Gmail, COPY-to-All-Mail (archive), COPY-to-Trash (delete) and

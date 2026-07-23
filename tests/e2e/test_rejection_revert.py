@@ -21,8 +21,8 @@ Standard IMAP sync — no IMAP extensions required.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
-from typing import Optional
 
 import pytest
 
@@ -31,7 +31,6 @@ from tests.e2e.helpers import (
     send_direct_smtp,
     wait_for_message,
 )
-
 
 _TIMEOUT = 20.0
 
@@ -67,9 +66,7 @@ async def _read_until_tagged(
         lines.append(decoded)
         upper = decoded.upper()
         if (
-            upper.startswith(tag.upper() + " OK")
-            or upper.startswith(tag.upper() + " NO")
-            or upper.startswith(tag.upper() + " BAD")
+            upper.startswith((tag.upper() + " OK", tag.upper() + " NO", tag.upper() + " BAD"))
         ):
             break
     return lines
@@ -109,9 +106,9 @@ async def test_rejection_injects_unsolicited_fetch_on_noop(
     user = e2e_setup["proxy_agent_auth"]["imap"]["username"]
     password = e2e_setup["proxy_agent_auth"]["imap"]["token"]
 
-    uid: Optional[int] = None
-    reader: Optional[asyncio.StreamReader] = None
-    writer: Optional[asyncio.StreamWriter] = None
+    uid: int | None = None
+    reader: asyncio.StreamReader | None = None
+    writer: asyncio.StreamWriter | None = None
 
     try:
         # Step 1: Send a message directly (bypass proxy) and wait for it to arrive
@@ -189,10 +186,8 @@ async def test_rejection_injects_unsolicited_fetch_on_noop(
         if writer:
             await _close(writer)
         if uid is not None:
-            try:
+            with contextlib.suppress(Exception):
                 await delete_message_by_uid(upstream_imap_cfg, uid)
-            except Exception:
-                pass
 
 
 @pytest.mark.asyncio(loop_scope="session")
@@ -214,9 +209,9 @@ async def test_rejection_revert_does_not_fire_for_write_commands(
     user = e2e_setup["proxy_agent_auth"]["imap"]["username"]
     password = e2e_setup["proxy_agent_auth"]["imap"]["token"]
 
-    uid: Optional[int] = None
-    reader: Optional[asyncio.StreamReader] = None
-    writer: Optional[asyncio.StreamWriter] = None
+    uid: int | None = None
+    reader: asyncio.StreamReader | None = None
+    writer: asyncio.StreamWriter | None = None
 
     try:
         await send_direct_smtp(upstream_smtp_cfg, subject)
@@ -273,7 +268,5 @@ async def test_rejection_revert_does_not_fire_for_write_commands(
         if writer:
             await _close(writer)
         if uid is not None:
-            try:
+            with contextlib.suppress(Exception):
                 await delete_message_by_uid(upstream_imap_cfg, uid)
-            except Exception:
-                pass

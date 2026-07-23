@@ -76,7 +76,7 @@ def record_heartbeat(
         hb.runs += 1
         if ok:
             hb.last_success_at = ts
-    except Exception:  # noqa: BLE001 — telemetry must never break the caller
+    except Exception:
         logger.debug("[loop-health] failed to record heartbeat for %r", name, exc_info=True)
 
 
