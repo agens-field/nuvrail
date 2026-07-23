@@ -36,6 +36,7 @@ import time
 
 import pytest
 
+from gateway.send_rate_limiter import _count_recent_sends
 from tests.e2e.helpers import delete_message_by_uid, wait_for_message
 from tests.e2e.test_send_and_verify import _smtp_send_via_proxy
 
@@ -60,8 +61,21 @@ async def test_send_rate_limit_refuses_over_cap(
     4. Assert a 'send_rate_exceeded' audit row exists for the agent.
     5. Cleanup: delete the CAP messages that actually landed upstream.
     """
-    monkeypatch.setenv("NUVRAIL_SEND_MAX_PER_WINDOW", str(_CAP))
-    monkeypatch.setenv("NUVRAIL_SEND_WINDOW_SECONDS", "3600")
+    # The limiter counts sends from the audit log over a rolling window, so on a
+    # session-scoped shared agent this test's baseline is NOT zero — earlier
+    # send tests already relayed on the same agent. Anchor the cap to the
+    # agent's CURRENT window usage so the boundary proof (relay up to cap,
+    # refuse cap+1) holds regardless of test ordering. We use the limiter's own
+    # counter as the single source of truth so the cap math can't drift from
+    # what the limiter will actually enforce.
+    window_seconds = 3600
+    monkeypatch.setenv("NUVRAIL_SEND_WINDOW_SECONDS", str(window_seconds))
+    since_ts = int(time.time()) - window_seconds
+    already_sent = await _count_recent_sends(
+        e2e_setup["agent_id"], since_ts=since_ts, db_path=e2e_setup["db_path"]
+    )
+    cap = already_sent + _CAP
+    monkeypatch.setenv("NUVRAIL_SEND_MAX_PER_WINDOW", str(cap))
 
     api_client = e2e_setup["api_client"]
     smtp_host = e2e_setup["smtp_host"]

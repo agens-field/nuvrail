@@ -143,8 +143,13 @@ async def _imap_proxy_login_and_select(
     return reader, writer, 3  # next tag counter
 
 
-async def _uid_in_folder(imap_config: dict, folder: str, uid: int) -> bool:
-    """Return True if *uid* is present in *folder* on the upstream server."""
+async def _find_uid_by_subject(imap_config: dict, folder: str, subject: str) -> int | None:
+    """Return the UID of the message with *subject* in *folder*, else None.
+
+    Subject is stable across a MOVE; the message's UID is NOT (UIDs are
+    per-folder), so subject is the correct cross-folder identity for both
+    verification and cleanup.
+    """
     client = aioimaplib.IMAP4_SSL(
         host=imap_config["host"],
         port=imap_config["port"],
@@ -153,13 +158,17 @@ async def _uid_in_folder(imap_config: dict, folder: str, uid: int) -> bool:
         await client.wait_hello_from_server()
         await client.login(imap_config["user"], imap_config["password"])
         await client.select(folder)
-        status, data = await client.uid_search("ALL")
+        # The subject must be a single IMAP quoted-string; passed unquoted, a
+        # multi-word subject is tokenised into separate SEARCH keys and the
+        # server rejects it (BAD: Unknown argument ...).
+        status, data = await client.uid_search("HEADER", "SUBJECT", f'"{subject}"')
         if status != "OK":
-            return False
-        uids_str = data[0].decode().strip() if data[0] else ""
-        return str(uid) in uids_str.split()
+            return None
+        uids_str = data[0].decode().strip() if data and data[0] else ""
+        uids = uids_str.split()
+        return int(uids[-1]) if uids else None
     except Exception:
-        return False
+        return None
     finally:
         with contextlib.suppress(Exception):
             await client.logout()
@@ -287,19 +296,23 @@ async def test_imap_move_staged_then_approved(
         assert approve_resp.json()["status"] == "executed"
 
         # ── Step 5: Verify message is in Trash (not INBOX) ────────────────
-        # Brief poll — MOVE propagation on upstream may take a moment
+        # Verify by SUBJECT, not by the INBOX uid: IMAP UIDs are per-folder, so
+        # after a MOVE the message gets a NEW uid in Trash unrelated to its old
+        # INBOX uid. Searching Trash for the old uid can never match even when
+        # the MOVE succeeded. We resolve the destination uid by subject (also
+        # needed for cleanup).
+        # Brief poll — MOVE propagation on upstream may take a moment.
         deadline = time.monotonic() + 10.0
-        in_trash = False
+        trash_uid = None
         while time.monotonic() < deadline:
-            in_trash = await _uid_in_folder(upstream_imap_cfg, "Trash", uid)
-            if in_trash:
+            trash_uid = await _find_uid_by_subject(upstream_imap_cfg, "Trash", subject)
+            if trash_uid is not None:
                 break
             await asyncio.sleep(1.0)
 
-        assert in_trash, (
-            f"Message uid={uid} did not appear in Trash within 10s after approval"
+        assert trash_uid is not None, (
+            f"Message {subject!r} did not appear in Trash within 10s after approval"
         )
-        trash_uid = uid
 
     finally:
         # ── Cleanup ───────────────────────────────────────────────────────

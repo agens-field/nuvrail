@@ -6,9 +6,11 @@ Sub-milestone: 1.1
 
 from gateway.operation_parser import (
     build_rich_description,
+    parse_append,
     parse_copy,
     parse_move,
     parse_store,
+    unquote_mailbox,
 )
 
 # ---------------------------------------------------------------------------
@@ -345,3 +347,63 @@ class TestBuildRichDescriptionWithIntent:
         assert build_rich_description(op, meta, None) == (
             'Move: "Invoice #1234" from billing@acme.com to Archive'
         )
+
+
+# ---------------------------------------------------------------------------
+# unquote_mailbox — strip IMAP quoted-string syntax so folder_to/_from hold the
+# LOGICAL mailbox name (execution re-quotes via aioimaplib; storing the quoted
+# form double-quotes and Dovecot answers [TRYCREATE] Mailbox doesn't exist).
+# ---------------------------------------------------------------------------
+
+
+class TestUnquoteMailbox:
+    def test_bare_name_unchanged(self):
+        assert unquote_mailbox("Drafts") == "Drafts"
+
+    def test_surrounding_quotes_stripped(self):
+        assert unquote_mailbox('"Drafts"') == "Drafts"
+
+    def test_name_with_spaces(self):
+        assert unquote_mailbox('"[Gmail]/All Mail"') == "[Gmail]/All Mail"
+
+    def test_inner_escaped_quote_unescaped(self):
+        # IMAP quoted-string: \" is a literal double-quote inside the name.
+        assert unquote_mailbox('"weird\\"name"') == 'weird"name'
+
+    def test_inner_escaped_backslash_unescaped(self):
+        assert unquote_mailbox('"a\\\\b"') == "a\\b"
+
+    def test_empty_quoted_string(self):
+        assert unquote_mailbox('""') == ""
+
+    def test_lone_quote_not_a_pair(self):
+        # A single leading quote is not a surrounding pair — left as-is.
+        assert unquote_mailbox('"Drafts') == '"Drafts'
+
+    def test_unbalanced_trailing_quote(self):
+        assert unquote_mailbox('Drafts"') == 'Drafts"'
+
+
+class TestParsersStoreLogicalMailboxName:
+    """Regression: parsers must store the UNQUOTED mailbox name so execution's
+    single quoting step is correct (double-quoting caused [TRYCREATE])."""
+
+    def test_append_strips_quotes(self):
+        op = parse_append("A2", '"Drafts"', ["\\Draft"], 123)
+        assert op.folder_to == "Drafts"
+
+    def test_append_bare_unchanged(self):
+        op = parse_append("A2", "Drafts", ["\\Draft"], 123)
+        assert op.folder_to == "Drafts"
+
+    def test_move_strips_quotes(self):
+        op = parse_move("A1", "5", '"Trash"')
+        assert op.folder_to == "Trash"
+
+    def test_move_bare_unchanged(self):
+        op = parse_move("A1", "5", "Trash")
+        assert op.folder_to == "Trash"
+
+    def test_copy_strips_quotes(self):
+        op = parse_copy("A1", "5", '"Archive"')
+        assert op.folder_to == "Archive"
