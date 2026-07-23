@@ -135,7 +135,19 @@ def _restore_staging_db(originals: dict) -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest_asyncio.fixture(loop_scope="session", scope="function")
+# Session scope (not function/module): register/login/agent-create run ONCE for
+# the entire test session, not per test and not per module. This matters
+# against a real gated deployment:
+#  - staging rate-limits login (10/min) and agent-create (5/min) per client IP;
+#    the CI runner is a single IP, and there are 6 e2e modules, so per-module
+#    (let alone per-test) setup would trip 429s. Session scope = exactly 1
+#    register + 1 login + 1 agent-create for the whole run.
+#  - the free plan allows only 1 active agent, so we also create exactly ONE
+#    agent (below), not one per protocol.
+# All e2e tests share the one user + one agent + one proxy/DB. They don't
+# depend on that state being fresh: each test filters ops by its own op_id and
+# cleans up its own messages, so cross-test isolation holds without re-setup.
+@pytest_asyncio.fixture(loop_scope="session", scope="session")
 async def e2e_setup(tmp_path_factory: pytest.TempPathFactory) -> dict:
     """Start IMAP proxy, SMTP proxy, and FastAPI app sharing a single tmp DB.
 
@@ -236,30 +248,17 @@ async def e2e_setup(tmp_path_factory: pytest.TempPathFactory) -> dict:
     bearer_token = login_resp.json()["token"]
     auth_headers = {"Authorization": f"Bearer {bearer_token}"}
 
-    # 9. Create per-protocol agent credentials for proxy authentication.
-    #    Proxy LOGIN/AUTH expects agent_username + agent_token, not upstream creds.
-    smtp_agent_resp = await api_client.post(
+    # 9. Create ONE agent credential for proxy authentication.
+    #    Proxy LOGIN/AUTH expects agent_username + agent_token, not upstream
+    #    creds. A single agent carries BOTH the IMAP and SMTP upstream ports,
+    #    so one credential serves both protocols — which is also what the free
+    #    plan's 1-agent quota requires. IMAP and SMTP here point at the same
+    #    upstream mailbox (NUVRAIL_TEST_IMAP_* / _SMTP_* resolve to one box).
+    agent_resp = await api_client.post(
         "/api/v1/agents",
         headers=auth_headers,
         json={
-            "label": "e2e-smtp-agent",
-            "upstream_host": os.environ["NUVRAIL_TEST_SMTP_HOST"],
-            "upstream_imap_port": int(os.environ.get("NUVRAIL_TEST_IMAP_PORT", "993")),
-            "upstream_smtp_port": int(os.environ.get("NUVRAIL_TEST_SMTP_PORT", "587")),
-            "upstream_user": os.environ["NUVRAIL_TEST_SMTP_USER"],
-            "upstream_password": os.environ["NUVRAIL_TEST_SMTP_PASS"],
-        },
-    )
-    assert smtp_agent_resp.status_code == 201, (
-        "e2e_setup: failed to create SMTP agent credential: "
-        f"{smtp_agent_resp.status_code} {smtp_agent_resp.text}"
-    )
-
-    imap_agent_resp = await api_client.post(
-        "/api/v1/agents",
-        headers=auth_headers,
-        json={
-            "label": "e2e-imap-agent",
+            "label": "e2e-agent",
             "upstream_host": os.environ["NUVRAIL_TEST_IMAP_HOST"],
             "upstream_imap_port": int(os.environ.get("NUVRAIL_TEST_IMAP_PORT", "993")),
             "upstream_smtp_port": int(os.environ.get("NUVRAIL_TEST_SMTP_PORT", "587")),
@@ -267,20 +266,18 @@ async def e2e_setup(tmp_path_factory: pytest.TempPathFactory) -> dict:
             "upstream_password": os.environ["NUVRAIL_TEST_IMAP_PASS"],
         },
     )
-    assert imap_agent_resp.status_code == 201, (
-        "e2e_setup: failed to create IMAP agent credential: "
-        f"{imap_agent_resp.status_code} {imap_agent_resp.text}"
+    assert agent_resp.status_code == 201, (
+        "e2e_setup: failed to create agent credential: "
+        f"{agent_resp.status_code} {agent_resp.text}"
     )
-    proxy_agent_auth = {
-        "smtp": {
-            "username": smtp_agent_resp.json()["agent_username"],
-            "token": smtp_agent_resp.json()["agent_token"],
-        },
-        "imap": {
-            "username": imap_agent_resp.json()["agent_username"],
-            "token": imap_agent_resp.json()["agent_token"],
-        },
+    # Both protocols use the same single agent's creds. Kept under "smtp"/"imap"
+    # keys so existing tests (which read proxy_agent_auth["smtp"]/["imap"])
+    # continue to work unchanged.
+    _agent = {
+        "username": agent_resp.json()["agent_username"],
+        "token": agent_resp.json()["agent_token"],
     }
+    proxy_agent_auth = {"smtp": _agent, "imap": _agent}
 
     yield {
         "imap_host": imap_host,
