@@ -45,12 +45,26 @@ async def test_routes_to_registered_provider():
     assert seen["op"] == {"op_type": "trash"}
 
 
-async def test_load_plugins_no_builtin_provider_in_open_core():
+async def test_load_plugins_no_builtin_provider_in_open_core(monkeypatch):
     """Open core ships no auto-decision provider: load_plugins registers none.
 
     The rules engine is an enterprise plugin; with no plugin installed, the
     provider stays unset and staging follows the manual-approval path.
+
+    This test asserts the *seam contract* — "no `nuvrail.plugins` entry point
+    => no provider registered" — so it must control its own precondition. It
+    stubs entry-point discovery to an empty group rather than relying on the
+    ambient venv having no plugin installed. Otherwise it fails whenever
+    nuvrail-enterprise is co-installed (common in cross-repo dev) even though
+    the open-core behaviour is correct. See issue #137.
     """
+    # Force discovery to see zero plugins regardless of what's pip-installed.
+    monkeypatch.setattr(
+        ext.importlib.metadata,
+        "entry_points",
+        lambda *a, **k: [],
+    )
+
     ext.reset_auto_decision_provider()
     ext.load_plugins(app=None)
     assert ext._auto_decision_provider is None
