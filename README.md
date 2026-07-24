@@ -617,9 +617,11 @@ Nuvrail supports Gmail (OAuth2), Outlook / Office 365 (OAuth2), iCloud + standar
 
 ### Gmail via OAuth2 (recommended)
 
-1. Go to `https://nuvrail.example.com` → **Agents** → **Connect Gmail**
-2. Complete the Google OAuth2 consent flow
-3. Copy the one-time agent token that appears on success — you won't see it again
+1. One-time server setup: register a Google Cloud OAuth2 client and set `GOOGLE_CLIENT_ID`
+   / `GOOGLE_CLIENT_SECRET` — see **[docs/providers/gmail.md](docs/providers/gmail.md)**.
+2. Go to `https://nuvrail.example.com` → **Agents** → **Connect Gmail**
+3. Complete the Google OAuth2 consent flow
+4. Copy the one-time agent token that appears on success — you won't see it again
 
 ### Outlook / Office 365 via OAuth2 (recommended)
 
@@ -633,6 +635,16 @@ Microsoft deprecated IMAP/SMTP basic auth for Exchange Online in 2023, so OAuth2
 4. Copy the one-time agent token that appears on success — you won't see it again
 
 ### Standard IMAP/SMTP
+
+The easiest way is the web interface — no API calls needed:
+
+1. Go to `https://nuvrail.example.com` → **Agents** → **+ Add agent** → **Connect via IMAP**
+2. Enter your IMAP/SMTP server details (host, ports, username, password). Any
+   standard IMAP/SMTP provider works.
+3. Copy the one-time agent token that appears on success — you won't see it again
+
+<details>
+<summary>Prefer the API? Same thing via <code>curl</code>:</summary>
 
 ```bash
 curl -s -X POST https://nuvrail.example.com/api/v1/agents \
@@ -649,6 +661,8 @@ curl -s -X POST https://nuvrail.example.com/api/v1/agents \
   }' | python3 -m json.tool
 # Returns agent_username + agent_token (one-time — copy it now)
 ```
+
+</details>
 
 ---
 
