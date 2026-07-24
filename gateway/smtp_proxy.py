@@ -71,7 +71,11 @@ from gateway.extensions import load_plugins
 from gateway.intent import derive_send_intent, extract_message_ids, strip_subject_prefixes
 from gateway.security_controls import build_auth_abuse_protector
 from gateway.staging import create_operation
-from gateway.state_db import find_message_by_message_id, get_db
+from gateway.state_db import (
+    find_message_by_message_id,
+    get_db,
+    warn_if_loopback_bind_in_container,
+)
 from logging_config import redact_protocol_line
 
 load_dotenv()
@@ -896,6 +900,7 @@ async def main() -> None:
     load_plugins()
 
     host = os.environ.get("NUVRAIL_PROXY_HOST", "127.0.0.1")
+    warn_if_loopback_bind_in_container(host)
     port = int(os.environ.get("NUVRAIL_PROXY_SMTP_PORT", "10587"))
 
     server = await start_smtp_proxy(host, port)

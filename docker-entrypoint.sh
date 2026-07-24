@@ -10,6 +10,11 @@
 
 set -e
 
+# Signal to the app that it is running inside a container, so the proxies can
+# warn if NUVRAIL_PROXY_HOST is bound to loopback (unreachable under Docker's
+# published-port forwarding — see gateway.state_db.warn_if_loopback_bind_in_container).
+export NUVRAIL_IN_CONTAINER=1
+
 # Validate required env vars before starting anything
 if [ -z "$NUVRAIL_MASTER_KEY" ]; then
     echo "[entrypoint] WARNING: NUVRAIL_MASTER_KEY is not set."

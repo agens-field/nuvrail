@@ -321,6 +321,22 @@ server {
     add_header X-Content-Type-Options nosniff;
     add_header X-Frame-Options DENY;
     add_header Referrer-Policy no-referrer;
+
+    # REST API + health probe → API backend on :8080.
+    # These MUST precede the `location /` SPA catch-all, or nginx routes
+    # them to the web app and you get index.html instead of JSON.
+    location /api/ {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+    location = /health {
+        proxy_pass http://127.0.0.1:8080/health;
+    }
+
     location / {
         proxy_pass http://127.0.0.1:3000;
         proxy_http_version 1.1;
@@ -376,8 +392,8 @@ docker compose logs gateway --tail=30
 curl -s -o /dev/null -w "%{http_code}" https://nuvrail.example.com/
 # → 200
 
-# API health
-curl -s https://nuvrail.example.com/api/v1/health | python3 -m json.tool
+# API health (route is unprefixed /health, not /api/v1/health)
+curl -s https://nuvrail.example.com/health | python3 -m json.tool
 # → {"status": "ok", ...}
 
 # IMAP proxy (should see: * OK Nuvrail IMAP proxy ready)
