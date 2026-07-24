@@ -6,6 +6,7 @@ Uses tmp_path-isolated SQLite DB — never touches ~/.nuvrail.
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 
 import pytest
@@ -24,6 +25,7 @@ from gateway.state_db import (
     update_folder_stats,
     upsert_folders_from_list,
     upsert_message,
+    warn_if_loopback_bind_in_container,
 )
 
 
@@ -1131,3 +1133,51 @@ async def test_pending_flag_changes_scoped_per_agent(db_path: Path) -> None:
     )
     assert "\\Flagged" in a_add
     assert b_add == []
+
+
+# ---------------------------------------------------------------------------
+# warn_if_loopback_bind_in_container — the self-host footgun guard.
+#
+#   host in {127.0.0.1, ::1, localhost}   ┐
+#                     AND                  ├─► WARN (loud, non-fatal)
+#   running in a container                ┘
+#
+#   any other combination                 ──► silent (legitimate bind)
+# ---------------------------------------------------------------------------
+def _force_container(monkeypatch, *, inside: bool) -> None:
+    """Pin container detection deterministically (env signal + /.dockerenv)."""
+    if inside:
+        monkeypatch.setenv("NUVRAIL_IN_CONTAINER", "1")
+    else:
+        monkeypatch.delenv("NUVRAIL_IN_CONTAINER", raising=False)
+        # Also neutralise the /.dockerenv marker so a CI container can't leak in.
+        monkeypatch.setattr(
+            "gateway.state_db.Path.exists", lambda self: False, raising=False
+        )
+
+
+@pytest.mark.parametrize("host", ["127.0.0.1", "::1", "localhost"])
+def test_loopback_bind_in_container_warns(monkeypatch, caplog, host) -> None:
+    _force_container(monkeypatch, inside=True)
+    with caplog.at_level(logging.WARNING, logger="gateway.state_db"):
+        warn_if_loopback_bind_in_container(host)
+    assert any("loopback" in r.message.lower() for r in caplog.records), (
+        "expected a loud warning when binding loopback inside a container"
+    )
+
+
+def test_bind_all_interfaces_in_container_is_silent(monkeypatch, caplog) -> None:
+    _force_container(monkeypatch, inside=True)
+    with caplog.at_level(logging.WARNING, logger="gateway.state_db"):
+        warn_if_loopback_bind_in_container("0.0.0.0")  # noqa: S104 — asserting the correct bind value, not binding
+    assert caplog.records == [], "0.0.0.0 is correct under Docker; must not warn"
+
+
+@pytest.mark.parametrize(
+    "host", ["127.0.0.1", "0.0.0.0", "localhost"]  # noqa: S104 — test data, not a bind
+)
+def test_no_warning_outside_container(monkeypatch, caplog, host) -> None:
+    _force_container(monkeypatch, inside=False)
+    with caplog.at_level(logging.WARNING, logger="gateway.state_db"):
+        warn_if_loopback_bind_in_container(host)
+    assert caplog.records == [], "loopback bind is legitimate outside a container"

@@ -33,6 +33,7 @@ Sub-milestone: 0.4 (mailbox mirror tables)
 Sub-milestone: 1.0 (staged_operations + audit_log tables)
 """
 import json
+import logging
 import os
 import time
 from collections.abc import AsyncGenerator
@@ -49,6 +50,47 @@ DB_PATH = Path(_DATA_DIR).expanduser() / "nuvrail.db"
 # REST API, and two background loops as SEPARATE processes sharing this one
 # SQLite file, so concurrent writers are normal — they must wait, not error.
 _SQLITE_BUSY_TIMEOUT_MS = int(os.environ.get("NUVRAIL_SQLITE_BUSY_TIMEOUT_MS", "5000"))
+
+_logger = logging.getLogger(__name__)
+
+_LOOPBACK_HOSTS = {"127.0.0.1", "::1", "localhost"}
+
+
+def _running_in_container() -> bool:
+    """Best-effort container detection.
+
+    The docker-entrypoint sets ``NUVRAIL_IN_CONTAINER=1``; ``/.dockerenv`` is a
+    Docker-created marker file. Either signal is sufficient.
+    """
+    if os.environ.get("NUVRAIL_IN_CONTAINER"):
+        return True
+    return Path("/.dockerenv").exists()
+
+
+def warn_if_loopback_bind_in_container(host: str) -> None:
+    """Loud-but-non-fatal guard for a common self-host footgun.
+
+    Under the documented Docker Compose deploy, Compose publishes the proxy
+    ports to the *host* loopback (``127.0.0.1:10143`` etc.) and forwards them
+    to the container's ``0.0.0.0``. If the proxy inside the container is bound
+    to ``127.0.0.1`` instead, the forwarded traffic lands on an address
+    nothing is listening on: the TCP handshake completes at the docker-proxy
+    layer (so TLS/openssl appears to connect) but the application never sees
+    the connection and never sends its IMAP/SMTP greeting. The symptom is a
+    silent proxy that is maddening to debug.
+
+    We warn rather than crash: binding to loopback is legitimate for a
+    non-containerised run, so this is a footgun signal, not an error.
+    """
+    if host in _LOOPBACK_HOSTS and _running_in_container():
+        _logger.warning(
+            "NUVRAIL_PROXY_HOST=%s binds the proxy to loopback INSIDE the "
+            "container. Under Docker, published ports forward to the "
+            "container's 0.0.0.0, so connections will complete TLS but never "
+            "reach this process (silent proxy, no greeting). Set "
+            "NUVRAIL_PROXY_HOST=0.0.0.0 for the containerised deploy.",
+            host,
+        )
 
 
 def decode_json_list(value: object) -> list:

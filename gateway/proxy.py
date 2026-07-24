@@ -92,6 +92,7 @@ from gateway.state_db import (
     update_folder_stats,
     upsert_folders_from_list,
     upsert_message,
+    warn_if_loopback_bind_in_container,
 )
 
 load_dotenv()
@@ -1738,6 +1739,7 @@ async def main() -> None:
     load_plugins()
 
     host = os.environ.get("NUVRAIL_PROXY_HOST", "127.0.0.1")
+    warn_if_loopback_bind_in_container(host)
     port = int(os.environ.get("NUVRAIL_PROXY_IMAP_PORT", "10143"))
 
     server = await start_proxy(host, port)
