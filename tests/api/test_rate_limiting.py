@@ -20,6 +20,7 @@ from api.limiter import limiter
 from api.main import app
 from api.routes import auth as auth_routes
 from api.routes.operations import get_db_path
+from gateway import entitlements as entitlements_mod
 from gateway.security_controls import AuthAbuseProtector
 from gateway.state_db import init_db
 
@@ -68,6 +69,19 @@ async def client(
     monkeypatch.setattr(
         auth_routes, "LOGIN_ABUSE_PROTECTOR", _permissive_abuse_protector("test_rl")
     )
+    # Pin the OPEN-CORE (unlimited) entitlements provider for the duration of
+    # these tests. WHY: this suite verifies slowapi's IP-based rate limits
+    # (5 agent-creates/min, 10 logins/min) — NOT plan entitlements. When the
+    # enterprise plugin is installed in the same environment, it registers a
+    # capped provider at import (free plan = 1 agent), so the 2nd agent-create
+    # returns 402 BEFORE the rate limiter can ever reach its 5/min threshold,
+    # masking the exact behaviour under test. reset_entitlements() is a
+    # core-only API (no enterprise import — the core test must not depend on
+    # the plugin) that restores the unlimited open-core default; we save and
+    # restore the previously-active provider so a plugin-loaded run isn't
+    # polluted for other tests.
+    _prev_entitlements = entitlements_mod.entitlements()
+    entitlements_mod.reset_entitlements()
     # Reset limiter storage so prior tests don't bleed in.
     limiter.reset()
     transport = httpx.ASGITransport(app=app)
@@ -75,6 +89,7 @@ async def client(
         yield c
     app.dependency_overrides.clear()
     limiter.reset()
+    entitlements_mod.register_entitlements(_prev_entitlements)
 
 
 # ---------------------------------------------------------------------------

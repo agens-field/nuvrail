@@ -11,6 +11,30 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 
+def unquote_mailbox(name: str) -> str:
+    r"""Return the *logical* mailbox name from a raw IMAP command token.
+
+    An IMAP mailbox argument may arrive as a quoted-string — e.g. an agent
+    sends ``APPEND "Drafts" ...`` or ``UID MOVE 1 "[Gmail]/All Mail"``. The
+    surrounding double-quotes are IMAP *syntax*, not part of the mailbox name;
+    inside a quoted-string, ``\"`` and ``\\`` are escaped literals.
+
+    We must store the logical name (``Drafts``), because the execution layer
+    re-quotes it via ``aioimaplib`` ``quoted()`` before sending it upstream. If
+    we stored the already-quoted form (``"Drafts"``), execution would quote it
+    a second time and the server would look for a mailbox literally named
+    ``"Drafts"`` — Dovecot answers ``[TRYCREATE] Mailbox doesn't exist``.
+
+    Only a fully surrounding pair of quotes is stripped (a bare/unquoted name
+    is returned unchanged), after which IMAP quoted-string escapes are undone.
+    """
+    if len(name) >= 2 and name[0] == '"' and name[-1] == '"':
+        inner = name[1:-1]
+        # Undo IMAP quoted-string escaping: \" -> "  and  \\ -> \
+        return inner.replace('\\"', '"').replace("\\\\", "\\")
+    return name
+
+
 @dataclass
 class ParsedOperation:
     tag: str
@@ -110,6 +134,7 @@ def parse_store(
 
 def parse_move(tag: str, uid_set: str, destination_folder: str) -> ParsedOperation:
     """Parse MOVE/UID MOVE command into a ParsedOperation."""
+    destination_folder = unquote_mailbox(destination_folder)
     cmd_str = f"MOVE {uid_set} {destination_folder}"
     return ParsedOperation(
         tag=tag,
@@ -123,6 +148,7 @@ def parse_move(tag: str, uid_set: str, destination_folder: str) -> ParsedOperati
 
 def parse_copy(tag: str, uid_set: str, destination_folder: str) -> ParsedOperation:
     """Parse COPY/UID COPY command into a ParsedOperation."""
+    destination_folder = unquote_mailbox(destination_folder)
     cmd_str = f"COPY {uid_set} {destination_folder}"
     return ParsedOperation(
         tag=tag,
@@ -154,6 +180,7 @@ def parse_append(tag: str, folder: str, flags: list[str], message_size: int) -> 
     save; an APPEND anywhere else adds a new message to that folder and is
     described as such.
     """
+    folder = unquote_mailbox(folder)
     cmd_str = f"APPEND {folder} ({' '.join(flags)}) {{{message_size}}}"
     if _is_drafts_append(folder, flags):
         description = f"Save draft to {folder} ({message_size} bytes)"
