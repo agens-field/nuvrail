@@ -96,6 +96,40 @@ async function apiFetch<T>(path: string, options?: RequestInit & { skipRedirectO
 }
 
 // ---------------------------------------------------------------------------
+// Public deployment config (unauthenticated)
+// ---------------------------------------------------------------------------
+
+export type SignupMode = 'closed' | 'invite' | 'open'
+
+export interface DeploymentConfig {
+  signup_mode: SignupMode
+}
+
+/**
+ * Fetch the deployment's public config (signup mode) before login.
+ *
+ * This is UX plumbing only: the server-side 403 on /auth/register remains the
+ * source of truth for whether registration is allowed. We fail *closed* here —
+ * on any error, or an unrecognised mode, we report 'closed' so the UI hides the
+ * signup form rather than showing a dead-end that only 403s on submit.
+ */
+export async function getConfig(): Promise<DeploymentConfig> {
+  try {
+    const res = await fetch(`${BASE}/api/v1/config`)
+    if (!res.ok) return { signup_mode: 'closed' }
+    const data = (await res.json()) as { signup_mode?: unknown }
+    const mode = data.signup_mode
+    if (mode === 'closed' || mode === 'invite' || mode === 'open') {
+      return { signup_mode: mode }
+    }
+    return { signup_mode: 'closed' }
+  } catch {
+    // Network/wiring failure — fail closed (hide signup) rather than assume open.
+    return { signup_mode: 'closed' }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Auth endpoints
 // ---------------------------------------------------------------------------
 
@@ -103,6 +137,8 @@ export interface RegisterRequest {
   email: string
   password: string
   display_name?: string
+  // Required only on invite-mode deployments; ignored by the server otherwise.
+  invite_code?: string
 }
 
 export interface RegisterResponse {

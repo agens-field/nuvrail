@@ -14,6 +14,12 @@ groupings, not published tags.
 ## [Unreleased]
 
 ### Added
+- Unauthenticated `GET /api/v1/config` returning the deployment's `signup_mode`
+  (`closed` | `invite` | `open`), so the web app can hide — not merely reject —
+  the account-creation UI on closed/invite deployments. Closed shows an
+  "unavailable" notice; invite surfaces a required invite-code field; open is
+  unchanged. The server-side 403 on `/auth/register` remains the sole source of
+  truth; the client mode is UX only and fails closed. (GH #139)
 - Community & contributor docs for the open-source launch: `CONTRIBUTING.md`
   (build/test/PR workflow, AGPL-3.0/DCO stance) and `SECURITY.md` (coordinated
   disclosure policy).
