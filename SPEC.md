@@ -1,7 +1,7 @@
 # Nuvrail IMAP/SMTP Approval Gateway — Specification
 
-**Status:** v6
-**Date:** June 12, 2026
+**Status:** v7
+**Date:** August 19, 2026
 **Authors:** Martin Modahl, Jack (CEO)
 **Changelog:**
 - v2 — security/auth model added, SMTP moved to launch, failure modes defined, schema updated, deployment URLs added, open questions closed
@@ -9,6 +9,7 @@
 - v4 — open source scope defined (superseded in v6: license is AGPL-3.0, not MIT/Apache)
 - v5 — updated to reflect actual built state as of 2026-03-19
 - v6 — full reconciliation against the codebase as of 2026-06-12. Everything previously "Phase 1/2 planned" that has since shipped is now documented as built: secret-store credential handling, Gmail XOAUTH2, hash-chained audit log + verification, web push, batching, undo, SMTP 550 rejection notice, Sent-folder write-back, auto-approval rules (enterprise plugin), per-user tenancy, GDPR retention/erasure/export, send rate caps, loop health. Decisions log updated with supersessions (§19).
+- v7 — open-source-first framing for the public launch. This repository **is** the product: a free, self-hostable core (AGPL-3.0). A hosted deployment, where operated, is simply one deployment of this same core, not a separate paid product; multi-user/tenancy and secret-manager sections describe capabilities of the core, not a commercial tier. No behavioral spec change from v6.
 
 ---
 
@@ -41,7 +42,7 @@ The result: the AI can propose email changes freely, but nothing reaches the rea
 |---|---|---|
 | **Self-hosted** | operator-defined | Open-source core, Docker Compose |
 | **Staging** | fly.io staging app | Pre-prod; E2E smoke target |
-| **Production** | `mail.nuvrail.com` (gateway) / `app.nuvrail.com` (web) | Hosted service |
+| **Hosted example** | `mail.nuvrail.com` (gateway) / `app.nuvrail.com` (web) | A hosted deployment of the open-source core, where operated |
 
 **Ports:**
 - IMAP proxy: `993` (TLS, fly edge / nginx) external; `10143` internal
@@ -362,7 +363,7 @@ The log is therefore *immutable while retained*, not retained forever — public
 | `push_subscriptions` | Web Push registrations | user-scoped |
 | `auto_approval_rules` | Rule definitions | table in core; predicates/actions/guardrail columns added by the enterprise plugin migration; evaluation is enterprise-only |
 
-**Tenancy:** the hosted service is a multi-user deployment on a shared database. Every read/write path — operations, audit, rules, mailbox mirror, message previews, push — is scoped to the owning user. Folder lookups resolve by `(user_id, name)`, never name alone.
+**Tenancy:** any multi-user deployment (hosted or self-hosted) runs on a shared database. Every read/write path — operations, audit, rules, mailbox mirror, message previews, push — is scoped to the owning user. Folder lookups resolve by `(user_id, name)`, never name alone.
 
 ---
 
