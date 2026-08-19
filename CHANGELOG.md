@@ -25,6 +25,12 @@ groupings, not published tags.
   disclosure policy).
 
 ### Fixed
+- Web client now distinguishes a network/wiring failure from an HTTP error
+  response. A `fetch()` that never reaches the API (server down, wrong
+  `VITE_API_URL`/baked-in localhost, mixed content, CORS) previously surfaced
+  the browser's bare "Load failed" / "Failed to fetch", indistinguishable from a
+  server rejection. It now throws a typed `NetworkError` naming the target URL
+  and the likely cause; HTTP 4xx/5xx errors are left exactly as-is. (GH #140)
 - Removed a stray bottom "MIT License" block in the README that contradicted the
   project's AGPL-3.0 license declaration.
 

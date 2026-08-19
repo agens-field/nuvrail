@@ -17,6 +17,70 @@ import type {
 const BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:8080'
 
 // ---------------------------------------------------------------------------
+// Network vs HTTP error (GH #140)
+// ---------------------------------------------------------------------------
+//
+// A bare fetch() rejects with a TypeError ("Failed to fetch" / "Load failed")
+// when the request never reaches the server at all — the API is down, the URL
+// is wrong (baked-in localhost), mixed http/https content is blocked, or CORS
+// rejects the request before a response exists. That is a *wiring* problem and
+// is categorically different from an HTTP error response (a 4xx/5xx the server
+// actually sent). Surfacing the raw "Load failed" makes the two
+// indistinguishable, so an operator reads a connectivity failure as, say, a
+// closed-mode 403.
+//
+//   fetchOrThrow(url)
+//        |
+//        |-- fetch resolves (any HTTP status) --> return Response
+//        |        (callers handle res.ok / res.status themselves; an HTTP
+//        |         error is NOT a NetworkError)
+//        |
+//        `-- fetch rejects with TypeError ------> throw NetworkError
+//                 (never reached the server; message names BASE + likely cause)
+//
+// Only the connection-level TypeError is remapped; every other rejection is
+// rethrown untouched so we never mask a real bug as a network error.
+
+export class NetworkError extends Error {
+  /** The absolute API base the failed request was aimed at. */
+  readonly targetUrl: string
+  /** The original fetch rejection, preserved for debugging. */
+  readonly cause: unknown
+
+  constructor(targetUrl: string, cause: unknown) {
+    super(
+      `Couldn't reach the Nuvrail API at ${targetUrl}. Check the server is ` +
+        `running and VITE_API_URL points at it (mixed-content http/https and ` +
+        `CORS are common causes).`,
+    )
+    this.name = 'NetworkError'
+    this.targetUrl = targetUrl
+    this.cause = cause
+  }
+}
+
+/**
+ * fetch() that converts a connection-level failure into a typed, actionable
+ * NetworkError. A rejection is treated as "never reached the server" only when
+ * it is a TypeError (the shape the Fetch spec uses for network failures); any
+ * other error is rethrown as-is. A resolved Response — including 4xx/5xx — is
+ * returned unchanged so callers keep full control over HTTP-status handling.
+ */
+export async function fetchOrThrow(
+  input: string,
+  init?: RequestInit,
+): Promise<Response> {
+  try {
+    return await fetch(input, init)
+  } catch (err) {
+    if (err instanceof TypeError) {
+      throw new NetworkError(BASE, err)
+    }
+    throw err
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Auth token helpers
 // ---------------------------------------------------------------------------
 
@@ -48,7 +112,7 @@ async function apiFetch<T>(path: string, options?: RequestInit & { skipRedirectO
     headers['Authorization'] = `Bearer ${token}`
   }
 
-  const res = await fetch(`${BASE}${path}`, { ...options, headers })
+  const res = await fetchOrThrow(`${BASE}${path}`, { ...options, headers })
 
   if (res.status === 401) {
     // Token expired or invalid — clear local token.
@@ -164,7 +228,7 @@ export interface MeResponse {
 }
 
 export async function registerUser(body: RegisterRequest): Promise<RegisterResponse> {
-  const res = await fetch(`${BASE}/api/v1/auth/register`, {
+  const res = await fetchOrThrow(`${BASE}/api/v1/auth/register`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -177,7 +241,7 @@ export async function registerUser(body: RegisterRequest): Promise<RegisterRespo
 }
 
 export async function loginUser(email: string, password: string): Promise<LoginResponse> {
-  const res = await fetch(`${BASE}/api/v1/auth/login`, {
+  const res = await fetchOrThrow(`${BASE}/api/v1/auth/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ email, password }),
@@ -365,7 +429,7 @@ export async function exportAuditLog(agentId?: number): Promise<void> {
   if (token) headers['Authorization'] = `Bearer ${token}`
   const qs = new URLSearchParams()
   if (agentId !== undefined) qs.set('agent_id', String(agentId))
-  const res = await fetch(`${BASE}/api/v1/audit/export${qs.toString() ? `?${qs.toString()}` : ''}`, { headers })
+  const res = await fetchOrThrow(`${BASE}/api/v1/audit/export${qs.toString() ? `?${qs.toString()}` : ''}`, { headers })
   if (!res.ok) throw new Error(`Export failed: ${res.status}`)
   const blob = await res.blob()
   const url = URL.createObjectURL(blob)
@@ -507,7 +571,7 @@ export async function applyChangePassword(
 
 export async function requestPasswordReset(email: string): Promise<{ ok: boolean }> {
   // Unauthenticated — use raw fetch (no Bearer token needed or expected)
-  const res = await fetch(`${BASE}/api/v1/auth/reset-request`, {
+  const res = await fetchOrThrow(`${BASE}/api/v1/auth/reset-request`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ email }),
@@ -524,7 +588,7 @@ export async function resetPassword(
   newPassword: string,
 ): Promise<{ ok: boolean }> {
   // Unauthenticated — use raw fetch
-  const res = await fetch(`${BASE}/api/v1/auth/reset`, {
+  const res = await fetchOrThrow(`${BASE}/api/v1/auth/reset`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ token, new_password: newPassword }),
@@ -600,7 +664,7 @@ export async function downloadAccountData(): Promise<void> {
   const token = getToken()
   const headers: Record<string, string> = {}
   if (token) headers['Authorization'] = `Bearer ${token}`
-  const res = await fetch(`${BASE}/api/v1/account/export`, { headers })
+  const res = await fetchOrThrow(`${BASE}/api/v1/account/export`, { headers })
   if (!res.ok) throw new Error(`Export failed: ${res.status}`)
   const blob = await res.blob()
   const url = URL.createObjectURL(blob)
