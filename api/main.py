@@ -30,7 +30,7 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 
 from api.limiter import limiter
-from api.routes import account, audit, auth, features, health, oauth2, operations, push
+from api.routes import account, audit, auth, config, features, health, oauth2, operations, push
 from api.signup import resolve_signup_mode
 from gateway.audit import run_audit_verification_loop
 from gateway.expiry import run_expiry_loop
@@ -199,6 +199,7 @@ app.include_router(auth.router, prefix="/api/v1")
 app.include_router(oauth2.router, prefix="/api/v1")
 app.include_router(account.router, prefix="/api/v1")
 app.include_router(features.router, prefix="/api/v1")
+app.include_router(config.router, prefix="/api/v1")
 
 # Load optional plugins (the enterprise package, if installed). No-op in the
 # public build. Registers plugin routers (e.g. the auto-approval /rules API),

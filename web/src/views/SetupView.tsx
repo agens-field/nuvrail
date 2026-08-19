@@ -7,18 +7,37 @@
  * After step 2 the user lands on the main app with their first agent connected.
  * Step 2 can be skipped — they can add agents later from the Agents view.
  */
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { registerUser, setToken, startGmailOAuth, createAgent } from '../api/client'
+import { registerUser, setToken, startGmailOAuth, createAgent, getConfig, type SignupMode } from '../api/client'
 import ProviderPicker, { type Provider } from '../components/ProviderPicker'
 
 // ── Step 1: account creation ──────────────────────────────────────────────
 
-function AccountStep({ onComplete }: { onComplete: () => void }) {
+// Shown when the deployment is closed to self-signup. UX only — /auth/register
+// remains the real gate (it 403s a closed deployment regardless of this UI).
+export function ClosedSignupNotice() {
+  return (
+    <div className="space-y-4">
+      <h2 className="text-xl font-display font-black text-fg">Signups are closed</h2>
+      <p className="text-sm text-fg-3">
+        This Nuvrail deployment is private — new accounts aren't open to
+        self-signup. Contact your administrator to have an account provisioned.
+      </p>
+      <p className="text-center text-sm text-fg-3">
+        Already have an account?{' '}
+        <a href="#/login" className="text-accent hover:underline">Sign in</a>
+      </p>
+    </div>
+  )
+}
+
+function AccountStep({ mode, onComplete }: { mode: SignupMode; onComplete: () => void }) {
   const [email, setEmail] = useState('')
   const [displayName, setDisplayName] = useState('')
   const [password, setPassword] = useState('')
   const [confirm, setConfirm] = useState('')
+  const [inviteCode, setInviteCode] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
 
@@ -27,9 +46,15 @@ function AccountStep({ onComplete }: { onComplete: () => void }) {
     setError(null)
     if (password !== confirm) { setError('Passwords do not match.'); return }
     if (password.length < 12) { setError('Password must be at least 12 characters.'); return }
+    if (mode === 'invite' && !inviteCode.trim()) { setError('An invite code is required.'); return }
     setLoading(true)
     try {
-      const data = await registerUser({ email, display_name: displayName, password })
+      const data = await registerUser({
+        email,
+        display_name: displayName,
+        password,
+        ...(mode === 'invite' ? { invite_code: inviteCode.trim() } : {}),
+      })
       if (data.token) setToken(data.token)
       onComplete()
     } catch (err) {
@@ -43,7 +68,11 @@ function AccountStep({ onComplete }: { onComplete: () => void }) {
     <div className="space-y-5">
       <div>
         <h2 className="text-xl font-display font-black text-fg">Create your account</h2>
-        <p className="text-sm text-fg-3 mt-1">Set up Nuvrail for the first time.</p>
+        <p className="text-sm text-fg-3 mt-1">
+          {mode === 'invite'
+            ? 'This deployment is invite-only — enter your invite code below.'
+            : 'Set up Nuvrail for the first time.'}
+        </p>
       </div>
 
       <form onSubmit={handleSubmit} className="space-y-4">
@@ -74,6 +103,14 @@ function AccountStep({ onComplete }: { onComplete: () => void }) {
             className="w-full bg-surface-hi border border-edge rounded px-3 py-2 text-fg placeholder-fg-3 focus:outline-none focus:ring-2 focus:ring-accent"
             autoComplete="new-password" />
         </div>
+        {mode === 'invite' && (
+          <div>
+            <label htmlFor="invite-code" className="block text-sm font-medium text-fg-2 mb-1">Invite code</label>
+            <input id="invite-code" type="text" value={inviteCode} onChange={(e) => setInviteCode(e.target.value)} required
+              className="w-full bg-surface-hi border border-edge rounded px-3 py-2 text-fg placeholder-fg-3 focus:outline-none focus:ring-2 focus:ring-accent"
+              placeholder="Enter your invite code" autoComplete="off" />
+          </div>
+        )}
         {error && <p className="text-red-400 text-sm">{error}</p>}
         <button type="submit" disabled={loading}
           className="w-full bg-accent hover:bg-accent-hi disabled:opacity-50 text-white dark:text-[#111c27] font-semibold py-2 px-4 rounded transition-colors">
@@ -259,6 +296,21 @@ export default function SetupView() {
   const navigate = useNavigate()
   const [step, setStep] = useState<Step>('account')
   const [provider, setProvider] = useState<Provider | null>(null)
+  // Fail closed until config loads: assume no signup until the server confirms
+  // otherwise, so we never flash a signup form on a private deployment.
+  const [signupMode, setSignupMode] = useState<SignupMode>('closed')
+  const [configLoaded, setConfigLoaded] = useState(false)
+
+  useEffect(() => {
+    let active = true
+    void getConfig().then((cfg) => {
+      if (active) {
+        setSignupMode(cfg.signup_mode)
+        setConfigLoaded(true)
+      }
+    })
+    return () => { active = false }
+  }, [])
 
   function handleProviderSelect(p: Provider) {
     setProvider(p)
@@ -298,8 +350,16 @@ export default function SetupView() {
       </div>
 
       <div className="bg-surface rounded-xl border border-edge p-6">
-        {step === 'account' && (
-          <AccountStep onComplete={() => setStep('provider')} />
+        {step === 'account' && !configLoaded && (
+          <p className="text-sm text-fg-3">Loading…</p>
+        )}
+
+        {step === 'account' && configLoaded && signupMode === 'closed' && (
+          <ClosedSignupNotice />
+        )}
+
+        {step === 'account' && configLoaded && signupMode !== 'closed' && (
+          <AccountStep mode={signupMode} onComplete={() => setStep('provider')} />
         )}
 
         {step === 'provider' && (
