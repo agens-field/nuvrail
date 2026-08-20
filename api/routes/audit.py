@@ -27,7 +27,13 @@ from fastapi.responses import JSONResponse
 from api.auth import get_current_user
 from api.models import AuditEntry, AuditListResponse
 from api.routes.operations import get_db_path
-from gateway.audit import get_chain_head, last_verification_result, verify_audit_chain
+from gateway.audit import (
+    get_chain_head,
+    last_verification_result,
+    read_last_anchor,
+    verify_against_anchor,
+    verify_audit_chain,
+)
 from gateway.state_db import get_db
 
 router = APIRouter()
@@ -325,14 +331,30 @@ async def verify_audit(
 
     Also reports ``last_background_check`` so callers can see the most recent
     result from the scheduled verification loop without forcing a fresh scan.
+
+    When external chain-head anchoring is enabled (NUVRAIL_AUDIT_ANCHOR_PATH),
+    the response also carries ``anchor_ok`` / ``anchor_reason`` — a
+    tail-truncation check the in-DB chain walk structurally cannot perform —
+    and top-level ``ok`` is the AND of the in-DB chain being intact and no tail
+    truncation being detected. ``chain_ok`` reports the in-DB walk alone.
     """
     ok, errors = await verify_audit_chain(db_path)
     head = await get_chain_head(db_path)
+    # Tail-truncation check against the external anchor (no-op / anchor_ok=True
+    # when anchoring is disabled). Deleting the most-recent rows leaves an
+    # internally-consistent shorter chain, so ``ok`` alone cannot catch it.
+    anchor_ok, anchor_reason = await verify_against_anchor(db_path)
+    last_anchor = read_last_anchor()
     return JSONResponse(
         content={
-            "ok": ok,
+            "ok": ok and anchor_ok,
+            "chain_ok": ok,
             "broken_count": len(errors),
             "chain_head": head,
+            "anchor_ok": anchor_ok,
+            "anchor_reason": anchor_reason,
+            "anchoring_enabled": last_anchor is not None,
+            "last_anchored_at": (last_anchor or {}).get("anchored_at"),
             "verified_at": int(time.time()),
             "last_background_check": last_verification_result(),
         }

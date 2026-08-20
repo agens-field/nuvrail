@@ -21,6 +21,8 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
+import os
 from pathlib import Path
 
 import aiosqlite
@@ -30,11 +32,14 @@ import pytest_asyncio
 from gateway.audit import (
     GENESIS_HASH,
     _compute_entry_hash,
+    anchor_chain_head,
     get_chain_head,
     insert_audit_event,
     last_verification_result,
+    read_last_anchor,
     record_audit_event,
     run_audit_verification_loop,
+    verify_against_anchor,
     verify_audit_chain,
 )
 from gateway.state_db import get_db, init_db
@@ -423,3 +428,155 @@ async def test_intent_label_does_not_affect_entry_hash(db_path: Path) -> None:
         await db.commit()
     ok, errors = await verify_audit_chain(db_path)
     assert ok is True, f"intent_label is not hashed; chain must still verify: {errors}"
+
+
+# ---------------------------------------------------------------------------
+# External chain-head anchoring — tail-truncation detection
+#
+# The in-DB chain walk (verify_audit_chain) cannot detect deletion of the
+# most-recent rows: a truncated chain is still internally consistent. These
+# tests prove the external-anchor path closes that gap.
+#
+#   normal path : anchor head H3 → verify clean (H3 still in chain)
+#   attack path : truncate tail so H3 gone → verify against anchor DETECTS it
+# ---------------------------------------------------------------------------
+
+
+@pytest_asyncio.fixture
+async def anchor_path(tmp_path: Path) -> Path:
+    """Path to an external anchor sink file (does not exist until written)."""
+    return tmp_path / "anchors" / "audit-anchor.jsonl"
+
+
+async def _seed_rows(db_conn, db_path, n: int, base_ts: int = 5000) -> str:
+    """Insert n hashed rows, commit each, return the resulting chain head."""
+    for i in range(n):
+        await insert_audit_event(
+            db_conn, timestamp=base_ts + i, event="staged", actor="ai_agent",
+        )
+        await db_conn.commit()
+    return await get_chain_head(db_path)
+
+
+async def _truncate_tail(db_path: Path, n: int) -> None:
+    """Delete the n most-recent hashed rows (simulate an attacker's tail cut)."""
+    async with aiosqlite.connect(db_path) as db:
+        await db.execute(
+            "DELETE FROM audit_log WHERE id IN "
+            "(SELECT id FROM audit_log WHERE entry_hash IS NOT NULL "
+            " ORDER BY id DESC LIMIT ?)",
+            (n,),
+        )
+        await db.commit()
+
+
+async def test_anchor_disabled_returns_none(db_conn, db_path):
+    """With no configured/passed sink, anchoring is a no-op."""
+    await _seed_rows(db_conn, db_path, 2)
+    # No env, no explicit path → disabled.
+    assert await anchor_chain_head(db_path, anchor_path=None) is None or \
+        os.environ.get("NUVRAIL_AUDIT_ANCHOR_PATH")  # guard if env set in CI
+
+
+async def test_anchor_writes_appendonly_record(db_conn, db_path, anchor_path):
+    """anchor_chain_head appends one JSONL record carrying the current head."""
+    head = await _seed_rows(db_conn, db_path, 3)
+    rec = await anchor_chain_head(db_path, anchor_path=anchor_path)
+    assert rec is not None
+    assert rec["chain_head"] == head
+    assert rec["row_count"] == 3
+    # File exists and holds exactly one line.
+    lines = anchor_path.read_text().strip().splitlines()
+    assert len(lines) == 1
+    assert json.loads(lines[0])["chain_head"] == head
+
+
+async def test_anchor_is_append_only(db_conn, db_path, anchor_path):
+    """Successive anchors append; earlier records are never rewritten."""
+    await _seed_rows(db_conn, db_path, 2)
+    r1 = await anchor_chain_head(db_path, anchor_path=anchor_path)
+    await _seed_rows(db_conn, db_path, 1, base_ts=6000)  # one more row → new head
+    r2 = await anchor_chain_head(db_path, anchor_path=anchor_path)
+    assert r1["chain_head"] != r2["chain_head"]
+    lines = anchor_path.read_text().strip().splitlines()
+    assert len(lines) == 2
+    assert json.loads(lines[0])["chain_head"] == r1["chain_head"]
+    assert read_last_anchor(anchor_path)["chain_head"] == r2["chain_head"]
+
+
+async def test_anchor_empty_chain_is_noop(db_path, anchor_path):
+    """Nothing to anchor on an empty chain; no file is created."""
+    assert await anchor_chain_head(db_path, anchor_path=anchor_path) is None
+    assert not anchor_path.exists()
+
+
+async def test_read_last_anchor_none_when_missing(anchor_path):
+    """No sink file → no last anchor."""
+    assert read_last_anchor(anchor_path) is None
+
+
+async def test_read_last_anchor_skips_malformed_trailing_line(
+    db_conn, db_path, anchor_path
+):
+    """A torn/partial last line must not mask a valid earlier anchor."""
+    await _seed_rows(db_conn, db_path, 2)
+    rec = await anchor_chain_head(db_path, anchor_path=anchor_path)
+    # Simulate a partial write appended after a clean anchor.
+    with open(anchor_path, "a", encoding="utf-8") as fh:
+        fh.write('{"anchored_at": 123, "chain_he')  # truncated JSON, no newline
+    last = read_last_anchor(anchor_path)
+    assert last is not None
+    assert last["chain_head"] == rec["chain_head"]
+
+
+async def test_verify_against_anchor_clean_when_tail_intact(
+    db_conn, db_path, anchor_path
+):
+    """Normal path: anchored head still present → tail intact, no divergence."""
+    await _seed_rows(db_conn, db_path, 3)
+    await anchor_chain_head(db_path, anchor_path=anchor_path)
+    ok, reason = await verify_against_anchor(db_path, anchor_path=anchor_path)
+    assert ok is True
+    assert reason is None
+
+
+async def test_verify_against_anchor_detects_tail_truncation(
+    db_conn, db_path, anchor_path
+):
+    """THE gap-closing test: truncating the tail is undetectable by the in-DB
+    chain walk but IS detected against the external anchor."""
+    await _seed_rows(db_conn, db_path, 3)
+    await anchor_chain_head(db_path, anchor_path=anchor_path)
+
+    # Attacker deletes the most-recent row (tail truncation).
+    await _truncate_tail(db_path, 1)
+
+    # The in-DB chain walk still reports intact — this is the gap.
+    chain_ok, chain_errors = await verify_audit_chain(db_path)
+    assert chain_ok is True, (
+        "precondition: in-DB walk cannot see tail truncation; "
+        f"unexpected errors: {chain_errors}"
+    )
+
+    # The external anchor comparison catches it.
+    anchor_ok, reason = await verify_against_anchor(db_path, anchor_path=anchor_path)
+    assert anchor_ok is False
+    assert reason is not None and "tail truncation" in reason
+
+
+async def test_verify_against_anchor_noop_without_anchor(db_conn, db_path, anchor_path):
+    """No anchor recorded yet → nothing to prove, not a failure."""
+    await _seed_rows(db_conn, db_path, 2)
+    ok, reason = await verify_against_anchor(db_path, anchor_path=anchor_path)
+    assert ok is True
+    assert reason is None
+
+
+async def test_anchor_sink_path_reads_env(monkeypatch, tmp_path):
+    """anchor_sink_path resolves NUVRAIL_AUDIT_ANCHOR_PATH at call time."""
+    from gateway.audit import anchor_sink_path
+    monkeypatch.delenv("NUVRAIL_AUDIT_ANCHOR_PATH", raising=False)
+    assert anchor_sink_path() is None
+    target = tmp_path / "env-anchor.jsonl"
+    monkeypatch.setenv("NUVRAIL_AUDIT_ANCHOR_PATH", str(target))
+    assert anchor_sink_path() == target
