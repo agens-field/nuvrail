@@ -369,6 +369,19 @@ def anchor_sink_path() -> Path | None:
     return Path(raw) if raw else None
 
 
+def _append_anchor_line(path: Path, record: dict) -> None:
+    """Append one JSONL anchor record to the sink (blocking; run off-loop).
+
+    Split out from ``anchor_chain_head`` so the async caller can offload this
+    blocking disk write via ``asyncio.to_thread`` (ASYNC230). Append-only:
+    O_APPEND of a single line — never truncates or rewrites the file, so a
+    WORM/append-only target keeps the full anchor history.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a", encoding="utf-8") as fh:
+        fh.write(json.dumps(record, separators=(",", ":")) + "\n")
+
+
 async def anchor_chain_head(
     db_path: Path,
     anchor_path: Path | None = None,
@@ -400,11 +413,10 @@ async def anchor_chain_head(
         # Empty chain — nothing to anchor yet.
         return None
 
-    async with aiosqlite.connect(db_path) as db:
-        async with db.execute(
-            "SELECT COUNT(*) AS n FROM audit_log WHERE entry_hash IS NOT NULL"
-        ) as cur:
-            row_count = (await cur.fetchone())[0]
+    async with aiosqlite.connect(db_path) as db, db.execute(
+        "SELECT COUNT(*) AS n FROM audit_log WHERE entry_hash IS NOT NULL"
+    ) as cur:
+        row_count = (await cur.fetchone())[0]
 
     record = {
         "anchored_at": int(time.time()),
@@ -412,10 +424,9 @@ async def anchor_chain_head(
         "row_count": row_count,
     }
 
-    path.parent.mkdir(parents=True, exist_ok=True)
-    # Append-only: O_APPEND write of a single line. Never truncates/rewrites.
-    with open(path, "a", encoding="utf-8") as fh:
-        fh.write(json.dumps(record, separators=(",", ":")) + "\n")
+    # Blocking file I/O is offloaded to a thread so the event loop is never
+    # stalled on disk (ASYNC230): the sink may live on slow/remote WORM storage.
+    await asyncio.to_thread(_append_anchor_line, path, record)
 
     return record
 
@@ -432,9 +443,9 @@ def read_last_anchor(anchor_path: Path | None = None) -> dict | None:
         return None
 
     last: dict | None = None
-    with open(path, "r", encoding="utf-8") as fh:
-        for line in fh:
-            line = line.strip()
+    with open(path, encoding="utf-8") as fh:
+        for raw_line in fh:
+            line = raw_line.strip()
             if not line:
                 continue
             try:

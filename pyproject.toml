@@ -103,7 +103,9 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 # Tests: asserts are the point; broad-except / try-pass in fixture teardown is
 # intentional (best-effort cleanup must not mask the real test failure).
-"tests/**" = ["S101", "S105", "S106", "S107", "BLE001", "S110", "S112", "SIM117"]
+# ASYNC230: tests deliberately do synchronous file I/O in setup (e.g. simulating
+# a torn/partial anchor line); it's fixture code, not event-loop request-path.
+"tests/**" = ["S101", "S105", "S106", "S107", "BLE001", "S110", "S112", "SIM117", "ASYNC230"]
 # Operator/diagnostic CLIs: they print to stdout, build shell/SQL strings, and
 # make blocking HTTP calls for a human to run by design; not request-path code.
 "scripts/**" = [
