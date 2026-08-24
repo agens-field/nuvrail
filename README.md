@@ -643,6 +643,9 @@ The easiest way is the web interface — no API calls needed:
    standard IMAP/SMTP provider works.
 3. Copy the one-time agent token that appears on success — you won't see it again
 
+Step-by-step walkthrough (settings, app-specific passwords, TLS, and
+troubleshooting) for any standard mailbox: **[docs/providers/generic-imap.md](docs/providers/generic-imap.md)**.
+
 <details>
 <summary>Prefer the API? Same thing via <code>curl</code>:</summary>
 
