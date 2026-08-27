@@ -48,12 +48,20 @@ git clone https://github.com/agens-field/nuvrail.git
 cd nuvrail
 cp .env.example .env
 
-# For a local trial, clear the two production-only origin settings so the
-# localhost UI can talk to the API (dev env falls back to permissive CORS):
+# ⚠️ REQUIRED for a local trial — do NOT skip this line. Clear the
+# production-only origin setting so the localhost UI can talk to the API
+# (dev env then falls back to permissive CORS). Skip it and the browser at
+# localhost:3000 gets a silent CORS failure with no obvious cause:
 sed -i 's/^NUVRAIL_CORS_ORIGINS=.*/NUVRAIL_CORS_ORIGINS=/' .env
 
 docker compose up --build
 ```
+
+> ⏱️ **First build takes several minutes — this is normal, not a hang.** The initial
+> `--build` compiles both images from scratch (Python deps for the gateway, a Vite build
+> for the web PWA), so a true fresh clone with a cold cache is typically **~5–9 min** on
+> first run — not 60 seconds. Later `docker compose up` runs start in seconds. If the
+> terminal sits quiet mid-build, it is compiling, not stuck; let it finish.
 
 > The shipped `.env.example` is pre-filled for a real `nuvrail.example.com` deployment.
 > Clearing `NUVRAIL_CORS_ORIGINS` with `NUVRAIL_ENV=dev` (the default) lets the local
@@ -64,6 +72,9 @@ Then open **<http://localhost:3000>** and create your first account. The API is 
 `http://localhost:8080`:
 
 ```bash
+# Give the containers ~10–20s after the build finishes to come up healthy,
+# then this returns {"status": "ok", ...}. A connection-refused here just
+# means the gateway is still starting — wait a moment and retry.
 curl -s http://localhost:8080/health   # → {"status": "ok", ...}
 ```
 
