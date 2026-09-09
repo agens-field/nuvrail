@@ -46,16 +46,22 @@ jobs:
             --tb=short \
             -q
 
-      - name: Security scan (gitleaks)
-        # Informational only — non-blocking. Flags leaked secrets for human review.
-        # Switch `|| true` to a hard failure once baseline is clean in CI.
-        # Requires gitleaks to be available on the runner (ubuntu-latest has it).
+      # Blocking secrets gate (SOC2 control 2/6, 2026-09-09). Baseline is clean
+      # in CI, so a leaked secret now FAILS the build instead of only warning
+      # (the old `|| true` is gone). We install a pinned gitleaks binary rather
+      # than relying on the runner having it — a silently-skipped scan is not a
+      # gate. This runs the exact same `detect --no-git --config` invocation the
+      # baseline was cleaned against, so CI matches local results.
+      - name: Install gitleaks
         run: |
-          if command -v gitleaks &>/dev/null; then
-            gitleaks detect --source . --no-git --config .gitleaks.toml || true
-          else
-            echo "gitleaks not found on runner — skipping scan"
-          fi
+          GITLEAKS_VERSION=8.21.2
+          curl -sSL \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+            | tar -xz -C /usr/local/bin gitleaks
+          gitleaks version
+
+      - name: Security scan (gitleaks)
+        run: gitleaks detect --source . --no-git --config .gitleaks.toml --redact -v
 
   # Validate the self-host docker-compose build (gateway + web) so a broken
   # Dockerfile is caught on PRs. No secrets — values are only baked into the
