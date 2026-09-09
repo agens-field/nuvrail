@@ -31,10 +31,26 @@ echo "[entrypoint] Starting SMTP proxy..."
 python -m gateway.smtp_proxy &
 SMTP_PID=$!
 
+# Behind the web container's /api/ proxy, uvicorn's peer is nginx for EVERY
+# request, so request.client.host would collapse the per-IP login lockout and
+# rate limits (api/limiter.py, api/routes/auth.py) into ONE global bucket --
+# a single attacker could then throttle or lock out every user. Honouring
+# X-Forwarded-For fixes that, but a spoofable XFF is worse than none, so it is
+# opt-in: NUVRAIL_FORWARDED_ALLOW_IPS names the peers allowed to set it.
+# docker-compose sets "*", safe there because the API port is published on
+# loopback only and the sole other route in is the compose network. Left unset
+# (direct exposure, e.g. fly.io) uvicorn keeps using the real socket peer.
+PROXY_ARGS=()
+if [ -n "$NUVRAIL_FORWARDED_ALLOW_IPS" ]; then
+    echo "[entrypoint] Trusting X-Forwarded-For from: $NUVRAIL_FORWARDED_ALLOW_IPS"
+    PROXY_ARGS=(--proxy-headers --forwarded-allow-ips "$NUVRAIL_FORWARDED_ALLOW_IPS")
+fi
+
 echo "[entrypoint] Starting FastAPI (uvicorn)..."
 uvicorn api.main:app \
     --host 0.0.0.0 \
     --port 8080 \
+    "${PROXY_ARGS[@]}" \
     --log-level "${LOG_LEVEL:-info}" &
 API_PID=$!
 

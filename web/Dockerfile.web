@@ -3,12 +3,23 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm ci
 COPY . .
-ARG VITE_API_URL=http://localhost:8080
+# Empty default = same-origin: the client falls back to relative /api/v1/...
+# URLs, which nginx proxies to the gateway (see nginx.conf). Only a SPLIT
+# deployment, where the gateway is not reachable over the compose network,
+# needs an absolute URL here — and it must be one the BROWSER can reach.
+ARG VITE_API_URL=
 ENV VITE_API_URL=$VITE_API_URL
 ARG VITE_PROXY_HOST=localhost
 ENV VITE_PROXY_HOST=$VITE_PROXY_HOST
 RUN npm run build
 
 FROM nginx:alpine
+# Re-declared: ARGs do not cross build stages. When an absolute API URL is used
+# it is a second origin, so the CSP connect-src must name it explicitly —
+# 'self' only covers the SPA's own scheme+host+port. Substituting the same
+# value the bundle was built with keeps the two from drifting; in the default
+# same-origin build this expands to nothing and 'self' covers everything.
+ARG VITE_API_URL=
 COPY --from=build /app/dist /usr/share/nginx/html
 COPY nginx.conf /etc/nginx/conf.d/default.conf
+RUN sed -i "s|__API_ORIGIN__|${VITE_API_URL%/}|g" /etc/nginx/conf.d/default.conf
