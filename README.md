@@ -233,6 +233,14 @@ server {
 }
 ```
 
+> ℹ️ **Ports and bind address.** The block above reaches the containers on
+> `127.0.0.1:3000` and `127.0.0.1:8080` — the compose defaults. If you remapped either
+> with `NUVRAIL_HOST_WEB_PORT` / `NUVRAIL_HOST_API_PORT`, use your numbers here. Leave
+> `NUVRAIL_BIND_ADDR` at its `127.0.0.1` default: nginx reaches the containers over
+> loopback, so nothing should be published to the network. Note the SPA calls `/api/`
+> on its own origin, so the `location /api/` block above is what serves it — there is
+> no `VITE_API_URL` to set.
+
 ```bash
 sudo ln -s /etc/nginx/sites-available/nuvrail /etc/nginx/sites-enabled/
 sudo nginx -t && sudo systemctl reload nginx
@@ -343,7 +351,12 @@ server {
         proxy_http_version 1.1;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        # SET, not append ($proxy_add_x_forwarded_for). The API trusts the
+        # FIRST entry of this header to key its per-IP login lockout, so
+        # appending would preserve a value the caller sent and let anyone
+        # forge their IP to sidestep the lockout. $remote_addr is the peer
+        # nginx actually accepted the connection from.
+        proxy_set_header X-Forwarded-For $remote_addr;
         proxy_set_header X-Forwarded-Proto $scheme;
     }
     location = /health {
