@@ -3,7 +3,7 @@ import { useQueryClient, useMutation } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { AlertTriangle, Clock } from 'lucide-react'
 import { formatDistanceToNow, formatDuration, intervalToDuration } from 'date-fns'
-import { approveOperation, rejectOperation } from '../api/client'
+import { approveOperation, rejectOperation, fetchOperation } from '../api/client'
 import type { Operation } from '../types'
 import ProtocolBadge from './ProtocolBadge'
 import ConfirmDialog from './ConfirmDialog'
@@ -52,6 +52,14 @@ function formatCountdown(ts: number): string {
 export default function OperationCard({ operation, selected, onToggleSelect }: OperationCardProps) {
   const qc = useQueryClient()
   const [showConfirm, setShowConfirm] = useState(false)
+  // "Read full message" (SMTP only): the pending-list payload carries only
+  // body_preview to stay lean, so the complete body is fetched on demand from
+  // the single-op endpoint the first time the approver expands it, then cached
+  // locally for the life of this card.
+  const [showFullBody, setShowFullBody] = useState(false)
+  const [fullBody, setFullBody] = useState<string | null>(
+    operation.smtp_envelope?.body ?? null,
+  )
 
   const isSmtp = operation.protocol.toLowerCase() === 'smtp'
   const isWarn =
@@ -105,6 +113,32 @@ export default function OperationCard({ operation, selected, onToggleSelect }: O
   const handleConfirmApprove = () => {
     setShowConfirm(false)
     approveMut.mutate()
+  }
+
+  // Fetch the full body on demand (single-op endpoint) the first time the user
+  // expands; subsequent toggles reuse the cached value. Kept out of the list
+  // query so the pending-list payload stays lean.
+  const fullBodyMut = useMutation({
+    mutationFn: () => fetchOperation(operation.id),
+    onSuccess: (op) => {
+      setFullBody(op.smtp_envelope?.body ?? '')
+      setShowFullBody(true)
+    },
+    onError: (err: Error) => {
+      toast.error(`Could not load message: ${err.message}`)
+    },
+  })
+
+  const handleToggleFullBody = () => {
+    if (showFullBody) {
+      setShowFullBody(false)
+      return
+    }
+    if (fullBody != null) {
+      setShowFullBody(true)
+      return
+    }
+    fullBodyMut.mutate()
   }
 
   const isPending = approveMut.isPending || rejectMut.isPending
@@ -192,6 +226,42 @@ export default function OperationCard({ operation, selected, onToggleSelect }: O
                     : ''}
                 </span>
               </p>
+            )}
+
+            {/* Message body: an inline single-line preview, with a "Read full
+                 message" control that fetches + shows the complete body so the
+                 approver can read exactly what will be sent before approving.
+                 Body is agent-supplied content — rendered as TEXT only (React
+                 escapes it; no dangerouslySetInnerHTML) so it can never inject
+                 markup. Full body is fetched on demand (see handleToggleFullBody)
+                 to keep the pending-list payload lean. */}
+            {operation.smtp_envelope.body_preview && (
+              <p className="truncate">
+                <span className="text-fg-3">Message:</span>{' '}
+                <span className="text-fg-2">
+                  {operation.smtp_envelope.body_preview}
+                </span>
+              </p>
+            )}
+            <div>
+              <button
+                type="button"
+                onClick={handleToggleFullBody}
+                disabled={fullBodyMut.isPending}
+                aria-expanded={showFullBody}
+                className="text-xs font-medium text-emerald-400 hover:text-emerald-300 underline underline-offset-2 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {fullBodyMut.isPending
+                  ? 'Loading…'
+                  : showFullBody
+                  ? 'Hide full message'
+                  : 'Read full message'}
+              </button>
+            </div>
+            {showFullBody && fullBody != null && (
+              <pre className="mt-1 max-h-64 overflow-auto rounded border border-edge bg-surface-hi p-2 text-xs text-fg-2 whitespace-pre-wrap break-words font-sans">
+                {fullBody.length > 0 ? fullBody : '(empty message body)'}
+              </pre>
             )}
           </div>
         )}

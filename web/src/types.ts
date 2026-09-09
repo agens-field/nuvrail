@@ -10,6 +10,10 @@ export interface SmtpEnvelope {
   to: string[]
   subject: string
   body_preview: string
+  // Full outgoing message body. Omitted from the pending-list payload to keep it
+  // lean; populated only by the single-op fetch (GET /api/v1/operations/{id}),
+  // which the approver triggers on demand via "Read full message".
+  body?: string
   in_reply_to?: string  // present when the outgoing message replies to a thread
   original?: { subject?: string | null; sender?: string | null }  // matched original message (mailbox mirror)
 }
