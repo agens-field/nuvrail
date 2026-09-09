@@ -48,25 +48,20 @@ git clone https://github.com/agens-field/nuvrail.git
 cd nuvrail
 cp .env.example .env
 
-# ⚠️ REQUIRED for a local trial — do NOT skip this line. Clear the
-# production-only origin setting so the localhost UI can talk to the API
-# (dev env then falls back to permissive CORS). Skip it and the browser at
-# localhost:3000 gets a silent CORS failure with no obvious cause:
-sed -i 's/^NUVRAIL_CORS_ORIGINS=.*/NUVRAIL_CORS_ORIGINS=/' .env
-
 docker compose up --build
 ```
+
+> 🔌 **Port 3000 already taken?** Set `NUVRAIL_HOST_WEB_PORT=3400` in `.env`
+> (likewise `NUVRAIL_HOST_API_PORT`, `NUVRAIL_HOST_IMAP_PORT`, `NUVRAIL_HOST_SMTP_PORT`)
+> and use that port in the URLs below. Ports are published host-side only — nothing
+> about the host or port is baked into the web bundle, so `docker compose up -d` picks
+> the change up without a rebuild.
 
 > ⏱️ **First build takes several minutes — this is normal, not a hang.** The initial
 > `--build` compiles both images from scratch (Python deps for the gateway, a Vite build
 > for the web PWA), so a true fresh clone with a cold cache is typically **~5–9 min** on
 > first run — not 60 seconds. Later `docker compose up` runs start in seconds. If the
 > terminal sits quiet mid-build, it is compiling, not stuck; let it finish.
-
-> The shipped `.env.example` is pre-filled for a real `nuvrail.example.com` deployment.
-> Clearing `NUVRAIL_CORS_ORIGINS` with `NUVRAIL_ENV=dev` (the default) lets the local
-> browser at `localhost:3000` reach the API; production refuses to start without an
-> explicit origin. That's the only edit the local trial needs.
 
 Then open **<http://localhost:3000>** and create your first account. The API is on
 `http://localhost:8080`:
@@ -81,6 +76,13 @@ curl -s http://localhost:8080/health   # → {"status": "ok", ...}
 That's it — the approval UI, REST API, and IMAP/SMTP proxies (`localhost:10143` / `localhost:10587`)
 are all running. Point a test IMAP/SMTP client at the proxy ports and watch writes get staged for
 approval in the UI.
+
+> 🌐 **Running it on a remote box?** The browser never calls the API directly —
+> the web container proxies `/api/` to the gateway over the compose network — so only
+> the web port needs publishing. Set `NUVRAIL_BIND_ADDR=0.0.0.0` in `.env`, rerun
+> `docker compose up -d`, and open `http://<host>:3000`. No rebuild, no `VITE_API_URL`,
+> no CORS entry. Do this on a trusted network only: it is plain HTTP carrying bearer
+> tokens — see [Deploying to production](#deploying-to-production) for the TLS path.
 
 > ℹ️ **Local trial only.** With `NUVRAIL_MASTER_KEY` left blank the gateway auto-generates a
 > key on first run (fine for kicking the tires, **not** for real mail). To connect a real
@@ -231,6 +233,14 @@ server {
 }
 ```
 
+> ℹ️ **Ports and bind address.** The block above reaches the containers on
+> `127.0.0.1:3000` and `127.0.0.1:8080` — the compose defaults. If you remapped either
+> with `NUVRAIL_HOST_WEB_PORT` / `NUVRAIL_HOST_API_PORT`, use your numbers here. Leave
+> `NUVRAIL_BIND_ADDR` at its `127.0.0.1` default: nginx reaches the containers over
+> loopback, so nothing should be published to the network. Note the SPA calls `/api/`
+> on its own origin, so the `location /api/` block above is what serves it — there is
+> no `VITE_API_URL` to set.
+
 ```bash
 sudo ln -s /etc/nginx/sites-available/nuvrail /etc/nginx/sites-enabled/
 sudo nginx -t && sudo systemctl reload nginx
@@ -341,7 +351,12 @@ server {
         proxy_http_version 1.1;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        # SET, not append ($proxy_add_x_forwarded_for). The API trusts the
+        # FIRST entry of this header to key its per-IP login lockout, so
+        # appending would preserve a value the caller sent and let anyone
+        # forge their IP to sidestep the lockout. $remote_addr is the peer
+        # nginx actually accepted the connection from.
+        proxy_set_header X-Forwarded-For $remote_addr;
         proxy_set_header X-Forwarded-Proto $scheme;
     }
     location = /health {

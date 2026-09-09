@@ -74,7 +74,7 @@ export async function fetchOrThrow(
     return await fetch(input, init)
   } catch (err) {
     if (err instanceof TypeError) {
-      throw new NetworkError(BASE, err)
+      throw new NetworkError(BASE || window.location.origin, err)
     }
     throw err
   }
