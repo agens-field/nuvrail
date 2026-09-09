@@ -1,15 +1,29 @@
+# Host ports are overridable from .env so a port already in use on the host can
+# be remapped without editing this file. Container-side ports never change.
+#
+# The web container proxies /api/ to the gateway over the compose network, so
+# the browser only ever talks to ONE origin (the web app's) and only the web
+# port has to be published. NUVRAIL_HOST_API_PORT stays bound to loopback for
+# host-side curl/health checks; the browser does not use it.
 services:
   gateway:
     build:
       context: .
       dockerfile: Dockerfile.gateway
     ports:
-      - "127.0.0.1:10143:10143"   # IMAP proxy — localhost only; nginx stream provides TLS on :993
-      - "127.0.0.1:10587:10587"   # SMTP proxy — localhost only; nginx stream provides TLS on :465
-      - "127.0.0.1:8080:8080"     # REST API — localhost only; nginx/web proxies externally
+      - "127.0.0.1:${NUVRAIL_HOST_IMAP_PORT:-10143}:10143"   # IMAP proxy — localhost only; nginx stream provides TLS on :993
+      - "127.0.0.1:${NUVRAIL_HOST_SMTP_PORT:-10587}:10587"   # SMTP proxy — localhost only; nginx stream provides TLS on :465
+      - "127.0.0.1:${NUVRAIL_HOST_API_PORT:-8080}:8080"      # REST API — loopback only; the web container reaches it over the compose network
     volumes:
       - nuvrail_data:/data
     env_file: .env
+    environment:
+      # The web container's /api/ proxy makes nginx the socket peer for every
+      # request, which would collapse the per-IP login lockout into one global
+      # bucket. This lets uvicorn read the real client IP from X-Forwarded-For.
+      # Safe here because the API port is published on loopback only; see
+      # docker-entrypoint.sh for why it is opt-in rather than always on.
+      NUVRAIL_FORWARDED_ALLOW_IPS: "*"
     restart: unless-stopped
 
   web:
@@ -17,12 +31,23 @@ services:
       context: web
       dockerfile: Dockerfile.web
       args:
-        # Point these at the gateway's externally-reachable URL/host (the
-        # browser talks to it directly). Defaults work for local self-hosting.
-        VITE_API_URL: http://localhost:8080
-        VITE_PROXY_HOST: localhost
+        # Empty (the default) = same-origin: the SPA issues relative /api/v1/...
+        # requests and nginx proxies them to the gateway. Nothing about the
+        # host or port is baked into the bundle, so the same image works on
+        # localhost, a LAN box, or behind a TLS reverse proxy.
+        #
+        # Set NUVRAIL_API_URL only for a SPLIT deployment where the gateway is
+        # NOT reachable over this compose network (fly.io: separate apps). It
+        # must then be an absolute URL the BROWSER can reach, and it is also
+        # substituted into the CSP connect-src at image build.
+        VITE_API_URL: ${NUVRAIL_API_URL:-}
+        # Host the Agents screen prints in the IMAP/SMTP snippet handed to an
+        # agent. Set this to the real hostname if agents run off-box.
+        VITE_PROXY_HOST: ${NUVRAIL_PROXY_HOST:-localhost}
     ports:
-      - "127.0.0.1:3000:80"       # Approval web app — localhost only; front with a TLS reverse proxy
+      # Bind address defaults to loopback. Set NUVRAIL_BIND_ADDR=0.0.0.0 to
+      # serve the app to other machines — see the TLS note in the README.
+      - "${NUVRAIL_BIND_ADDR:-127.0.0.1}:${NUVRAIL_HOST_WEB_PORT:-3000}:80"
     depends_on:
       - gateway
     restart: unless-stopped
