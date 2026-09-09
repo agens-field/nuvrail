@@ -23,6 +23,12 @@ groupings, not published tags.
 - Community & contributor docs for the open-source launch: `CONTRIBUTING.md`
   (build/test/PR workflow, AGPL-3.0/DCO stance) and `SECURITY.md` (coordinated
   disclosure policy).
+- Deployment knobs in `.env` so a self-host box needs no file edits:
+  `NUVRAIL_HOST_WEB_PORT` / `_API_PORT` / `_IMAP_PORT` / `_SMTP_PORT` remap host
+  ports when one is already taken, `NUVRAIL_BIND_ADDR` (default `127.0.0.1`)
+  serves the app to other machines, `NUVRAIL_PROXY_HOST` sets the hostname the
+  Agents screen hands an agent, and `NUVRAIL_API_URL` supplies an absolute API
+  URL for split deployments where the gateway is not on the compose network.
 
 ### Fixed
 - Web client now distinguishes a network/wiring failure from an HTTP error
@@ -31,8 +37,36 @@ groupings, not published tags.
   the browser's bare "Load failed" / "Failed to fetch", indistinguishable from a
   server rejection. It now throws a typed `NetworkError` naming the target URL
   and the likely cause; HTTP 4xx/5xx errors are left exactly as-is. (GH #140)
+- Self-hosted web app now calls the API on its **own origin**. The web container
+  proxies `/api/` to the gateway over the compose network, restoring the block
+  removed in `2830931` — routed through a variable this time, so nginx still
+  boots where the `gateway` host does not resolve (fly.io runs web and gateway
+  as separate apps, which is why it was dropped). Previously an absolute
+  `VITE_API_URL` was baked into the bundle, making the API a second origin and
+  tying three files to one value: the compose port, the CSP `connect-src`
+  allowlist, and `NUVRAIL_CORS_ORIGINS`. No localhost origin was ever in
+  `connect-src`, so the documented local quickstart was CSP-blocked, and any
+  port remap or remote-host deployment failed with an opaque "Couldn't reach the
+  Nuvrail API at ...". Same-origin drops CORS from the picture entirely and takes
+  the host and port out of the bundle, so remapping a port no longer needs a
+  rebuild. The production nginx already routed `/api/` this way, so TLS
+  deployments are unaffected.
+- `NetworkError` now names the page's own origin when the client is built for
+  same-origin use, instead of reporting an empty target URL.
 - Removed a stray bottom "MIT License" block in the README that contradicted the
   project's AGPL-3.0 license declaration.
+
+### Security
+- The API keys its per-IP login lockout and rate limits on the client address,
+  which the new `/api/` proxy would have collapsed into a single global bucket —
+  one attacker could throttle or lock out every user. uvicorn now honours
+  `X-Forwarded-For`, but only when `NUVRAIL_FORWARDED_ALLOW_IPS` names the peers
+  allowed to set it (compose sets `*`; the API port is published on loopback
+  only), so a directly exposed gateway keeps using the real socket peer.
+- Both the web container and the documented TLS front end now **set** rather than
+  append `X-Forwarded-For`. uvicorn trusts the first entry, so an appended header
+  would have preserved a caller-supplied address and let anyone forge the client
+  IP used by the login lockout.
 
 ## [0.1.0] - 2026-06-15
 
