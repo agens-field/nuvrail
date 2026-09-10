@@ -69,6 +69,7 @@ from gateway.agent_auth import decode_sasl_plain, verify_agent_login
 from gateway.credentials import fetch_credential
 from gateway.extensions import load_plugins
 from gateway.intent import derive_send_intent, extract_message_ids, strip_subject_prefixes
+from gateway.mime_render import render_body
 from gateway.security_controls import build_auth_abuse_protector
 from gateway.staging import create_operation
 from gateway.state_db import (
@@ -775,13 +776,22 @@ async def handle_smtp_client(
                 )
 
                 body_text = b"".join(body_lines).decode("utf-8", errors="replace")
-                body_preview = body_text[:200]  # kept for quick-scan display only
+                # body_rendered is a DISPLAY-ONLY decode of the raw payload:
+                # reverses Content-Transfer-Encoding (base64 / quoted-printable)
+                # and reduces HTML to rough text so a reviewer can actually read
+                # what will be sent (issue #154). It is NEVER used for relay —
+                # execution.py replays the untouched raw `body` verbatim.
+                body_rendered = render_body(body_text)
+                # Preview the *rendered* text, not the raw payload, so the
+                # collapsed one-liner is readable for encoded bodies too.
+                body_preview = body_rendered[:200]  # quick-scan display only
                 envelope = {
                     "from": sender or "",
                     "to": recipients,
                     "subject": subject,
-                    "body": body_text,       # full message body for approval
-                    "body_preview": body_preview,  # truncated for quick-scan display
+                    "body": body_text,       # RAW full body — relayed verbatim on approval
+                    "body_rendered": body_rendered,  # decoded, display-only (issue #154)
+                    "body_preview": body_preview,  # truncated rendered text for quick-scan
                 }
                 if in_reply_to:
                     envelope["in_reply_to"] = in_reply_to
