@@ -30,7 +30,8 @@ async def db_path(tmp_path: Path) -> Path:
 # ---------------------------------------------------------------------------
 
 _ENVELOPE = json.dumps({"from": "a@b.com", "to": ["c@d.com"], "subject": "Hi",
-                        "body_preview": "Secret content", "body": "Full body text"})
+                        "body_preview": "Secret content", "body": "Full body text",
+                        "body_rendered": "Decoded secret content"})
 _ENVELOPE_NO_PREVIEW = json.dumps({"from": "a@b.com", "to": ["c@d.com"], "subject": "Hi",
                                     "body_preview": None, "body": None})
 
@@ -194,6 +195,7 @@ async def test_scrub_nulls_body_preview(db_path: Path) -> None:
     envelope = json.loads(row["smtp_envelope"])
     assert envelope["body_preview"] is None
     assert envelope["body"] is None          # full RFC 2822 body scrubbed too
+    assert envelope["body_rendered"] is None  # decoded display copy scrubbed too (#154)
     # Metadata must be preserved
     assert envelope["from"] == "a@b.com"
     assert row["body_scrubbed_at"] is not None

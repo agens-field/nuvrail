@@ -9,11 +9,19 @@ export interface SmtpEnvelope {
   from: string
   to: string[]
   subject: string
+  // Preview of the *rendered* (decoded) body — readable even for base64 /
+  // quoted-printable encoded emails (issue #154).
   body_preview: string
-  // Full outgoing message body. Omitted from the pending-list payload to keep it
-  // lean; populated only by the single-op fetch (GET /api/v1/operations/{id}),
-  // which the approver triggers on demand via "Read full message".
+  // Full outgoing message body, RAW (exactly what will be relayed on approval).
+  // Omitted from the pending-list payload to keep it lean; populated only by the
+  // single-op fetch (GET /api/v1/operations/{id}) the approver triggers via
+  // "Read full message".
   body?: string
+  // Decoded, display-only rendering of `body` (CTE + charset reversed, HTML
+  // reduced to text) for the "Read full message" view. Preferred over the raw
+  // `body` for display; `body` remains the fallback for ops staged before this
+  // field existed (issue #154). Same on-demand fetch + scrub lifecycle as `body`.
+  body_rendered?: string
   in_reply_to?: string  // present when the outgoing message replies to a thread
   original?: { subject?: string | null; sender?: string | null }  // matched original message (mailbox mirror)
 }
