@@ -13,6 +13,22 @@ import gateway.entitlements as ent
 
 @pytest.fixture(autouse=True)
 def _restore_entitlements():
+    """Pin the open-core default around every test in this module.
+
+    The active entitlements provider is a PROCESS-GLOBAL (``entitlements._active``).
+    When the enterprise plugin is installed, ``load_plugins()`` — triggered by
+    the API app fixtures in other test modules — calls ``register_entitlements``
+    to swap in ``PlanEntitlements`` and never resets it. If those tests run
+    before this module (e.g. ``tests/api`` before ``tests/gateway``), that
+    enterprise provider leaks in here and these ``open_core`` tests silently run
+    against the WRONG provider — which reads a ``users`` table that this DB-less
+    module never creates, raising ``no such table: users``.
+
+    Reset to the open-core default BEFORE each test (not just after) so this
+    module is order-independent and actually exercises open core. Mirrors the
+    save/reset/restore guard already used in tests/api/test_rate_limiting.py.
+    """
+    ent.reset_entitlements()
     yield
     ent.reset_entitlements()
 
