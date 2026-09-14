@@ -293,6 +293,54 @@ async def test_smtp_envelope_full_body_stored_and_returned(
     assert len(envelope["body_preview"]) == 200
 
 
+async def test_smtp_envelope_body_rendered_round_trips_for_review(
+    client: httpx.AsyncClient, db_path: Path
+) -> None:
+    """Issue #154: the decoded, display-only body_rendered must survive the
+    API round-trip so the approval card can show readable text for an encoded
+    email — while the raw `body` (relayed verbatim on approval) is unchanged.
+
+    Mirrors what the SMTP proxy stores: raw base64 `body`, plus a
+    `body_rendered` produced by gateway.mime_render.render_body.
+    """
+    import base64 as _b64
+
+    from gateway.mime_render import render_body
+
+    plain = "Please approve this outgoing note.\nIt was base64-encoded on the wire.\n"
+    encoded = _b64.b64encode(plain.encode("utf-8")).decode("ascii")
+    raw_body = (
+        "Content-Type: text/plain; charset=\"utf-8\"\r\n"
+        "Content-Transfer-Encoding: base64\r\n\r\n"
+        f"{encoded}"
+    )
+    rendered = render_body(raw_body)
+    op_id = await _create_op(
+        op_type="smtp_send",
+        protocol="smtp",
+        description="Send encoded email",
+        smtp_envelope={
+            "from": "agent@nuvrail.example.com",
+            "to": ["human@example.com"],
+            "subject": "Encoded body",
+            "body": raw_body,
+            "body_rendered": rendered,
+            "body_preview": rendered[:200],
+        },
+        db_path=db_path,
+    )
+    resp = await client.get(f"/api/v1/operations/{op_id}")
+    assert resp.status_code == 200
+    envelope = resp.json()["smtp_envelope"]
+    # Raw body must be relayed verbatim — untouched, still the base64 blob.
+    assert envelope["body"] == raw_body
+    # Rendered copy is readable and does NOT contain the raw base64 blob.
+    assert "It was base64-encoded on the wire." in envelope["body_rendered"]
+    assert encoded not in envelope["body_rendered"]
+    # Preview is drawn from the readable rendering, not the raw payload.
+    assert "Please approve this outgoing note." in envelope["body_preview"]
+
+
 async def test_get_operation_not_found(client: httpx.AsyncClient) -> None:
     """GET /api/v1/operations/nonexistent returns 404."""
     resp = await client.get("/api/v1/operations/op_000000")

@@ -57,8 +57,13 @@ export default function OperationCard({ operation, selected, onToggleSelect }: O
   // the single-op endpoint the first time the approver expands it, then cached
   // locally for the life of this card.
   const [showFullBody, setShowFullBody] = useState(false)
+  // Prefer the decoded, display-only rendering (readable for base64 /
+  // quoted-printable bodies, issue #154); fall back to the raw body for ops
+  // staged before body_rendered existed.
   const [fullBody, setFullBody] = useState<string | null>(
-    operation.smtp_envelope?.body ?? null,
+    operation.smtp_envelope?.body_rendered ??
+      operation.smtp_envelope?.body ??
+      null,
   )
 
   const isSmtp = operation.protocol.toLowerCase() === 'smtp'
@@ -121,7 +126,9 @@ export default function OperationCard({ operation, selected, onToggleSelect }: O
   const fullBodyMut = useMutation({
     mutationFn: () => fetchOperation(operation.id),
     onSuccess: (op) => {
-      setFullBody(op.smtp_envelope?.body ?? '')
+      setFullBody(
+        op.smtp_envelope?.body_rendered ?? op.smtp_envelope?.body ?? '',
+      )
       setShowFullBody(true)
     },
     onError: (err: Error) => {

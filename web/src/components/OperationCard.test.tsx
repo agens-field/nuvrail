@@ -154,3 +154,53 @@ describe('OperationCard — read full SMTP body (GH #152)', () => {
     expect(document.querySelector('pre b')).toBeNull()
   })
 })
+
+describe('OperationCard — prefers decoded body_rendered (GH #154)', () => {
+  beforeEach(() => {
+    fetchOperation.mockReset()
+  })
+
+  const RAW_B64 = 'SGVsbG8gcmV2aWV3ZXIsIHRoaXMgd2FzIGJhc2U2NC1lbmNvZGVkLg=='
+  const DECODED = 'Hello reviewer, this was base64-encoded.'
+
+  it('shows body_rendered (decoded) rather than the raw base64 body on expand', async () => {
+    const user = userEvent.setup()
+    // The single-op fetch returns BOTH the raw (encoded) body and the decoded
+    // rendering; the card must display the readable one.
+    fetchOperation.mockResolvedValue(
+      smtpOp({
+        smtp_envelope: {
+          ...smtpOp().smtp_envelope!,
+          body: RAW_B64,
+          body_rendered: DECODED,
+        },
+      }),
+    )
+    renderCard(smtpOp())
+
+    await user.click(screen.getByRole('button', { name: /read full message/i }))
+
+    await waitFor(() => {
+      expect(screen.getByText(/this was base64-encoded/i)).toBeInTheDocument()
+    })
+    // The raw base64 blob must NOT be what the reviewer sees.
+    expect(screen.queryByText(RAW_B64)).not.toBeInTheDocument()
+  })
+
+  it('falls back to the raw body when body_rendered is absent (legacy op)', async () => {
+    const user = userEvent.setup()
+    const legacyBody = 'Legacy plaintext body with no rendered field.'
+    fetchOperation.mockResolvedValue(
+      smtpOp({
+        smtp_envelope: { ...smtpOp().smtp_envelope!, body: legacyBody },
+      }),
+    )
+    renderCard(smtpOp())
+
+    await user.click(screen.getByRole('button', { name: /read full message/i }))
+
+    await waitFor(() => {
+      expect(screen.getByText(/legacy plaintext body/i)).toBeInTheDocument()
+    })
+  })
+})
