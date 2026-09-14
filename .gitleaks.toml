@@ -91,6 +91,13 @@ regexes = [
 paths = [
     # Test files may contain fixture credentials
     '''tests/''',
+    # Co-located unit tests (Vitest/Jest convention) live next to the source
+    # they cover — e.g. web/src/components/OperationCard.test.tsx — not under
+    # tests/. They carry the same fixture credentials the tests/ allowance
+    # exists for (e.g. a base64 sample body for the #154 decode test), so the
+    # same policy applies wherever a *.test.* / *.spec.* file lives. Anchored
+    # to the filename suffix so it only ever matches test files, never source.
+    '''\.(test|spec)\.(ts|tsx|js|jsx|mjs|cjs)$''',
     # This config file itself
     '''\.gitleaks\.toml''',
     # .env.example ships EMPTY placeholder assignments (KEY=, SECRET=) so a
