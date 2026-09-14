@@ -15,6 +15,7 @@ from pathlib import Path
 import httpx
 import pytest
 
+import gateway.entitlements as entitlements_mod
 from api.auth import get_auth_db_path
 from api.limiter import limiter
 from api.main import app
@@ -28,6 +29,28 @@ def reset_rate_limiters() -> None:
     """Clear all in-memory rate-limit storage before each test."""
     limiter.reset()
     LOGIN_ABUSE_PROTECTOR.reset()
+
+
+@pytest.fixture(autouse=True)
+def _restore_entitlements_provider():
+    """Contain the entitlements provider swap within the api suite.
+
+    The active provider is a PROCESS-GLOBAL (``gateway.entitlements._active``).
+    Importing ``api.main`` runs ``load_plugins()``, and when the enterprise
+    package is installed that registers ``PlanEntitlements`` — permanently, for
+    the rest of the pytest process. That leak makes later open-core-assuming
+    modules (e.g. tests/gateway/test_entitlements) run against the wrong
+    provider, which reads a ``users`` table they never created
+    (``no such table: users``).
+
+    Snapshot the provider before each api test and restore it after, so whatever
+    api tests rely on (the real installed provider) never escapes this suite.
+    Individual tests that deliberately swap the provider still work — they are
+    restored to the pre-test snapshot here.
+    """
+    _snapshot = entitlements_mod.entitlements()
+    yield
+    entitlements_mod.register_entitlements(_snapshot)
 
 
 @pytest.fixture(autouse=True)
