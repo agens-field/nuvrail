@@ -744,6 +744,14 @@ Point any IMAP/SMTP client at the Nuvrail proxy using the agent credentials. The
 **Permanently blocked:**
 - `EXPUNGE` — the gateway never allows permanent deletion
 
+### Integration recipes
+
+Step-by-step guides for wiring a specific agent/framework to a mailbox through Nuvrail:
+
+- [Claude Desktop](docs/integrations/claude-desktop.md) — via an IMAP/SMTP MCP server
+- [Cursor](docs/integrations/cursor.md) — via an IMAP/SMTP MCP server
+- [LangChain](docs/integrations/langchain.md) — native IMAP/SMTP tools in your own Python process
+
 ---
 
 ## Approving operations
