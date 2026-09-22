@@ -315,6 +315,7 @@ skips *Cursor's* confirmation, and the write still stages at Nuvrail for you.
 ---
 
 _See also: [Claude Desktop integration recipe](claude-desktop.md) ·
+[LangChain integration recipe](langchain.md) ·
 [Configuring your AI agent](../../README.md#configuring-your-ai-agent) ·
 [Approving operations](../../README.md#approving-operations) ·
 provider guides — [Gmail](../providers/gmail.md) · [iCloud](../providers/icloud.md) · [Outlook](../providers/outlook.md) · [generic IMAP/SMTP](../provider-imap-guide.md)._
