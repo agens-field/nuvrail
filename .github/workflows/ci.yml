@@ -5,6 +5,9 @@ on:
     branches: [main]
   push:
     branches: [main]
+  # Reused by release.yml so a tag is only released after the full CI below
+  # passes on the tagged commit (tag pushes do not match `push.branches`).
+  workflow_call:
   # Fly.io deployment lives in the private nuvrail-enterprise repo (it builds a
   # combined image from this core + the enterprise plugin). This repo is the
   # open self-host product; it only lints, tests, and validates the self-host
