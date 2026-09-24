@@ -96,14 +96,16 @@ the model required. It intercepts every command and splits them by consequence:
   but nothing touches the real mailbox yet.
 - **A human approves the write.** You get a push notification, and the approval UI
   shows exactly what the agent wants to do — subject, sender, destination — so you
-  approve or reject with one tap. (The push payload itself carries only an operation
-  ID; the details load over authenticated HTTPS when you open the app.)
+  approve or reject with one tap. (The notification is end-to-end encrypted to your
+  device via Web Push, so the push relay in between can't read it — and nothing
+  executes until you approve, or until a rule you wrote approves it for you.)
   On approval it executes against the real server. On rejection the proxy reverts its
   local state and surfaces the rejection to the agent on its next command.
 - **Destruction is blocked outright.** `EXPUNGE` is never forwarded to the real
   server, and `\Deleted` is rewritten into a staged move-to-Trash. The
   worst any agent can do is *move a message to Trash* — and even that waits for your
-  yes. There is no irreversible delete to approve, so there is no irreversible delete.
+  yes (or a rule you wrote). There is no irreversible delete to approve, so there is
+  no irreversible delete.
 
 This inverts the trust model. The agent no longer needs to be trusted with your
 identity and your history; it needs to be trusted only to *propose*. The
