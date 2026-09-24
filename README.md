@@ -36,6 +36,12 @@ AI agents that can send email are useful. AI agents that can send email *without
 
 Nothing is deleted. Ever. `EXPUNGE` is permanently blocked at the gateway layer — the worst the agent can do is move a message to Trash, and even that requires your sign-off.
 
+> 📖 **Why this exists:** [Why email is the most dangerous thing you can give an AI agent](docs/why-email-is-dangerous.md) —
+> the failure modes, why scoped OAuth and read-only tokens don't close them, and why the fix belongs on the wire.
+
+**Wiring up a specific agent?** Step-by-step recipes: [Claude Desktop](docs/integrations/claude-desktop.md) ·
+[Cursor](docs/integrations/cursor.md) · [LangChain](docs/integrations/langchain.md).
+
 ---
 
 ## ⚡ Try it in 60 seconds (local)
