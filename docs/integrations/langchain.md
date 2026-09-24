@@ -357,7 +357,8 @@ try — the approval boundary is in the proxy, not in your code. Writing a
 
 ---
 
-_See also: [Claude Desktop integration recipe](claude-desktop.md) ·
+_See also: [Why email is the most dangerous thing you can give an AI agent](../why-email-is-dangerous.md) ·
+[Claude Desktop integration recipe](claude-desktop.md) ·
 [Cursor integration recipe](cursor.md) ·
 [Configuring your AI agent](../../README.md#configuring-your-ai-agent) ·
 [Approving operations](../../README.md#approving-operations) ·
