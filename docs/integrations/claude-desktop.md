@@ -290,7 +290,8 @@ tries — the approval boundary is in the proxy, not in the client.
 
 ---
 
-_See also: [Cursor integration recipe](cursor.md) ·
+_See also: [Why email is the most dangerous thing you can give an AI agent](../why-email-is-dangerous.md) ·
+[Cursor integration recipe](cursor.md) ·
 [LangChain integration recipe](langchain.md) ·
 [Configuring your AI agent](../../README.md#configuring-your-ai-agent) ·
 [Approving operations](../../README.md#approving-operations) ·
