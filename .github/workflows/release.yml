@@ -1,0 +1,128 @@
+name: Release
+
+# Cut a GitHub Release from a version tag. Maintainer flow:
+#
+#   git tag -a v0.1.0 -m "Nuvrail v0.1.0" && git push origin v0.1.0
+#
+# What runs, per trigger:
+#
+#   trigger             notes (validate)   ci (all of ci.yml)   publish
+#   ------------------  -----------------  -------------------  ------------------
+#   push tag v*.*.*     run                run                  run (needs both)
+#   workflow_dispatch   run                run                  SKIP  (dry run)
+#   pull_request        run                skip (ci.yml runs)   skip
+#
+#   notes   = scripts/release_notes.py: tag is vX.Y.Z, tag == pyproject.toml
+#             version == web/package.json version, CHANGELOG.md has exactly one
+#             dated "## [X.Y.Z]" section, and it is non-empty. The extracted
+#             section is the release body, verbatim.
+#   publish = refuses a tag whose commit is not on main, refuses to overwrite an
+#             existing release, then `gh release create`.
+#
+# Only GITHUB_TOKEN is used (no new secrets). Only `publish` gets
+# contents:write. No container-image or package publishing: deliberately out
+# of scope for v0.1.0 (new supply-chain surface is a separate decision).
+
+on:
+  push:
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to dry-run against this ref (validates + previews notes; publishes nothing)"
+        required: true
+        default: "v0.1.0"
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  notes:
+    name: "Validate tag + extract release notes"
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.notes.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # Values reach the shell via env, never via ${{ }} interpolation, so a
+      # crafted tag/input string cannot inject commands.
+      - name: Validate and extract
+        id: notes
+        env:
+          EVENT: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          case "$EVENT" in
+            push)              tag="$REF_NAME" ;;
+            workflow_dispatch) tag="$INPUT_TAG" ;;
+            *)                 tag="v$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml","rb"))["project"]["version"])')" ;;
+          esac
+          python scripts/release_notes.py --tag "$tag" --out release-notes.md
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          {
+            echo "## Release notes preview: $tag ($EVENT)"
+            echo
+            cat release-notes.md
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-notes
+          path: release-notes.md
+          if-no-files-found: error
+
+  ci:
+    name: "CI on the release commit"
+    if: github.event_name != 'pull_request'
+    uses: ./.github/workflows/ci.yml
+
+  publish:
+    name: "Publish GitHub Release"
+    needs: [notes, ci]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Refuse tags that are not on main
+        run: |
+          set -euo pipefail
+          commit="$(git rev-parse "${GITHUB_SHA}^{commit}")"
+          if ! git merge-base --is-ancestor "$commit" origin/main; then
+            echo "::error::Tag commit $commit is not on main; refusing to release."
+            exit 1
+          fi
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-notes
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.notes.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "::error::Release $TAG already exists; refusing to overwrite it."
+            exit 1
+          fi
+          gh release create "$TAG" --verify-tag --title "Nuvrail $TAG" --notes-file release-notes.md
