@@ -34,10 +34,14 @@ AI agents that can send email are useful. AI agents that can send email *without
 3. **You get a notification** — a push notification on your phone or browser shows you exactly what the agent wants to do, with the subject, sender, and destination.
 4. **You approve or reject** — one tap. On approval the operation executes against the real server. On rejection the proxy reverts its local state and silently surfaces the rejection to the agent on its next command.
 
-Nothing is deleted. Ever. `EXPUNGE` is permanently blocked at the gateway layer — the worst the agent can do is move a message to Trash, and even that requires your sign-off.
+The agent can never permanently delete mail. `EXPUNGE` is blocked at the gateway layer, and a delete (`\Deleted`) is staged like any other write — the worst the agent can do is ask to delete a message, and even that requires your sign-off.
 
 > 📖 **Why this exists:** [Why email is the most dangerous thing you can give an AI agent](docs/why-email-is-dangerous.md) —
 > the failure modes, why scoped OAuth and read-only tokens don't close them, and why the fix belongs on the wire.
+>
+> 🧭 **Guides:** [Stop an AI agent from deleting your emails](docs/guides/stop-ai-agent-deleting-emails.md) ·
+> [Add human approval before an AI agent sends email](docs/guides/human-approval-before-ai-agent-sends-email.md) ·
+> [Human in the loop for LLM email agents](docs/guides/human-in-the-loop-llm-email-agent.md)
 
 **Wiring up a specific agent?** Step-by-step recipes: [Claude Desktop](docs/integrations/claude-desktop.md) ·
 [Cursor](docs/integrations/cursor.md) · [LangChain](docs/integrations/langchain.md).
@@ -131,7 +135,7 @@ No plain-text port is reachable from outside the host.
 
 **Key design constraints:**
 - Standard IMAP/SMTP on both ends — no agent modifications required
-- EXPUNGE permanently blocked; `\Deleted` rewrites to a staged move-to-Trash
+- EXPUNGE and CLOSE never forwarded; `\Deleted` is staged for approval like any other write
 - AES-256-GCM for all credentials at rest; TLS everywhere in transit
 - Push payloads are end-to-end encrypted to your device (Web Push, RFC 8291), so the push relay never sees email metadata
 - Immutable audit log — every action is recorded forever
