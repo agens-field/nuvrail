@@ -73,7 +73,16 @@ docker compose up --build
 > first run — not 60 seconds. Later `docker compose up` runs start in seconds. If the
 > terminal sits quiet mid-build, it is compiling, not stuck; let it finish.
 
-Then open **<http://localhost:3000>** and create your first account. The API is on
+Sign-up is **closed by default** (`NUVRAIL_SIGNUP_MODE=closed`), so the web app has no
+"create account" button. Create your first account from the CLI once the containers are up
+(it prompts for a password):
+
+```bash
+docker compose exec gateway python3 scripts/manage_users.py create you@example.com --name "You"
+```
+
+Then open **<http://localhost:3000>** and log in. (Prefer self-serve sign-up? See
+[Account creation](#account-creation-signup-modes).) The API is on
 `http://localhost:8080`:
 
 ```bash
@@ -128,7 +137,7 @@ No plain-text port is reachable from outside the host.
 - Standard IMAP/SMTP on both ends — no agent modifications required
 - EXPUNGE and CLOSE never forwarded; `\Deleted` is staged for approval like any other write
 - AES-256-GCM for all credentials at rest; TLS everywhere in transit
-- No plaintext email metadata in push payloads
+- Push payloads are end-to-end encrypted to your device (Web Push, RFC 8291), so the push relay never sees email metadata
 - Immutable audit log — every action is recorded forever
 
 ---
@@ -904,7 +913,7 @@ replace or close it.
 - **Per-agent isolation:** each AI agent has its own credentials and can only access the upstream account it was created for. There is no path for one agent to affect another agent's mailbox.
 - **Audit log:** every staged operation, approval, rejection, and execution is recorded in the database with a timestamp. The log is append-only.
 - **Rate limiting:** repeated authentication failures from a single IP trigger a lockout.
-- **Push payload privacy:** push notifications contain only the operation ID and urgency flag — no email subject, sender, or body in the push payload itself. The full detail is fetched over authenticated HTTPS when you open the app.
+- **Push payload privacy:** the push payload carries the operation ID, an urgency flag, and a short description of the action (for example the recipient and subject, or the sender and subject). That text is shown in the OS notification so you can triage from the lock screen. The payload is end-to-end encrypted to your subscribed browser/device (Web Push, RFC 8291 `aes128gcm`), so the push relay (FCM, Mozilla autopush, Apple) cannot read it. The email body is never in the push payload; full detail is fetched over authenticated HTTPS when you open the app. If lock-screen previews are a concern on a shared device, turn off notification previews in your OS settings.
 
 ---
 
