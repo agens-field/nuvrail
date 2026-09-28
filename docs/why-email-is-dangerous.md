@@ -92,20 +92,20 @@ the model required. It intercepts every command and splits them by consequence:
 - **Reads pass through instantly.** `FETCH`, `SEARCH`, `LIST` — the agent stays fast
   and useful; nothing blocks it from working.
 - **Writes are staged, not executed.** Every `MOVE`, `STORE`/flag change, and every
-  outbound `MAIL FROM` returns `OK [STAGED]` immediately, so the agent keeps going,
+  outbound send (at SMTP `DATA`) returns `OK [STAGED]` immediately, so the agent keeps going,
   but nothing touches the real mailbox yet.
 - **A human approves the write.** You get a push notification, and the approval UI
   shows exactly what the agent wants to do — subject, sender, destination — so you
   approve or reject with one tap. (The notification is end-to-end encrypted to your
-  device via Web Push, so the push relay in between can't read it — and nothing
-  executes until you approve, or until a rule you wrote approves it for you.)
+  device via Web Push, so the push relay in between can't read it — and in the
+  open-source build nothing executes until you approve it.)
   On approval it executes against the real server. On rejection the proxy reverts its
-  local state and surfaces the rejection to the agent on its next command.
-- **Destruction is blocked outright.** `EXPUNGE` is never forwarded to the real
-  server, and `\Deleted` is rewritten into a staged move-to-Trash. The
-  worst any agent can do is *move a message to Trash* — and even that waits for your
-  yes (or a rule you wrote). There is no irreversible delete to approve, so there is
-  no irreversible delete.
+  local state and surfaces the rejection to the agent the next time it reads that folder.
+- **Permanent deletion is blocked outright.** `EXPUNGE` (and `CLOSE`, which expunges
+  as a side effect) is never forwarded to the real server, and a `\Deleted` flag is
+  staged like any other write. The worst any agent can do is *ask* to delete a
+  message — and that waits for your yes. Even after you approve, the gateway only
+  sets the flag; it never expunges.
 
 This inverts the trust model. The agent no longer needs to be trusted with your
 identity and your history; it needs to be trusted only to *propose*. The

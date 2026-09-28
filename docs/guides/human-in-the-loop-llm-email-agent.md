@@ -36,7 +36,7 @@ get wiped. The line that works is reversibility:
 | Read | `FETCH`, `SEARCH`, `LIST`, `SELECT` | Pass through immediately |
 | Change | `MOVE`, `STORE` flags, create folder | Stage, wait for approval |
 | Send | SMTP `DATA` | Stage, wait for approval |
-| Destroy | `EXPUNGE` | Never forwarded; `\Deleted` becomes a staged move-to-Trash |
+| Destroy | `EXPUNGE`, `CLOSE` | Never forwarded; a `\Deleted` flag is staged like any other change |
 
 ### 2. Don't block the agent while it waits
 
@@ -53,7 +53,7 @@ the half-finished draft in a glance.
 
 ### 4. Roll back cleanly on rejection
 
-If the person says no, revert the local view and tell the agent on its next command, so
+If the person says no, revert the local view and tell the agent the next time it reads, so
 its picture of the mailbox matches reality again.
 
 ### 5. Put it underneath the agent, not inside it

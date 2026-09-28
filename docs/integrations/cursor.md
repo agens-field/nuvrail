@@ -301,9 +301,9 @@ skips *Cursor's* confirmation, and the write still stages at Nuvrail for you.
   mailbox and revocable in Nuvrail without touching your real credentials. That
   is the point of the proxy — the blast radius of a leaked token is "someone can
   *stage* operations you still have to approve," not "someone owns your inbox."
-- **Nothing is deleted, ever.** `EXPUNGE` is blocked at the gateway; the worst a
-  compromised or confused agent can do is *stage* a move-to-Trash that you then
-  reject.
+- **Nothing is permanently deleted by the agent.** `EXPUNGE` is blocked at the
+  gateway; the worst a compromised or confused agent can do is *stage* a delete that you
+  then reject.
 - **Keep your token out of version control.** A global `~/.cursor/mcp.json` is
   outside your repos; a project `.cursor/mcp.json` is not — `.gitignore` it if it
   holds the token. If it leaks, revoke the agent token in Nuvrail and mint a new

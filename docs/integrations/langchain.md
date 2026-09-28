@@ -343,8 +343,8 @@ try — the approval boundary is in the proxy, not in your code. Writing a
   mailbox and revocable in Nuvrail without touching your real credentials. That
   is the point of the proxy — the blast radius of a leaked token is "someone can
   *stage* operations you still have to approve," not "someone owns your inbox."
-- **Nothing is deleted, ever.** `EXPUNGE` is blocked at the gateway; the worst a
-  confused or prompt-injected agent can do is *stage* a move-to-Trash that you
+- **Nothing is permanently deleted by the agent.** `EXPUNGE` is blocked at the
+  gateway; the worst a confused or prompt-injected agent can do is *stage* a delete that you
   then reject.
 - **The approval boundary does not depend on the agent's cooperation.** LangChain
   has no built-in human-in-the-loop before a tool runs, and a prompt-injected

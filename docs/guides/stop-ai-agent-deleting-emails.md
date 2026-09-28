@@ -60,9 +60,10 @@ command by consequence:
 - **You decide.** You get a notification showing what the agent wants to do (subject,
   sender, destination) and approve or reject it. In the open-source build, nothing runs
   until you approve it.
-- **Permanent delete doesn't exist.** `EXPUNGE` is never forwarded to the real server.
-  `\Deleted` is rewritten into a staged move-to-Trash. The worst an agent can do is ask to
-  move a message to Trash, and that waits for your yes too.
+- **The agent can't permanently delete.** `EXPUNGE` (and `CLOSE`, which expunges as a
+  side effect) is never forwarded to the real server. Marking a message `\Deleted` is
+  staged like any other change. The worst an agent can do is ask to delete a message,
+  and that waits for your yes too.
 
 That's what [Nuvrail](https://github.com/agens-field/nuvrail) is: an open-source (AGPL-3.0),
 self-hosted IMAP/SMTP proxy built on exactly this model. The `EXPUNGE` block lives in
@@ -103,14 +104,14 @@ for real (TLS, a mailbox reachable from another machine) is covered in the
 
 Most mail servers let any authenticated client expunge, and you usually can't turn that off per
 client. The reliable way is to make sure the agent never talks to the server directly. A
-proxy in the middle can refuse to forward `EXPUNGE` and turn `\Deleted` into a reversible
-move-to-Trash. That's the Nuvrail model.
+proxy in the middle can refuse to forward `EXPUNGE` and hold every `\Deleted` flag until
+you approve it. That's the Nuvrail model.
 
 ### Will the agent break if its deletes are blocked?
 
 No. The proxy answers `OK [STAGED]`, so from the agent's side the command worked. If you
-reject the change, the proxy rolls back its local view and tells the agent on its next
-command.
+reject the change, the proxy rolls back its local view and tells the agent the next time
+it reads that folder.
 
 ### Can I see what the agent tried to do?
 
