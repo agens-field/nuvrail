@@ -34,10 +34,14 @@ AI agents that can send email are useful. AI agents that can send email *without
 3. **You get a notification** — a push notification on your phone or browser shows you exactly what the agent wants to do, with the subject, sender, and destination.
 4. **You approve or reject** — one tap. On approval the operation executes against the real server. On rejection the proxy reverts its local state and silently surfaces the rejection to the agent on its next command.
 
-Nothing is deleted. Ever. `EXPUNGE` is permanently blocked at the gateway layer — the worst the agent can do is move a message to Trash, and even that requires your sign-off.
+The agent can never permanently delete mail. `EXPUNGE` is blocked at the gateway layer, and a delete (`\Deleted`) is staged like any other write — the worst the agent can do is ask to delete a message, and even that requires your sign-off.
 
 > 📖 **Why this exists:** [Why email is the most dangerous thing you can give an AI agent](docs/why-email-is-dangerous.md) —
 > the failure modes, why scoped OAuth and read-only tokens don't close them, and why the fix belongs on the wire.
+>
+> 🧭 **Guides:** [Stop an AI agent from deleting your emails](docs/guides/stop-ai-agent-deleting-emails.md) ·
+> [Add human approval before an AI agent sends email](docs/guides/human-approval-before-ai-agent-sends-email.md) ·
+> [Human in the loop for LLM email agents](docs/guides/human-in-the-loop-llm-email-agent.md)
 
 **Wiring up a specific agent?** Step-by-step recipes: [Claude Desktop](docs/integrations/claude-desktop.md) ·
 [Cursor](docs/integrations/cursor.md) · [LangChain](docs/integrations/langchain.md).
@@ -69,7 +73,16 @@ docker compose up --build
 > first run — not 60 seconds. Later `docker compose up` runs start in seconds. If the
 > terminal sits quiet mid-build, it is compiling, not stuck; let it finish.
 
-Then open **<http://localhost:3000>** and create your first account. The API is on
+Sign-up is **closed by default** (`NUVRAIL_SIGNUP_MODE=closed`), so the web app has no
+"create account" button. Create your first account from the CLI once the containers are up
+(it prompts for a password):
+
+```bash
+docker compose exec gateway python3 scripts/manage_users.py create you@example.com --name "You"
+```
+
+Then open **<http://localhost:3000>** and log in. (Prefer self-serve sign-up? See
+[Account creation](#account-creation-signup-modes).) The API is on
 `http://localhost:8080`:
 
 ```bash
@@ -122,9 +135,9 @@ No plain-text port is reachable from outside the host.
 
 **Key design constraints:**
 - Standard IMAP/SMTP on both ends — no agent modifications required
-- EXPUNGE permanently blocked; `\Deleted` rewrites to a staged move-to-Trash
+- EXPUNGE and CLOSE never forwarded; `\Deleted` is staged for approval like any other write
 - AES-256-GCM for all credentials at rest; TLS everywhere in transit
-- No plaintext email metadata in push payloads
+- Push payloads are end-to-end encrypted to your device (Web Push, RFC 8291), so the push relay never sees email metadata
 - Immutable audit log — every action is recorded forever
 
 ---
@@ -900,7 +913,7 @@ replace or close it.
 - **Per-agent isolation:** each AI agent has its own credentials and can only access the upstream account it was created for. There is no path for one agent to affect another agent's mailbox.
 - **Audit log:** every staged operation, approval, rejection, and execution is recorded in the database with a timestamp. The log is append-only.
 - **Rate limiting:** repeated authentication failures from a single IP trigger a lockout.
-- **Push payload privacy:** push notifications contain only the operation ID and urgency flag — no email subject, sender, or body in the push payload itself. The full detail is fetched over authenticated HTTPS when you open the app.
+- **Push payload privacy:** the push payload carries the operation ID, an urgency flag, and a short description of the action (for example the recipient and subject, or the sender and subject). That text is shown in the OS notification so you can triage from the lock screen. The payload is end-to-end encrypted to your subscribed browser/device (Web Push, RFC 8291 `aes128gcm`), so the push relay (FCM, Mozilla autopush, Apple) cannot read it. The email body is never in the push payload; full detail is fetched over authenticated HTTPS when you open the app. If lock-screen previews are a concern on a shared device, turn off notification previews in your OS settings.
 
 ---
 

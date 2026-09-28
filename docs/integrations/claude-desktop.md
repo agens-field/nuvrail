@@ -281,9 +281,9 @@ tries — the approval boundary is in the proxy, not in the client.
   mailbox and revocable in Nuvrail without touching your real credentials. That
   is the point of the proxy — the blast radius of a leaked token is "someone can
   *stage* operations you still have to approve," not "someone owns your inbox."
-- **Nothing is deleted, ever.** `EXPUNGE` is blocked at the gateway; the worst a
-  compromised or confused agent can do is *stage* a move-to-Trash that you then
-  reject.
+- **Nothing is permanently deleted by the agent.** `EXPUNGE` is blocked at the
+  gateway; the worst a compromised or confused agent can do is *stage* a delete that you
+  then reject.
 - **Keep `claude_desktop_config.json` out of version control** — it holds the
   token in plaintext. If it leaks, revoke the agent token in Nuvrail and mint a
   new one.

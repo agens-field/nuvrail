@@ -95,8 +95,12 @@ at the gateway — nothing is ever permanently deleted without sign-off.
 - **Multi-provider mail support** — Gmail/Google via OAuth2 (XOAUTH2 SASL) with
   a web connect flow from the Agents UI, plus separate IMAP/SMTP host support;
   generic IMAP/SMTP via credential passthrough.
-- **Auto-approval rules engine** — CRUD API and web UI to let low-risk
-  operations through automatically while still gating destructive actions.
+- **Auto-approval rules hook** — the auto-approval rules engine, its `/rules`
+  API, and the Rules screen ship in the separate `nuvrail-enterprise` plugin, not
+  in this open-source build. Core keeps a plugin hook, the `auto_approval_rules`
+  table (so account data export still works), and hides the Rules screen unless
+  the plugin reports the feature. Without the plugin, every write waits for a
+  human.
 - **Operation intent labels** — human-readable summaries of what an agent wants
   to do (move, reply/forward, special-use folder actions), including batch
   intent summaries for review at a glance.
