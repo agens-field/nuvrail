@@ -782,6 +782,30 @@ async def get_special_use_folders(
     return {row["name"].lower(): row["special_use"] for row in rows}
 
 
+async def get_trash_folder(
+    *,
+    user_id: "int | None",
+    db_path: Path = DB_PATH,
+) -> "str | None":
+    """Return the tenant's server-declared ``\\Trash`` folder, case preserved.
+
+    Unlike get_special_use_folders (lower-cased keys, for classification),
+    this returns the exact name the server advertised, because it is used
+    as a real IMAP mailbox argument (UID MOVE target) and mailbox names
+    other than INBOX are case-sensitive. None when no folder carries the
+    RFC 6154 \\Trash attribute (or discovery hasn't run for this tenant).
+    If a server ever declares more than one, the lowest name wins so the
+    choice is deterministic.
+    """
+    async with get_db(db_path) as db, db.execute(
+        "SELECT name FROM folders "
+        "WHERE user_id IS ? AND special_use = 'trash' ORDER BY name LIMIT 1",
+        (user_id,),
+    ) as cur:
+        row = await cur.fetchone()
+    return row["name"] if row is not None else None
+
+
 # ---------------------------------------------------------------------------
 # Message sync helpers
 # ---------------------------------------------------------------------------

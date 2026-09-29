@@ -118,8 +118,8 @@ async def test_undo_move_reverses_direction(db_path: Path) -> None:
         result = await undo_operation(op_id, db_path)
 
     assert result["op_type"] == "move"
-    assert ("select", "Archive") in fake.calls
-    assert ("uid", "move", "42", "INBOX") in fake.calls
+    assert ("select", "\"Archive\"") in fake.calls
+    assert ("uid", "move", "42", "\"INBOX\"") in fake.calls
 
     async with get_db(db_path) as db:
         async with db.execute(
@@ -132,6 +132,51 @@ async def test_undo_move_reverses_direction(db_path: Path) -> None:
         ) as cur:
             audit = await cur.fetchone()
     assert audit is not None and audit["actor"] == "human"
+
+
+async def test_undo_trash_moves_back_out_of_trash(db_path: Path) -> None:
+    """#168: an executed trash op moved the message into folder_to (Trash);
+    undo moves it back. Mailbox names are quoted like the forward executor."""
+    from unittest.mock import patch
+
+    agent_id = await _seed_agent(db_path)
+    op_id = await _seed_executed_op(
+        db_path, agent_id=agent_id, op_type="trash",
+        folder_from="INBOX", folder_to="Deleted Items", message_ids=["42"],
+    )
+
+    fake = _FakeIMAP()
+    with patch("gateway.undo.aioimaplib.IMAP4_SSL", return_value=fake):
+        result = await undo_operation(op_id, db_path)
+
+    assert result["op_type"] == "trash"
+    assert ("select", '"Deleted Items"') in fake.calls
+    assert ("uid", "move", "42", '"INBOX"') in fake.calls
+
+
+async def test_undo_trash_store_fallback_refuses(db_path: Path) -> None:
+    """A trash op that fell back to STORE \\Deleted has no folder_to: nothing
+    was moved, so undo refuses instead of moving something out of Trash."""
+    agent_id = await _seed_agent(db_path)
+    op_id = await create_operation(
+        op_type="trash", protocol="imap", description="Mark deleted",
+        agent_id=agent_id, folder_from="INBOX", folder_to=None,
+        message_ids=["42"], db_path=db_path,
+    )
+    async with get_db(db_path) as db:
+        await db.execute(
+            "UPDATE staged_operations SET status = 'executed', undo_expires_at = ? WHERE id = ?",
+            (int(time.time()) + 3600, op_id),
+        )
+        await db.commit()
+
+    from unittest.mock import patch
+
+    fake = _FakeIMAP()
+    with patch("gateway.undo.aioimaplib.IMAP4_SSL", return_value=fake):
+        with pytest.raises(UndoError, match="folder_to not recorded"):
+            await undo_operation(op_id, db_path)
+    assert not [c for c in fake.calls if c[0] == "uid"]
 
 
 # ---------------------------------------------------------------------------

@@ -12,6 +12,23 @@ heading format exact and add new work under `[Unreleased]`.
 
 ## [Unreleased]
 
+### Fixed
+- An approved "Move to Trash" now actually moves the message to Trash
+  ([#168](https://github.com/agens-field/nuvrail/issues/168)). Previously the
+  approved op ran as `UID STORE +FLAGS (\Deleted)` on the real server: Gmail
+  archived the message, and on Dovecot/Fastmail it stayed flagged until the
+  human's own client expunged it, with no Trash copy. Now the Trash folder is
+  resolved when the op is staged (the server's RFC 6154 `\Trash` folder, else
+  the provider profile's) and the approved op runs as `UID MOVE` into it. If no
+  Trash folder is known, the op is staged and labelled "Mark deleted (no Trash
+  folder found)" and runs as the `\Deleted` flag. If the server lacks `MOVE`,
+  it falls back to the flag and the fallback is recorded in the `executed`
+  audit row. The gateway still never expunges. Undo of a trash op moves it back
+  from Trash.
+- Undo now quotes mailbox names, so undoing a move out of a folder whose name
+  has a space (Outlook `Deleted Items`, iCloud `Deleted Messages`) no longer
+  sends a malformed `SELECT`.
+
 ## [0.1.0] - 2026-09-23
 
 First tagged release of Nuvrail: a self-hostable approval gateway for AI

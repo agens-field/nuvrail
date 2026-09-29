@@ -43,8 +43,29 @@ class TestBuildRichDescriptionSingle:
 
     def test_trash_with_metadata(self):
         op = parse_store("A1", uid_mode=True, uid_set="7", flags_op="+FLAGS", flags=["\\Deleted"])
+        op.folder_to = "Trash"  # resolved at staging (proxy._resolve_trash_folder, #168)
         meta = [{"uid": 7, "sender": "spam@evil.com", "subject": "You won!"}]
         assert build_rich_description(op, meta) == 'Move to Trash: "You won!" from spam@evil.com'
+
+    def test_trash_without_trash_folder_is_labelled_mark_deleted(self):
+        """#168: no Trash folder known → it will execute as STORE \\Deleted, so
+        it must not be labelled "Move to Trash"."""
+        op = parse_store("A1", uid_mode=True, uid_set="7", flags_op="+FLAGS", flags=["\\Deleted"])
+        meta = [{"uid": 7, "sender": "spam@evil.com", "subject": "You won!"}]
+        assert build_rich_description(op, meta, "delete") == (
+            'Mark deleted (no Trash folder found): "You won!" from spam@evil.com'
+        )
+
+    def test_trash_without_trash_folder_no_metadata(self):
+        op = parse_store("A1", uid_mode=True, uid_set="7", flags_op="+FLAGS", flags=["\\Deleted"])
+        assert build_rich_description(op, [], "delete") == (
+            "Mark deleted (no Trash folder found): 7"
+        )
+
+    def test_trash_with_trash_folder_no_metadata_has_no_destination_suffix(self):
+        op = parse_store("A1", uid_mode=True, uid_set="7", flags_op="+FLAGS", flags=["\\Deleted"])
+        op.folder_to = "[Gmail]/Trash"
+        assert build_rich_description(op, [], "delete") == "Move to Trash: 7"
 
     def test_star_with_metadata(self):
         op = parse_store("A1", uid_mode=True, uid_set="55", flags_op="+FLAGS", flags=["\\Flagged"])
@@ -88,6 +109,7 @@ class TestBuildRichDescriptionMultiCommonSender:
 
     def test_trash_common_sender(self):
         op = parse_store("A1", uid_mode=True, uid_set="1:5", flags_op="+FLAGS", flags=["\\Deleted"])
+        op.folder_to = "Trash"
         meta = [
             {"uid": 1, "sender": "newsletter@boring.com", "subject": "Update 1"},
             {"uid": 2, "sender": "newsletter@boring.com", "subject": "Update 2"},

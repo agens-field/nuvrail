@@ -46,6 +46,7 @@ from pathlib import Path
 from typing import Any
 
 import aioimaplib
+from aioimaplib import quoted as imap_quoted
 
 from gateway.audit import record_audit_event
 from gateway.execution import resolve_imap_credentials
@@ -192,11 +193,16 @@ async def _execute_undo_imap(
             # Original: moved messages from folder_from → folder_to
             # Reverse:  move them back folder_to → folder_from
             if not folder_to:
+                # For trash this also covers the STORE \\Deleted fallback
+                # (no Trash folder / no MOVE, #168): nothing was moved.
                 raise UndoError(f"Cannot undo {op_type!r}: original folder_to not recorded.")
-            status, data = await client.select(folder_to)
+            # Quote mailbox names exactly as the forward executor does:
+            # "Deleted Items" / "Deleted Messages" contain spaces and would
+            # otherwise be sent as two IMAP arguments.
+            status, data = await client.select(imap_quoted(folder_to))
             if status != "OK":
                 raise UndoError(f"IMAP SELECT {folder_to!r} failed during undo: {data}")
-            status, data = await client.uid("move", uid_set, folder_from)
+            status, data = await client.uid("move", uid_set, imap_quoted(folder_from))
             if status != "OK":
                 raise UndoError(f"IMAP UID MOVE (undo) failed: {data}")
             return f"Moved UIDs {uid_set} back from {folder_to!r} to {folder_from!r}"
@@ -205,7 +211,7 @@ async def _execute_undo_imap(
             # Original added flags — reverse by removing them
             if not flags_add:
                 raise UndoError(f"Cannot undo {op_type!r}: no flags_add recorded.")
-            status, data = await client.select(folder_from)
+            status, data = await client.select(imap_quoted(folder_from))
             if status != "OK":
                 raise UndoError(f"IMAP SELECT {folder_from!r} failed during undo: {data}")
             flag_str = " ".join(flags_add)
@@ -218,7 +224,7 @@ async def _execute_undo_imap(
             # Original removed flags — reverse by adding them back
             if not flags_remove:
                 raise UndoError(f"Cannot undo {op_type!r}: no flags_remove recorded.")
-            status, data = await client.select(folder_from)
+            status, data = await client.select(imap_quoted(folder_from))
             if status != "OK":
                 raise UndoError(f"IMAP SELECT {folder_from!r} failed during undo: {data}")
             flag_str = " ".join(flags_remove)

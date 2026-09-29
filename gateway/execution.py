@@ -365,7 +365,7 @@ async def _save_to_sent_folder(
             await client.logout()
 
 
-async def _execute_imap_upstream(row: dict, db_path: Path) -> None:
+async def _execute_imap_upstream(row: dict, db_path: Path) -> dict | None:
     """
     Replay a staged IMAP operation against the upstream server.
 
@@ -376,7 +376,14 @@ async def _execute_imap_upstream(row: dict, db_path: Path) -> None:
 
     Supported op_types: store, move, copy, create, rename, trash, mark_read,
     flag, unflag, mark_unread (all map to UID STORE or UID MOVE/COPY/etc).
+    ``trash`` is a UID MOVE into ``folder_to`` (the Trash folder resolved at
+    staging) when set and the server has MOVE; otherwise STORE +FLAGS
+    \\Deleted (#168).
     APPEND is skipped — the message body is not stored in the staging DB.
+
+    Returns extra audit detail for the ``executed`` row, or None. Today that
+    is only the trash→STORE fallback (server lacks MOVE), so the audit trail
+    shows the approved move did not happen as labelled.
 
     Raises RuntimeError on any upstream error so the caller can set
     operation status → 'failed'.
@@ -404,6 +411,7 @@ async def _execute_imap_upstream(row: dict, db_path: Path) -> None:
     flags_add = decode_json_list(row.get("flags_add"))
     flags_remove = decode_json_list(row.get("flags_remove"))
 
+    result: dict | None = None
     client = aioimaplib.IMAP4_SSL(host=creds.host, port=creds.port)
     try:
         await client.wait_hello_from_server()
@@ -440,8 +448,37 @@ async def _execute_imap_upstream(row: dict, db_path: Path) -> None:
             if status != "OK":
                 raise RuntimeError(f"IMAP LOGIN failed: {data}")
 
+        # Approved trash with a known Trash folder → UID MOVE there (#168).
+        #
+        #   trash op ──folder_to set?──no──────────────► STORE +FLAGS \Deleted
+        #                  │ yes                          (staged + labelled
+        #                  ▼                               "Mark deleted …")
+        #            server has MOVE?──no──► STORE +FLAGS \Deleted,
+        #                  │ yes             folder_to cleared (undo can't
+        #                  ▼                 move back), audited as fallback
+        #            UID MOVE uid → folder_to
+        #
+        # Never COPY + STORE + EXPUNGE: the gateway must not expunge.
+        if op_type == "trash" and folder_to and client.has_capability("MOVE"):
+            status, data = await client.select(imap_quoted(folder_from))
+            if status != "OK":
+                raise RuntimeError(f"IMAP SELECT {folder_from!r} failed: {data}")
+            status, data = await client.uid("move", uid_set, imap_quoted(folder_to))
+            if status != "OK":
+                raise RuntimeError(f"IMAP UID MOVE to Trash {folder_to!r} failed: {data}")
+
         # Most write ops require a folder context (SELECT folder_from first)
-        if op_type in ("store", "trash", "mark_read", "flag", "unflag", "mark_unread"):
+        elif op_type in ("store", "trash", "mark_read", "flag", "unflag", "mark_unread"):
+            if op_type == "trash" and folder_to:
+                # Staged as a move to Trash, but this server can't MOVE.
+                # Fall back to the flag the agent asked for, and record it.
+                logger.warning(
+                    "[imap_execute] Op %s: server lacks MOVE — trash falls back to "
+                    "STORE \\Deleted instead of moving to %r",
+                    row["id"], folder_to,
+                )
+                await _clear_folder_to(row["id"], db_path)
+                result = {"trash_fallback": "no_move_capability", "trash_folder": folder_to}
             status, data = await client.select(imap_quoted(folder_from))
             if status != "OK":
                 raise RuntimeError(f"IMAP SELECT {folder_from!r} failed: {data}")
@@ -543,6 +580,22 @@ async def _execute_imap_upstream(row: dict, db_path: Path) -> None:
         with contextlib.suppress(Exception):
             await client.logout()
 
+    return result
+
+
+async def _clear_folder_to(op_id: str, db_path: Path) -> None:
+    """Forget a trash op's Trash destination after a STORE fallback.
+
+    Undo reads ``folder_to`` as "where the message went"; after a fallback
+    it never went there, so leaving it set would make undo move the wrong
+    thing out of Trash.
+    """
+    async with get_db(db_path) as db:
+        await db.execute(
+            "UPDATE staged_operations SET folder_to = NULL WHERE id = ?", (op_id,)
+        )
+        await db.commit()
+
 
 async def _record_execution_failure(
     op_id: str, row: dict, exc: Exception, db_path: Path
@@ -573,6 +626,7 @@ async def execute_operation(
     Returns ``{"executed_at": <int|None>}`` on success.
     """
     protocol = row.get("protocol", "imap")
+    imap_detail: dict | None = None
 
     if protocol == "smtp":
         # Deserialize smtp_envelope
@@ -748,7 +802,7 @@ async def execute_operation(
     else:
         # IMAP ops: replay the stored command against the upstream IMAP server.
         try:
-            await _execute_imap_upstream(row, db_path)
+            imap_detail = await _execute_imap_upstream(row, db_path)
         except Exception as exc:
             logger.error("[execute] IMAP execution failed for %s: %s", op_id, exc)
             await _record_execution_failure(op_id, row, exc, db_path)
@@ -762,6 +816,8 @@ async def execute_operation(
     executed_detail: str | None = None
     if protocol == "smtp":
         executed_detail = json.dumps({"recipient_count": len(relay_recipients)})
+    elif imap_detail:
+        executed_detail = json.dumps(imap_detail)
     await record_audit_event(
         db_path, timestamp=int(time.time()), event='executed', actor=actor,
         operation_id=op_id, agent_id=row.get('agent_id'), op_type=row.get('op_type'),
