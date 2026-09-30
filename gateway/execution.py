@@ -67,6 +67,62 @@ class ExecutionError(Exception):
 # ---------------------------------------------------------------------------
 
 
+# RFC 4315 (UIDPLUS) COPYUID response code, sent by UID MOVE (RFC 6851) as an
+# untagged ``* OK [COPYUID ...]`` or on the tagged OK:
+#
+#   [COPYUID <dest-uidvalidity> <source-uid-set> <dest-uid-set>]
+#
+# IMAP UIDs are per-mailbox, so the destination set is the only handle on the
+# moved messages once they leave the source folder (#170).
+_COPYUID_RE = re.compile(rb"\[COPYUID (\d+) ([0-9:,]+) ([0-9:,]+)\]", re.IGNORECASE)
+
+
+_UIDVALIDITY_RE = re.compile(rb"\[UIDVALIDITY (\d+)\]", re.IGNORECASE)
+
+
+def _response_bytes(lines: list):
+    """aioimaplib ``Response.lines`` as bytes (servers/fakes may give str)."""
+    for line in lines or []:
+        yield line.encode() if isinstance(line, str) else bytes(line)
+
+
+def parse_uidvalidity(lines: list) -> int | None:
+    """Return the UIDVALIDITY a SELECT response reported, or None."""
+    for raw in _response_bytes(lines):
+        m = _UIDVALIDITY_RE.search(raw)
+        if m:
+            return int(m.group(1))
+    return None
+
+
+def parse_copyuid(lines: list) -> tuple[int, str] | None:
+    """Return ``(dest_uidvalidity, dest_uid_set)`` from a MOVE/COPY response.
+
+    ``lines`` is aioimaplib's ``Response.lines`` (bytes or str). A server may
+    split one MOVE into several COPYUID codes; their destination sets are
+    joined in order. Returns None when no COPYUID is present (server lacks
+    UIDPLUS, or nothing was moved) or when the codes disagree on UIDVALIDITY.
+    """
+    uidvalidities: set[int] = set()
+    dest_sets: list[str] = []
+    for raw in _response_bytes(lines):
+        for m in _COPYUID_RE.finditer(raw):
+            uidvalidities.add(int(m.group(1)))
+            dest_sets.append(m.group(3).decode("ascii"))
+    if len(uidvalidities) != 1:
+        return None
+    return uidvalidities.pop(), ",".join(dest_sets)
+
+
+def _move_destination_detail(lines: list) -> dict | None:
+    """Audit detail recording where a UID MOVE put the messages, or None."""
+    parsed = parse_copyuid(lines)
+    if parsed is None:
+        return None
+    uidvalidity, dest_uids = parsed
+    return {"dest_uidvalidity": uidvalidity, "dest_uids": dest_uids}
+
+
 @dataclass
 class ImapCredentials:
     """Resolved upstream IMAP connection details for one operation."""
@@ -381,9 +437,13 @@ async def _execute_imap_upstream(row: dict, db_path: Path) -> dict | None:
     \\Deleted (#168).
     APPEND is skipped — the message body is not stored in the staging DB.
 
-    Returns extra audit detail for the ``executed`` row, or None. Today that
-    is only the trash→STORE fallback (server lacks MOVE), so the audit trail
-    shows the approved move did not happen as labelled.
+    Returns extra audit detail for the ``executed`` row, or None:
+      - ``move`` / MOVE-to-Trash: ``{dest_uidvalidity, dest_uids}`` parsed
+        from the server's COPYUID, so undo can address the messages in the
+        destination mailbox (#170). Omitted when the server sends no COPYUID;
+        undo then refuses rather than guess.
+      - trash→STORE fallback (server lacks MOVE): ``{trash_fallback, ...}``,
+        so the audit trail shows the approved move did not happen as labelled.
 
     Raises RuntimeError on any upstream error so the caller can set
     operation status → 'failed'.
@@ -466,6 +526,7 @@ async def _execute_imap_upstream(row: dict, db_path: Path) -> dict | None:
             status, data = await client.uid("move", uid_set, imap_quoted(folder_to))
             if status != "OK":
                 raise RuntimeError(f"IMAP UID MOVE to Trash {folder_to!r} failed: {data}")
+            result = _move_destination_detail(data)
 
         # Most write ops require a folder context (SELECT folder_from first)
         elif op_type in ("store", "trash", "mark_read", "flag", "unflag", "mark_unread"):
@@ -504,6 +565,7 @@ async def _execute_imap_upstream(row: dict, db_path: Path) -> dict | None:
             status, data = await client.uid("move", uid_set, imap_quoted(folder_to))
             if status != "OK":
                 raise RuntimeError(f"IMAP UID MOVE failed: {data}")
+            result = _move_destination_detail(data)
 
         elif op_type == "copy":
             if not folder_to:

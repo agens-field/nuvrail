@@ -25,6 +25,17 @@ heading format exact and add new work under `[Unreleased]`.
   it falls back to the flag and the fallback is recorded in the `executed`
   audit row. The gateway still never expunges. Undo of a trash op moves it back
   from Trash.
+- Undo of a move, archive or trash no longer targets the wrong message
+  ([#170](https://github.com/agens-field/nuvrail/issues/170)). IMAP UIDs are
+  per-mailbox, but undo reused the message's source-folder UID in the
+  destination folder, so it could move an unrelated message back, or move
+  nothing and still report the op `reverted`. The executor now records the
+  destination UID and `UIDVALIDITY` from the server's `COPYUID` response in the
+  `executed` audit row, and undo moves exactly that UID back. Undo refuses, and
+  the op stays `executed`, when that UID was not recorded (the server lacks
+  UIDPLUS, or the op ran before this fix), when the folder's `UIDVALIDITY`
+  changed, or when the move back finds nothing. A partial move back says
+  "N of M" in the audit row.
 - Undo now quotes mailbox names, so undoing a move out of a folder whose name
   has a space (Outlook `Deleted Items`, iCloud `Deleted Messages`) no longer
   sends a malformed `SELECT`.

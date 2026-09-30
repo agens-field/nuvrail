@@ -248,7 +248,7 @@ Related operations arriving within a sliding time window share a `batch_id`; the
 
 ### 7.3 Undo **[BUILT]**
 
-`POST /operations/{id}/undo` reverses an executed IMAP operation within `undo_expires_at` (default 24h) by executing the inverse upstream. SMTP sends are not undoable (mail cannot be recalled) — which is why sends get the strictest review defaults.
+`POST /operations/{id}/undo` reverses an executed IMAP operation within `undo_expires_at` (default 24h) by executing the inverse upstream. Undo of a move/trash/archive addresses the message by the UID the server assigned in the destination (`COPYUID`, RFC 4315 UIDPLUS), recorded in the `executed` audit row; if that UID was not recorded, the destination's `UIDVALIDITY` changed, or the inverse `MOVE` moves nothing, undo refuses and the op stays `executed` (#170). SMTP sends are not undoable (mail cannot be recalled) — which is why sends get the strictest review defaults.
 
 ### 7.4 Pending reverts **[BUILT]** — unchanged (per-UID revert queue; proxy injects unsolicited FETCH).
 
