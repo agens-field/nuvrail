@@ -39,6 +39,16 @@ heading format exact and add new work under `[Unreleased]`.
 - Undo now quotes mailbox names, so undoing a move out of a folder whose name
   has a space (Outlook `Deleted Items`, iCloud `Deleted Messages`) no longer
   sends a malformed `SELECT`.
+- Undo of a flag or unflag (star/unstar in the UI) now works
+  ([#173](https://github.com/agens-field/nuvrail/issues/173)). The undo
+  allowlist named `star`/`unstar`, but staged ops carry `flag`/`unflag`, so
+  every such undo was refused as "not undoable".
+- An approved op with an op type the executor has no handler for now fails
+  instead of reporting success
+  ([#174](https://github.com/agens-field/nuvrail/issues/174)). It used to be
+  logged, skipped, and marked `executed` with nothing done upstream. It is now
+  marked `failed` with an `execution_failed` audit row. No op type the proxy
+  stages today hits this path; archive is staged as a move.
 
 ## [0.1.0] - 2026-09-23
 
