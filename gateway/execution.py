@@ -445,8 +445,9 @@ async def _execute_imap_upstream(row: dict, db_path: Path) -> dict | None:
       - trash→STORE fallback (server lacks MOVE): ``{trash_fallback, ...}``,
         so the audit trail shows the approved move did not happen as labelled.
 
-    Raises RuntimeError on any upstream error so the caller can set
-    operation status → 'failed'.
+    Raises RuntimeError on any upstream error, and on an op_type with no
+    branch below (fail closed, #174), so the caller can set operation
+    status → 'failed'.
     """
     op_type = row.get("op_type", "")
 
@@ -629,11 +630,12 @@ async def _execute_imap_upstream(row: dict, db_path: Path) -> dict | None:
                 raise RuntimeError(f"IMAP APPEND to {target_folder!r} failed: {data}")
 
         else:
-            # Unknown/unsupported op type — log and treat as no-op
-            logger.warning(
-                "[imap_execute] Unrecognised op_type %r for op %s — skipping upstream exec",
-                op_type,
-                row["id"],
+            # Unknown op type: fail closed (#174). Returning here used to mark
+            # the op 'executed' with an 'executed' audit row although nothing
+            # ran upstream, a silent false success. Raising routes it through
+            # the caller's failure path: status 'failed' + execution_failed.
+            raise RuntimeError(
+                f"Unsupported op_type {op_type!r} for op {row['id']}: nothing was executed"
             )
 
         logger.info("[imap_execute] Op %s (%s) executed successfully", row["id"], op_type)

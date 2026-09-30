@@ -16,6 +16,7 @@ import pytest
 
 from gateway.credentials import encrypt_credential
 from gateway.execution import (
+    ExecutionError,
     _execute_imap_upstream,
     execute_operation,
     parse_copyuid,
@@ -446,3 +447,40 @@ async def test_move_destination_is_recorded_in_executed_audit_row(db_path: Path)
     ) as cur:
         audit = await cur.fetchone()
     assert json.loads(audit["detail"]) == {"dest_uidvalidity": 1706723021, "dest_uids": "7"}
+
+
+# ---------------------------------------------------------------------------
+# Unknown op_type (#174): fail closed. An op_type with no executor branch
+# must end 'failed' with an execution_failed audit row, never 'executed'.
+# ---------------------------------------------------------------------------
+
+
+async def test_unknown_op_type_fails_closed(db_path: Path) -> None:
+    agent_id = await _seed_agent(db_path)
+    op_id = await create_operation(
+        op_type="archive",
+        protocol="imap",
+        description="Archive 42",
+        agent_id=agent_id,
+        message_ids=["42"],
+        folder_from="INBOX",
+        folder_to="Archive",
+        db_path=db_path,
+    )
+    row = await get_operation(op_id, db_path=db_path)
+
+    fake = _FakeMailboxIMAP()
+    with patch("gateway.execution.aioimaplib.IMAP4_SSL", return_value=fake):
+        with pytest.raises(ExecutionError, match="Unsupported op_type 'archive'"):
+            await execute_operation(op_id, row, db_path)
+
+    # Nothing mutating was sent upstream.
+    assert [c for c in fake.calls if c[0] == "uid"] == []
+    assert (await get_operation(op_id, db_path=db_path))["status"] == "failed"
+    async with get_db(db_path) as db, db.execute(
+        "SELECT event FROM audit_log WHERE operation_id = ? ORDER BY id",
+        (op_id,),
+    ) as cur:
+        events = [r["event"] for r in await cur.fetchall()]
+    assert "execution_failed" in events
+    assert "executed" not in events

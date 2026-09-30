@@ -61,6 +61,7 @@ async def _seed_executed_op(
     folder_from: str = "INBOX", folder_to: str = "Archive",
     message_ids: list | None = None, undo_offset: int = 3600,
     dest: tuple[str, int] | None = DEFAULT_DEST, executed_detail: str | None = None,
+    flags_add: list | None = None, flags_remove: list | None = None,
 ) -> str:
     """Seed an 'executed' op plus its 'executed' audit row.
 
@@ -77,6 +78,8 @@ async def _seed_executed_op(
         folder_from=folder_from,
         folder_to=folder_to,
         message_ids=message_ids if message_ids is not None else ["42"],
+        flags_add=flags_add,
+        flags_remove=flags_remove,
         db_path=db_path,
     )
     now = int(time.time())
@@ -86,7 +89,7 @@ async def _seed_executed_op(
             (now + undo_offset, op_id),
         )
         await db.commit()
-    if executed_detail is None and dest is not None and op_type in ("move", "trash", "archive"):
+    if executed_detail is None and dest is not None and op_type in ("move", "trash"):
         executed_detail = json.dumps({"dest_uids": dest[0], "dest_uidvalidity": dest[1]})
     await record_audit_event(
         db_path, timestamp=now, event="executed", actor="human",
@@ -246,7 +249,7 @@ async def _status_and_reverted_rows(db_path: Path, op_id: str) -> tuple[str, int
     return status, reverted
 
 
-@pytest.mark.parametrize("op_type", ["move", "trash", "archive"])
+@pytest.mark.parametrize("op_type", ["move", "trash"])
 async def test_undo_refuses_when_destination_uid_unknown(db_path: Path, op_type: str) -> None:
     """No COPYUID at execution (no UIDPLUS, or op predates #170): refuse
     before connecting, and leave the op 'executed'."""
@@ -369,6 +372,39 @@ def test_count_uid_set() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Flag ops (#173): the parser emits flag/unflag for \\Flagged, and undo
+# reverses them with the opposite STORE on the same (source-folder) UIDs.
+#
+#   flag   (+FLAGS \\Flagged) → undo: UID STORE 42 -FLAGS (\\Flagged)
+#   unflag (-FLAGS \\Flagged) → undo: UID STORE 42 +FLAGS (\\Flagged)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("op_type", "flags", "inverse"),
+    [
+        ("flag", {"flags_add": ["\\Flagged"]}, "-FLAGS"),
+        ("unflag", {"flags_remove": ["\\Flagged"]}, "+FLAGS"),
+    ],
+)
+async def test_undo_flag_ops_store_the_inverse(
+    db_path: Path, op_type: str, flags: dict, inverse: str
+) -> None:
+    agent_id = await _seed_agent(db_path)
+    op_id = await _seed_executed_op(
+        db_path, agent_id=agent_id, op_type=op_type, folder_to=None, **flags,
+    )
+
+    fake = _FakeIMAP()
+    with patch("gateway.undo.aioimaplib.IMAP4_SSL", return_value=fake):
+        result = await undo_operation(op_id, db_path)
+
+    assert result["op_type"] == op_type
+    assert ("uid", "store", "42", inverse, "(\\Flagged)") in fake.calls
+    assert await _status_and_reverted_rows(db_path, op_id) == ("reverted", 1)
+
+
+# ---------------------------------------------------------------------------
 # Validation (no network)
 # ---------------------------------------------------------------------------
 
@@ -388,11 +424,16 @@ async def test_undo_non_executed_raises(db_path: Path) -> None:
         await undo_operation(op_id, db_path)
 
 
-async def test_undo_non_undoable_op_type_raises(db_path: Path) -> None:
+@pytest.mark.parametrize("op_type", ["copy", "archive", "star", "unstar"])
+async def test_undo_non_undoable_op_type_raises(db_path: Path, op_type: str) -> None:
+    """archive/star/unstar are not op_types the parser emits (#173, #174);
+    they are refused like copy, before any connection."""
     agent_id = await _seed_agent(db_path)
-    op_id = await _seed_executed_op(db_path, agent_id=agent_id, op_type="copy")
-    with pytest.raises(UndoError, match="not undoable"):
-        await undo_operation(op_id, db_path)
+    op_id = await _seed_executed_op(db_path, agent_id=agent_id, op_type=op_type)
+    with patch("gateway.undo.aioimaplib.IMAP4_SSL") as ctor:
+        with pytest.raises(UndoError, match="not undoable"):
+            await undo_operation(op_id, db_path)
+        ctor.assert_not_called()
 
 
 async def test_undo_expired_window_raises(db_path: Path) -> None:
