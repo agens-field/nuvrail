@@ -8,13 +8,18 @@ being silent no-ops. The upstream IMAP client is mocked — no network.
 from __future__ import annotations
 
 import base64
+import json
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
 from gateway.credentials import encrypt_credential
-from gateway.execution import _execute_imap_upstream, resolve_imap_credentials
+from gateway.execution import (
+    _execute_imap_upstream,
+    execute_operation,
+    resolve_imap_credentials,
+)
 from gateway.staging import create_operation, get_operation
 from gateway.state_db import decode_json_list, get_db, init_db
 
@@ -181,3 +186,135 @@ async def test_append_upstream_failure_raises(db_path: Path) -> None:
     with patch("gateway.execution.aioimaplib.IMAP4_SSL", return_value=_FailingIMAP()):
         with pytest.raises(RuntimeError, match="APPEND"):
             await _execute_imap_upstream(row, db_path)
+
+
+# ---------------------------------------------------------------------------
+# Trash ops (#168): approved "Move to Trash" is a UID MOVE, not STORE \Deleted
+#
+#   folder_to set + MOVE cap  → SELECT src; UID MOVE uid "Trash"
+#   folder_to unset           → SELECT src; UID STORE +FLAGS (\Deleted)
+#   folder_to set, no MOVE    → STORE fallback, folder_to cleared, audited
+#   (never EXPUNGE in any branch)
+# ---------------------------------------------------------------------------
+
+
+class _FakeMailboxIMAP(_FakeIMAP):
+    """Records select/uid calls; MOVE capability is configurable."""
+
+    def __init__(self, *args, move: bool = True, uid_status: str = "OK", **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.calls: list[tuple] = []
+        self._move = move
+        self._uid_status = uid_status
+
+    def has_capability(self, capability: str) -> bool:
+        return capability.upper() == "MOVE" and self._move
+
+    async def select(self, mailbox):
+        self.calls.append(("select", mailbox))
+        return "OK", [b"SELECT completed"]
+
+    async def uid(self, *args):
+        self.calls.append(("uid", *args))
+        return self._uid_status, [b"done"]
+
+    async def expunge(self):  # pragma: no cover - must never be called
+        raise AssertionError("the gateway must never EXPUNGE")
+
+
+async def _stage_trash(db_path: Path, agent_id: int, *, folder_to: str | None) -> dict:
+    op_id = await create_operation(
+        op_type="trash",
+        protocol="imap",
+        description="Move to Trash: 42",
+        agent_id=agent_id,
+        message_ids=["42"],
+        folder_from="INBOX",
+        folder_to=folder_to,
+        flags_add=["\\Deleted"],
+        db_path=db_path,
+    )
+    return await get_operation(op_id, db_path=db_path)
+
+
+async def test_trash_with_trash_folder_executes_as_uid_move(db_path: Path) -> None:
+    agent_id = await _seed_agent(db_path)
+    row = await _stage_trash(db_path, agent_id, folder_to="Deleted Items")
+
+    fake = _FakeMailboxIMAP(move=True)
+    with patch("gateway.execution.aioimaplib.IMAP4_SSL", return_value=fake):
+        detail = await _execute_imap_upstream(row, db_path)
+
+    assert detail is None
+    assert fake.calls == [
+        ("select", '"INBOX"'),
+        ("uid", "move", "42", '"Deleted Items"'),  # quoted: the name has a space
+    ]
+
+
+async def test_trash_without_trash_folder_falls_back_to_store_deleted(db_path: Path) -> None:
+    """No Trash folder known at staging → the flag the agent asked for."""
+    agent_id = await _seed_agent(db_path)
+    row = await _stage_trash(db_path, agent_id, folder_to=None)
+
+    fake = _FakeMailboxIMAP(move=True)
+    with patch("gateway.execution.aioimaplib.IMAP4_SSL", return_value=fake):
+        detail = await _execute_imap_upstream(row, db_path)
+
+    assert detail is None  # staged + labelled as "Mark deleted" already
+    assert fake.calls == [
+        ("select", '"INBOX"'),
+        ("uid", "store", "42", "+FLAGS", "(\\Deleted)"),
+    ]
+
+
+async def test_trash_without_move_capability_falls_back_and_clears_folder_to(
+    db_path: Path,
+) -> None:
+    agent_id = await _seed_agent(db_path)
+    row = await _stage_trash(db_path, agent_id, folder_to="Trash")
+
+    fake = _FakeMailboxIMAP(move=False)
+    with patch("gateway.execution.aioimaplib.IMAP4_SSL", return_value=fake):
+        detail = await _execute_imap_upstream(row, db_path)
+
+    assert fake.calls == [
+        ("select", '"INBOX"'),
+        ("uid", "store", "42", "+FLAGS", "(\\Deleted)"),
+    ]
+    assert detail == {"trash_fallback": "no_move_capability", "trash_folder": "Trash"}
+    # Nothing went to Trash, so undo must not try to move anything back out.
+    assert (await get_operation(row["id"], db_path=db_path))["folder_to"] is None
+
+
+async def test_trash_move_failure_raises(db_path: Path) -> None:
+    """A NO on the MOVE (e.g. [TRYCREATE] for a wrong folder) fails the op
+    rather than silently falling back to a flag the human didn't approve."""
+    agent_id = await _seed_agent(db_path)
+    row = await _stage_trash(db_path, agent_id, folder_to="Trash")
+
+    fake = _FakeMailboxIMAP(move=True, uid_status="NO")
+    with patch("gateway.execution.aioimaplib.IMAP4_SSL", return_value=fake):
+        with pytest.raises(RuntimeError, match="UID MOVE to Trash"):
+            await _execute_imap_upstream(row, db_path)
+    assert [c for c in fake.calls if c[0] == "uid" and c[1] == "store"] == []
+
+
+async def test_trash_fallback_is_recorded_in_executed_audit_row(db_path: Path) -> None:
+    agent_id = await _seed_agent(db_path)
+    row = await _stage_trash(db_path, agent_id, folder_to="Trash")
+
+    fake = _FakeMailboxIMAP(move=False)
+    with patch("gateway.execution.aioimaplib.IMAP4_SSL", return_value=fake):
+        await execute_operation(row["id"], row, db_path)
+
+    async with get_db(db_path) as db, db.execute(
+        "SELECT detail FROM audit_log WHERE operation_id = ? AND event = 'executed'",
+        (row["id"],),
+    ) as cur:
+        audit = await cur.fetchone()
+    assert audit is not None
+    assert json.loads(audit["detail"]) == {
+        "trash_fallback": "no_move_capability",
+        "trash_folder": "Trash",
+    }

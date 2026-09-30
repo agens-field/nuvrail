@@ -231,6 +231,11 @@ INTENT_VERBS: dict[str, str] = {
     "import_message": "Add message",
 }
 
+# Label for a trash op with no known Trash folder (#168). It executes as a
+# plain STORE +FLAGS \\Deleted, not a move, so it must not read "Move to
+# Trash": on most servers the human's own client later expunges it for good.
+TRASH_FALLBACK_VERB = "Mark deleted (no Trash folder found)"
+
 # Intents whose verb already names the destination — the " to X" suffix would
 # only repeat provider internals the user shouldn't need to read.
 _INTENT_IMPLIES_DEST = {"archive", "delete", "mark_spam", "not_spam", "unarchive"}
@@ -278,6 +283,10 @@ def build_rich_description(
         or parsed_op.verb
         or _OP_VERB.get(op_type, op_type.replace("_", " ").capitalize())
     )
+    if op_type == "trash" and not parsed_op.folder_to:
+        # Resolved at staging (proxy._resolve_trash_folder). No destination
+        # means the executor falls back to STORE \Deleted — label it so.
+        verb = TRASH_FALLBACK_VERB
 
     # Determine how many messages this op targets by inspecting the uid_set
     uid_set_str = parsed_op.message_ids[0] if parsed_op.message_ids else ""
