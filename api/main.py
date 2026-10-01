@@ -130,7 +130,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info("Nuvrail API shutdown — background loops stopped")
 
 
-app = FastAPI(title="Nuvrail Approval API", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="Nuvrail Approval API", version="0.1.1", lifespan=lifespan)
 
 # Rate limiting (slowapi) — attached before CORS so 429s get proper headers.
 # The limiter is stored on app.state so route decorators can reference it.

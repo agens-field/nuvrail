@@ -12,6 +12,13 @@ heading format exact and add new work under `[Unreleased]`.
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-01
+
+Patch release: four approval-path correctness fixes in the gateway. Upgrading
+from 0.1.0 is recommended. One behaviour change: a move, archive or trash
+executed before you upgrade cannot be undone afterwards, because undo now needs
+the destination UID that 0.1.0 did not record (see #170 below).
+
 ### Fixed
 - An approved "Move to Trash" now actually moves the message to Trash
   ([#168](https://github.com/agens-field/nuvrail/issues/168)). Previously the
@@ -192,5 +199,6 @@ STARTTLS upstream and DATA staging.
 - Raw asyncio IMAP TCP proxy with LOGIN passthrough.
 - SMTP proxy with STARTTLS to the upstream server and outbound DATA staging.
 
-[Unreleased]: https://github.com/agens-field/nuvrail/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/agens-field/nuvrail/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/agens-field/nuvrail/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/agens-field/nuvrail/releases/tag/v0.1.0
