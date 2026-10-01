@@ -14,7 +14,7 @@ Data flow:
        │   ├─ undo_expires_at must be > now
        │   └─ op_type must be in UNDOABLE_OP_TYPES
        │
-       ├─ move/trash/archive only (#170): load the destination UIDs +
+       ├─ move/trash only (#170): load the destination UIDs +
        │   UIDVALIDITY the forward MOVE recorded (COPYUID) from the
        │   'executed' audit row; missing → refuse (never guess a UID)
        │
@@ -31,9 +31,12 @@ Inverse strategies:
   trash     → same as move, out of folder_to (Trash)
   mark_read → UID STORE -FLAGS (\\Seen)   [was +FLAGS]
   mark_unread→UID STORE +FLAGS (\\Seen)   [was -FLAGS]
-  star      → UID STORE -FLAGS (\\Flagged)[was +FLAGS]
-  unstar    → UID STORE +FLAGS (\\Flagged)[was -FLAGS]
-  archive   → same as move
+  flag      → UID STORE -FLAGS (\\Flagged)[was +FLAGS]
+  unflag    → UID STORE +FLAGS (\\Flagged)[was -FLAGS]
+
+  The parser emits flag/unflag for \\Flagged (#173); it has never emitted
+  star/unstar ("Star" is only the display label). Archive rides on
+  op_type='move' + intent_label, so 'archive' is not an op_type (#174).
 
   Why not reuse message_ids: IMAP UIDs are per-mailbox. message_ids are the
   SOURCE folder's UIDs; in folder_to the message has a new UID, and the old
@@ -76,13 +79,12 @@ UNDOABLE_OP_TYPES = frozenset({
     "trash",
     "mark_read",
     "mark_unread",
-    "star",
-    "unstar",
-    "archive",
+    "flag",
+    "unflag",
 })
 
 
-MOVE_OP_TYPES = frozenset({"move", "trash", "archive"})
+MOVE_OP_TYPES = frozenset({"move", "trash"})
 
 _UID_SET_RE = re.compile(r"^\d+(:\d+)?(,\d+(:\d+)?)*$")
 
@@ -316,7 +318,7 @@ async def _execute_undo_imap(
                 )
             return f"Moved UIDs {dest_uids} back from {folder_to!r} to {folder_from!r}"
 
-        elif op_type in ("mark_read", "star", "flag"):
+        elif op_type in ("mark_read", "flag"):
             # Original added flags — reverse by removing them
             if not flags_add:
                 raise UndoError(f"Cannot undo {op_type!r}: no flags_add recorded.")
@@ -329,7 +331,7 @@ async def _execute_undo_imap(
                 raise UndoError(f"IMAP UID STORE -FLAGS (undo) failed: {data}")
             return f"Removed flags {flags_add} from UIDs {uid_set} in {folder_from!r}"
 
-        elif op_type in ("mark_unread", "unstar", "unflag"):
+        elif op_type in ("mark_unread", "unflag"):
             # Original removed flags — reverse by adding them back
             if not flags_remove:
                 raise UndoError(f"Cannot undo {op_type!r}: no flags_remove recorded.")

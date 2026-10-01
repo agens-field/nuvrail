@@ -12,6 +12,13 @@ heading format exact and add new work under `[Unreleased]`.
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-01
+
+Patch release: four approval-path correctness fixes in the gateway. Upgrading
+from 0.1.0 is recommended. One behaviour change: a move, archive or trash
+executed before you upgrade cannot be undone afterwards, because undo now needs
+the destination UID that 0.1.0 did not record (see #170 below).
+
 ### Fixed
 - An approved "Move to Trash" now actually moves the message to Trash
   ([#168](https://github.com/agens-field/nuvrail/issues/168)). Previously the
@@ -39,6 +46,16 @@ heading format exact and add new work under `[Unreleased]`.
 - Undo now quotes mailbox names, so undoing a move out of a folder whose name
   has a space (Outlook `Deleted Items`, iCloud `Deleted Messages`) no longer
   sends a malformed `SELECT`.
+- Undo of a flag or unflag (star/unstar in the UI) now works
+  ([#173](https://github.com/agens-field/nuvrail/issues/173)). The undo
+  allowlist named `star`/`unstar`, but staged ops carry `flag`/`unflag`, so
+  every such undo was refused as "not undoable".
+- An approved op with an op type the executor has no handler for now fails
+  instead of reporting success
+  ([#174](https://github.com/agens-field/nuvrail/issues/174)). It used to be
+  logged, skipped, and marked `executed` with nothing done upstream. It is now
+  marked `failed` with an `execution_failed` audit row. No op type the proxy
+  stages today hits this path; archive is staged as a move.
 
 ## [0.1.0] - 2026-09-23
 
@@ -182,5 +199,6 @@ STARTTLS upstream and DATA staging.
 - Raw asyncio IMAP TCP proxy with LOGIN passthrough.
 - SMTP proxy with STARTTLS to the upstream server and outbound DATA staging.
 
-[Unreleased]: https://github.com/agens-field/nuvrail/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/agens-field/nuvrail/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/agens-field/nuvrail/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/agens-field/nuvrail/releases/tag/v0.1.0
