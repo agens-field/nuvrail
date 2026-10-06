@@ -8,13 +8,21 @@ being silent no-ops. The upstream IMAP client is mocked — no network.
 from __future__ import annotations
 
 import base64
+import json
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
 from gateway.credentials import encrypt_credential
-from gateway.execution import _execute_imap_upstream, resolve_imap_credentials
+from gateway.execution import (
+    ExecutionError,
+    _execute_imap_upstream,
+    execute_operation,
+    parse_copyuid,
+    parse_uidvalidity,
+    resolve_imap_credentials,
+)
 from gateway.staging import create_operation, get_operation
 from gateway.state_db import decode_json_list, get_db, init_db
 
@@ -181,3 +189,298 @@ async def test_append_upstream_failure_raises(db_path: Path) -> None:
     with patch("gateway.execution.aioimaplib.IMAP4_SSL", return_value=_FailingIMAP()):
         with pytest.raises(RuntimeError, match="APPEND"):
             await _execute_imap_upstream(row, db_path)
+
+
+# ---------------------------------------------------------------------------
+# Trash ops (#168): approved "Move to Trash" is a UID MOVE, not STORE \Deleted
+#
+#   folder_to set + MOVE cap  → SELECT src; UID MOVE uid "Trash"
+#   folder_to unset           → SELECT src; UID STORE +FLAGS (\Deleted)
+#   folder_to set, no MOVE    → STORE fallback, folder_to cleared, audited
+#   (never EXPUNGE in any branch)
+# ---------------------------------------------------------------------------
+
+
+class _FakeMailboxIMAP(_FakeIMAP):
+    """Records select/uid calls; MOVE capability is configurable."""
+
+    def __init__(
+        self, *args, move: bool = True, uid_status: str = "OK",
+        uid_lines: list | None = None, **kwargs,
+    ) -> None:
+        super().__init__(*args, **kwargs)
+        self.calls: list[tuple] = []
+        self._move = move
+        self._uid_status = uid_status
+        self._uid_lines = uid_lines if uid_lines is not None else [b"done"]
+
+    def has_capability(self, capability: str) -> bool:
+        return capability.upper() == "MOVE" and self._move
+
+    async def select(self, mailbox):
+        self.calls.append(("select", mailbox))
+        return "OK", [b"SELECT completed"]
+
+    async def uid(self, *args):
+        self.calls.append(("uid", *args))
+        return self._uid_status, list(self._uid_lines)
+
+    async def expunge(self):  # pragma: no cover - must never be called
+        raise AssertionError("the gateway must never EXPUNGE")
+
+
+async def _stage_trash(db_path: Path, agent_id: int, *, folder_to: str | None) -> dict:
+    op_id = await create_operation(
+        op_type="trash",
+        protocol="imap",
+        description="Move to Trash: 42",
+        agent_id=agent_id,
+        message_ids=["42"],
+        folder_from="INBOX",
+        folder_to=folder_to,
+        flags_add=["\\Deleted"],
+        db_path=db_path,
+    )
+    return await get_operation(op_id, db_path=db_path)
+
+
+async def test_trash_with_trash_folder_executes_as_uid_move(db_path: Path) -> None:
+    agent_id = await _seed_agent(db_path)
+    row = await _stage_trash(db_path, agent_id, folder_to="Deleted Items")
+
+    fake = _FakeMailboxIMAP(move=True)
+    with patch("gateway.execution.aioimaplib.IMAP4_SSL", return_value=fake):
+        detail = await _execute_imap_upstream(row, db_path)
+
+    assert detail is None
+    assert fake.calls == [
+        ("select", '"INBOX"'),
+        ("uid", "move", "42", '"Deleted Items"'),  # quoted: the name has a space
+    ]
+
+
+async def test_trash_without_trash_folder_falls_back_to_store_deleted(db_path: Path) -> None:
+    """No Trash folder known at staging → the flag the agent asked for."""
+    agent_id = await _seed_agent(db_path)
+    row = await _stage_trash(db_path, agent_id, folder_to=None)
+
+    fake = _FakeMailboxIMAP(move=True)
+    with patch("gateway.execution.aioimaplib.IMAP4_SSL", return_value=fake):
+        detail = await _execute_imap_upstream(row, db_path)
+
+    assert detail is None  # staged + labelled as "Mark deleted" already
+    assert fake.calls == [
+        ("select", '"INBOX"'),
+        ("uid", "store", "42", "+FLAGS", "(\\Deleted)"),
+    ]
+
+
+async def test_trash_without_move_capability_falls_back_and_clears_folder_to(
+    db_path: Path,
+) -> None:
+    agent_id = await _seed_agent(db_path)
+    row = await _stage_trash(db_path, agent_id, folder_to="Trash")
+
+    fake = _FakeMailboxIMAP(move=False)
+    with patch("gateway.execution.aioimaplib.IMAP4_SSL", return_value=fake):
+        detail = await _execute_imap_upstream(row, db_path)
+
+    assert fake.calls == [
+        ("select", '"INBOX"'),
+        ("uid", "store", "42", "+FLAGS", "(\\Deleted)"),
+    ]
+    assert detail == {"trash_fallback": "no_move_capability", "trash_folder": "Trash"}
+    # Nothing went to Trash, so undo must not try to move anything back out.
+    assert (await get_operation(row["id"], db_path=db_path))["folder_to"] is None
+
+
+async def test_trash_move_failure_raises(db_path: Path) -> None:
+    """A NO on the MOVE (e.g. [TRYCREATE] for a wrong folder) fails the op
+    rather than silently falling back to a flag the human didn't approve."""
+    agent_id = await _seed_agent(db_path)
+    row = await _stage_trash(db_path, agent_id, folder_to="Trash")
+
+    fake = _FakeMailboxIMAP(move=True, uid_status="NO")
+    with patch("gateway.execution.aioimaplib.IMAP4_SSL", return_value=fake):
+        with pytest.raises(RuntimeError, match="UID MOVE to Trash"):
+            await _execute_imap_upstream(row, db_path)
+    assert [c for c in fake.calls if c[0] == "uid" and c[1] == "store"] == []
+
+
+async def test_trash_fallback_is_recorded_in_executed_audit_row(db_path: Path) -> None:
+    agent_id = await _seed_agent(db_path)
+    row = await _stage_trash(db_path, agent_id, folder_to="Trash")
+
+    fake = _FakeMailboxIMAP(move=False)
+    with patch("gateway.execution.aioimaplib.IMAP4_SSL", return_value=fake):
+        await execute_operation(row["id"], row, db_path)
+
+    async with get_db(db_path) as db, db.execute(
+        "SELECT detail FROM audit_log WHERE operation_id = ? AND event = 'executed'",
+        (row["id"],),
+    ) as cur:
+        audit = await cur.fetchone()
+    assert audit is not None
+    assert json.loads(audit["detail"]) == {
+        "trash_fallback": "no_move_capability",
+        "trash_folder": "Trash",
+    }
+
+
+# ---------------------------------------------------------------------------
+# Destination UIDs (#170): a UID MOVE records where the messages landed
+#
+#   UID MOVE 42 "Archive"
+#     S: * OK [COPYUID 1706723021 42 7] Moved UIDs.     ← untagged (Dovecot)
+#     S: * 1 EXPUNGE
+#     S: A1 OK Move completed
+#   aioimaplib strips "* ", so Response.lines holds b"OK [COPYUID ...] ...".
+#   Some servers put COPYUID on the tagged OK instead (RFC 4315 example):
+#     S: A3 OK [COPYUID 38505 304,319:320 3956:3958] Done
+# ---------------------------------------------------------------------------
+
+DOVECOT_MOVE_LINES = [
+    b"OK [COPYUID 1706723021 42 7] Moved UIDs.",
+    b"1 EXPUNGE",
+    b"Move completed (0.002 + 0.000 secs).",
+]
+
+
+def test_parse_copyuid_untagged_dovecot_form() -> None:
+    assert parse_copyuid(DOVECOT_MOVE_LINES) == (1706723021, "7")
+
+
+def test_parse_copyuid_tagged_rfc4315_form_with_ranges() -> None:
+    assert parse_copyuid([b"[COPYUID 38505 304,319:320 3956:3958] Done"]) == (
+        38505, "3956:3958",
+    )
+
+
+def test_parse_copyuid_joins_split_responses() -> None:
+    """RFC 6851 lets a server report one MOVE as several COPYUID codes."""
+    lines = [
+        b"OK [COPYUID 99 10 500] Moved",
+        b"OK [COPYUID 99 11:12 501:502] Moved",
+        b"Done",
+    ]
+    assert parse_copyuid(lines) == (99, "500,501:502")
+
+
+def test_parse_copyuid_absent_or_inconsistent_returns_none() -> None:
+    assert parse_copyuid([b"done"]) is None                     # no UIDPLUS
+    assert parse_copyuid([]) is None
+    assert parse_copyuid(None) is None
+    assert parse_copyuid([                                      # UIDVALIDITY mismatch
+        b"OK [COPYUID 1 10 500] Moved", b"OK [COPYUID 2 11 501] Moved",
+    ]) is None
+
+
+def test_parse_copyuid_accepts_str_lines() -> None:
+    assert parse_copyuid(["OK [copyuid 5 1 2] moved"]) == (5, "2")
+
+
+def test_parse_uidvalidity_from_select_response() -> None:
+    lines = [
+        b"3 EXISTS",
+        b"0 RECENT",
+        b"OK [UIDVALIDITY 3857529045] UIDs valid",
+        b"OK [UIDNEXT 4392] Predicted next UID",
+        b"[READ-WRITE] Select completed.",
+    ]
+    assert parse_uidvalidity(lines) == 3857529045
+    assert parse_uidvalidity([b"[READ-WRITE] Select completed."]) is None
+
+
+async def _stage_move(db_path: Path, agent_id: int) -> dict:
+    op_id = await create_operation(
+        op_type="move", protocol="imap", description="Move 42 to Archive",
+        agent_id=agent_id, message_ids=["42"], folder_from="INBOX",
+        folder_to="Archive", db_path=db_path,
+    )
+    return await get_operation(op_id, db_path=db_path)
+
+
+async def test_move_returns_destination_uids_from_copyuid(db_path: Path) -> None:
+    agent_id = await _seed_agent(db_path)
+    row = await _stage_move(db_path, agent_id)
+
+    fake = _FakeMailboxIMAP(uid_lines=DOVECOT_MOVE_LINES)
+    with patch("gateway.execution.aioimaplib.IMAP4_SSL", return_value=fake):
+        detail = await _execute_imap_upstream(row, db_path)
+
+    assert fake.calls == [("select", '"INBOX"'), ("uid", "move", "42", '"Archive"')]
+    assert detail == {"dest_uidvalidity": 1706723021, "dest_uids": "7"}
+
+
+async def test_move_without_copyuid_records_no_destination(db_path: Path) -> None:
+    """No UIDPLUS → nothing to record; undo will refuse rather than guess."""
+    agent_id = await _seed_agent(db_path)
+    row = await _stage_move(db_path, agent_id)
+
+    fake = _FakeMailboxIMAP(uid_lines=[b"Move completed"])
+    with patch("gateway.execution.aioimaplib.IMAP4_SSL", return_value=fake):
+        assert await _execute_imap_upstream(row, db_path) is None
+
+
+async def test_trash_move_returns_destination_uids(db_path: Path) -> None:
+    agent_id = await _seed_agent(db_path)
+    row = await _stage_trash(db_path, agent_id, folder_to="Deleted Items")
+
+    fake = _FakeMailboxIMAP(uid_lines=[b"[COPYUID 77 42 9001] Done"])
+    with patch("gateway.execution.aioimaplib.IMAP4_SSL", return_value=fake):
+        detail = await _execute_imap_upstream(row, db_path)
+
+    assert detail == {"dest_uidvalidity": 77, "dest_uids": "9001"}
+
+
+async def test_move_destination_is_recorded_in_executed_audit_row(db_path: Path) -> None:
+    agent_id = await _seed_agent(db_path)
+    row = await _stage_move(db_path, agent_id)
+
+    fake = _FakeMailboxIMAP(uid_lines=DOVECOT_MOVE_LINES)
+    with patch("gateway.execution.aioimaplib.IMAP4_SSL", return_value=fake):
+        await execute_operation(row["id"], row, db_path)
+
+    async with get_db(db_path) as db, db.execute(
+        "SELECT detail FROM audit_log WHERE operation_id = ? AND event = 'executed'",
+        (row["id"],),
+    ) as cur:
+        audit = await cur.fetchone()
+    assert json.loads(audit["detail"]) == {"dest_uidvalidity": 1706723021, "dest_uids": "7"}
+
+
+# ---------------------------------------------------------------------------
+# Unknown op_type (#174): fail closed. An op_type with no executor branch
+# must end 'failed' with an execution_failed audit row, never 'executed'.
+# ---------------------------------------------------------------------------
+
+
+async def test_unknown_op_type_fails_closed(db_path: Path) -> None:
+    agent_id = await _seed_agent(db_path)
+    op_id = await create_operation(
+        op_type="archive",
+        protocol="imap",
+        description="Archive 42",
+        agent_id=agent_id,
+        message_ids=["42"],
+        folder_from="INBOX",
+        folder_to="Archive",
+        db_path=db_path,
+    )
+    row = await get_operation(op_id, db_path=db_path)
+
+    fake = _FakeMailboxIMAP()
+    with patch("gateway.execution.aioimaplib.IMAP4_SSL", return_value=fake):
+        with pytest.raises(ExecutionError, match="Unsupported op_type 'archive'"):
+            await execute_operation(op_id, row, db_path)
+
+    # Nothing mutating was sent upstream.
+    assert [c for c in fake.calls if c[0] == "uid"] == []
+    assert (await get_operation(op_id, db_path=db_path))["status"] == "failed"
+    async with get_db(db_path) as db, db.execute(
+        "SELECT event FROM audit_log WHERE operation_id = ? ORDER BY id",
+        (op_id,),
+    ) as cur:
+        events = [r["event"] for r in await cur.fetchall()]
+    assert "execution_failed" in events
+    assert "executed" not in events

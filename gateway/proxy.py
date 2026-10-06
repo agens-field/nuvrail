@@ -85,6 +85,7 @@ from gateway.state_db import (
     get_pending_move_uids_for_folder,
     get_pending_reverts,
     get_special_use_folders,
+    get_trash_folder,
     init_db,
     mark_reverts_delivered,
     remove_messages_from_folder,
@@ -173,6 +174,38 @@ async def _load_special_use(session: dict, db_path: Path, peer: str) -> dict:
     except Exception as exc:
         logger.debug("[%s] special-use lookup failed (non-fatal): %s", peer, exc)
         return {}
+
+
+async def _resolve_trash_folder(
+    session: dict,
+    db_path: Path,
+    profile: ProviderProfile | None,
+    peer: str,
+) -> str | None:
+    """Pick the Trash folder an approved ``trash`` op will be moved into (#168).
+
+    Resolved at staging time so the human approves the action that will
+    actually run, and so the destination is recorded in ``folder_to`` (undo
+    moves it back from there). Resolution order:
+
+      1. the server-declared RFC 6154 ``\\Trash`` folder (exact name), then
+      2. the provider profile's ``trash_folder`` (Gmail/iCloud/Outlook).
+
+    Folder-name heuristics are deliberately NOT used: a mis-guessed folder
+    would send approved deletes somewhere the human didn't expect. None means
+    "no Trash folder known" and the op is staged — and labelled — as a plain
+    ``\\Deleted`` flag instead. Never raises.
+    """
+    try:
+        declared = await get_trash_folder(user_id=session.get("user_id"), db_path=db_path)
+    except Exception as exc:
+        logger.debug("[%s] trash-folder lookup failed (non-fatal): %s", peer, exc)
+        declared = None
+    if declared:
+        return declared
+    if profile is not None and profile.trash_folder:
+        return profile.trash_folder
+    return None
 
 
 # Budget for the proxy-issued SPECIAL-USE discovery exchange at connect time.
@@ -836,6 +869,16 @@ async def _client_to_upstream(
                     # update below, which deletes message rows from the state
                     # DB — after that point the metadata is gone. Non-fatal if
                     # lookup fails.
+                    # An approved trash op executes as UID MOVE into the Trash
+                    # folder (#168). Resolve it now: it is recorded as
+                    # folder_to (the executor's target, undo's source) and it
+                    # decides the label — "Move to Trash" vs "Mark deleted (no
+                    # Trash folder found)" — so the human approves what runs.
+                    if parsed_op.op_type == "trash" and not parsed_op.folder_to:
+                        parsed_op.folder_to = await _resolve_trash_folder(
+                            session, db_path, _profile, peer
+                        )
+
                     op_intent, op_intent_conf = derive_intent(
                         parsed_op, _profile,
                         folder_from=parsed_op.folder_from or session.get("folder"),

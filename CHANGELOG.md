@@ -12,6 +12,51 @@ heading format exact and add new work under `[Unreleased]`.
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-01
+
+Patch release: four approval-path correctness fixes in the gateway. Upgrading
+from 0.1.0 is recommended. One behaviour change: a move, archive or trash
+executed before you upgrade cannot be undone afterwards, because undo now needs
+the destination UID that 0.1.0 did not record (see #170 below).
+
+### Fixed
+- An approved "Move to Trash" now actually moves the message to Trash
+  ([#168](https://github.com/agens-field/nuvrail/issues/168)). Previously the
+  approved op ran as `UID STORE +FLAGS (\Deleted)` on the real server: Gmail
+  archived the message, and on Dovecot/Fastmail it stayed flagged until the
+  human's own client expunged it, with no Trash copy. Now the Trash folder is
+  resolved when the op is staged (the server's RFC 6154 `\Trash` folder, else
+  the provider profile's) and the approved op runs as `UID MOVE` into it. If no
+  Trash folder is known, the op is staged and labelled "Mark deleted (no Trash
+  folder found)" and runs as the `\Deleted` flag. If the server lacks `MOVE`,
+  it falls back to the flag and the fallback is recorded in the `executed`
+  audit row. The gateway still never expunges. Undo of a trash op moves it back
+  from Trash.
+- Undo of a move, archive or trash no longer targets the wrong message
+  ([#170](https://github.com/agens-field/nuvrail/issues/170)). IMAP UIDs are
+  per-mailbox, but undo reused the message's source-folder UID in the
+  destination folder, so it could move an unrelated message back, or move
+  nothing and still report the op `reverted`. The executor now records the
+  destination UID and `UIDVALIDITY` from the server's `COPYUID` response in the
+  `executed` audit row, and undo moves exactly that UID back. Undo refuses, and
+  the op stays `executed`, when that UID was not recorded (the server lacks
+  UIDPLUS, or the op ran before this fix), when the folder's `UIDVALIDITY`
+  changed, or when the move back finds nothing. A partial move back says
+  "N of M" in the audit row.
+- Undo now quotes mailbox names, so undoing a move out of a folder whose name
+  has a space (Outlook `Deleted Items`, iCloud `Deleted Messages`) no longer
+  sends a malformed `SELECT`.
+- Undo of a flag or unflag (star/unstar in the UI) now works
+  ([#173](https://github.com/agens-field/nuvrail/issues/173)). The undo
+  allowlist named `star`/`unstar`, but staged ops carry `flag`/`unflag`, so
+  every such undo was refused as "not undoable".
+- An approved op with an op type the executor has no handler for now fails
+  instead of reporting success
+  ([#174](https://github.com/agens-field/nuvrail/issues/174)). It used to be
+  logged, skipped, and marked `executed` with nothing done upstream. It is now
+  marked `failed` with an `execution_failed` audit row. No op type the proxy
+  stages today hits this path; archive is staged as a move.
+
 ## [0.1.0] - 2026-09-23
 
 First tagged release of Nuvrail: a self-hostable approval gateway for AI
@@ -154,5 +199,6 @@ STARTTLS upstream and DATA staging.
 - Raw asyncio IMAP TCP proxy with LOGIN passthrough.
 - SMTP proxy with STARTTLS to the upstream server and outbound DATA staging.
 
-[Unreleased]: https://github.com/agens-field/nuvrail/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/agens-field/nuvrail/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/agens-field/nuvrail/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/agens-field/nuvrail/releases/tag/v0.1.0

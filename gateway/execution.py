@@ -67,6 +67,62 @@ class ExecutionError(Exception):
 # ---------------------------------------------------------------------------
 
 
+# RFC 4315 (UIDPLUS) COPYUID response code, sent by UID MOVE (RFC 6851) as an
+# untagged ``* OK [COPYUID ...]`` or on the tagged OK:
+#
+#   [COPYUID <dest-uidvalidity> <source-uid-set> <dest-uid-set>]
+#
+# IMAP UIDs are per-mailbox, so the destination set is the only handle on the
+# moved messages once they leave the source folder (#170).
+_COPYUID_RE = re.compile(rb"\[COPYUID (\d+) ([0-9:,]+) ([0-9:,]+)\]", re.IGNORECASE)
+
+
+_UIDVALIDITY_RE = re.compile(rb"\[UIDVALIDITY (\d+)\]", re.IGNORECASE)
+
+
+def _response_bytes(lines: list):
+    """aioimaplib ``Response.lines`` as bytes (servers/fakes may give str)."""
+    for line in lines or []:
+        yield line.encode() if isinstance(line, str) else bytes(line)
+
+
+def parse_uidvalidity(lines: list) -> int | None:
+    """Return the UIDVALIDITY a SELECT response reported, or None."""
+    for raw in _response_bytes(lines):
+        m = _UIDVALIDITY_RE.search(raw)
+        if m:
+            return int(m.group(1))
+    return None
+
+
+def parse_copyuid(lines: list) -> tuple[int, str] | None:
+    """Return ``(dest_uidvalidity, dest_uid_set)`` from a MOVE/COPY response.
+
+    ``lines`` is aioimaplib's ``Response.lines`` (bytes or str). A server may
+    split one MOVE into several COPYUID codes; their destination sets are
+    joined in order. Returns None when no COPYUID is present (server lacks
+    UIDPLUS, or nothing was moved) or when the codes disagree on UIDVALIDITY.
+    """
+    uidvalidities: set[int] = set()
+    dest_sets: list[str] = []
+    for raw in _response_bytes(lines):
+        for m in _COPYUID_RE.finditer(raw):
+            uidvalidities.add(int(m.group(1)))
+            dest_sets.append(m.group(3).decode("ascii"))
+    if len(uidvalidities) != 1:
+        return None
+    return uidvalidities.pop(), ",".join(dest_sets)
+
+
+def _move_destination_detail(lines: list) -> dict | None:
+    """Audit detail recording where a UID MOVE put the messages, or None."""
+    parsed = parse_copyuid(lines)
+    if parsed is None:
+        return None
+    uidvalidity, dest_uids = parsed
+    return {"dest_uidvalidity": uidvalidity, "dest_uids": dest_uids}
+
+
 @dataclass
 class ImapCredentials:
     """Resolved upstream IMAP connection details for one operation."""
@@ -365,7 +421,7 @@ async def _save_to_sent_folder(
             await client.logout()
 
 
-async def _execute_imap_upstream(row: dict, db_path: Path) -> None:
+async def _execute_imap_upstream(row: dict, db_path: Path) -> dict | None:
     """
     Replay a staged IMAP operation against the upstream server.
 
@@ -376,10 +432,22 @@ async def _execute_imap_upstream(row: dict, db_path: Path) -> None:
 
     Supported op_types: store, move, copy, create, rename, trash, mark_read,
     flag, unflag, mark_unread (all map to UID STORE or UID MOVE/COPY/etc).
+    ``trash`` is a UID MOVE into ``folder_to`` (the Trash folder resolved at
+    staging) when set and the server has MOVE; otherwise STORE +FLAGS
+    \\Deleted (#168).
     APPEND is skipped — the message body is not stored in the staging DB.
 
-    Raises RuntimeError on any upstream error so the caller can set
-    operation status → 'failed'.
+    Returns extra audit detail for the ``executed`` row, or None:
+      - ``move`` / MOVE-to-Trash: ``{dest_uidvalidity, dest_uids}`` parsed
+        from the server's COPYUID, so undo can address the messages in the
+        destination mailbox (#170). Omitted when the server sends no COPYUID;
+        undo then refuses rather than guess.
+      - trash→STORE fallback (server lacks MOVE): ``{trash_fallback, ...}``,
+        so the audit trail shows the approved move did not happen as labelled.
+
+    Raises RuntimeError on any upstream error, and on an op_type with no
+    branch below (fail closed, #174), so the caller can set operation
+    status → 'failed'.
     """
     op_type = row.get("op_type", "")
 
@@ -404,6 +472,7 @@ async def _execute_imap_upstream(row: dict, db_path: Path) -> None:
     flags_add = decode_json_list(row.get("flags_add"))
     flags_remove = decode_json_list(row.get("flags_remove"))
 
+    result: dict | None = None
     client = aioimaplib.IMAP4_SSL(host=creds.host, port=creds.port)
     try:
         await client.wait_hello_from_server()
@@ -440,8 +509,38 @@ async def _execute_imap_upstream(row: dict, db_path: Path) -> None:
             if status != "OK":
                 raise RuntimeError(f"IMAP LOGIN failed: {data}")
 
+        # Approved trash with a known Trash folder → UID MOVE there (#168).
+        #
+        #   trash op ──folder_to set?──no──────────────► STORE +FLAGS \Deleted
+        #                  │ yes                          (staged + labelled
+        #                  ▼                               "Mark deleted …")
+        #            server has MOVE?──no──► STORE +FLAGS \Deleted,
+        #                  │ yes             folder_to cleared (undo can't
+        #                  ▼                 move back), audited as fallback
+        #            UID MOVE uid → folder_to
+        #
+        # Never COPY + STORE + EXPUNGE: the gateway must not expunge.
+        if op_type == "trash" and folder_to and client.has_capability("MOVE"):
+            status, data = await client.select(imap_quoted(folder_from))
+            if status != "OK":
+                raise RuntimeError(f"IMAP SELECT {folder_from!r} failed: {data}")
+            status, data = await client.uid("move", uid_set, imap_quoted(folder_to))
+            if status != "OK":
+                raise RuntimeError(f"IMAP UID MOVE to Trash {folder_to!r} failed: {data}")
+            result = _move_destination_detail(data)
+
         # Most write ops require a folder context (SELECT folder_from first)
-        if op_type in ("store", "trash", "mark_read", "flag", "unflag", "mark_unread"):
+        elif op_type in ("store", "trash", "mark_read", "flag", "unflag", "mark_unread"):
+            if op_type == "trash" and folder_to:
+                # Staged as a move to Trash, but this server can't MOVE.
+                # Fall back to the flag the agent asked for, and record it.
+                logger.warning(
+                    "[imap_execute] Op %s: server lacks MOVE — trash falls back to "
+                    "STORE \\Deleted instead of moving to %r",
+                    row["id"], folder_to,
+                )
+                await _clear_folder_to(row["id"], db_path)
+                result = {"trash_fallback": "no_move_capability", "trash_folder": folder_to}
             status, data = await client.select(imap_quoted(folder_from))
             if status != "OK":
                 raise RuntimeError(f"IMAP SELECT {folder_from!r} failed: {data}")
@@ -467,6 +566,7 @@ async def _execute_imap_upstream(row: dict, db_path: Path) -> None:
             status, data = await client.uid("move", uid_set, imap_quoted(folder_to))
             if status != "OK":
                 raise RuntimeError(f"IMAP UID MOVE failed: {data}")
+            result = _move_destination_detail(data)
 
         elif op_type == "copy":
             if not folder_to:
@@ -530,11 +630,12 @@ async def _execute_imap_upstream(row: dict, db_path: Path) -> None:
                 raise RuntimeError(f"IMAP APPEND to {target_folder!r} failed: {data}")
 
         else:
-            # Unknown/unsupported op type — log and treat as no-op
-            logger.warning(
-                "[imap_execute] Unrecognised op_type %r for op %s — skipping upstream exec",
-                op_type,
-                row["id"],
+            # Unknown op type: fail closed (#174). Returning here used to mark
+            # the op 'executed' with an 'executed' audit row although nothing
+            # ran upstream, a silent false success. Raising routes it through
+            # the caller's failure path: status 'failed' + execution_failed.
+            raise RuntimeError(
+                f"Unsupported op_type {op_type!r} for op {row['id']}: nothing was executed"
             )
 
         logger.info("[imap_execute] Op %s (%s) executed successfully", row["id"], op_type)
@@ -542,6 +643,22 @@ async def _execute_imap_upstream(row: dict, db_path: Path) -> None:
     finally:
         with contextlib.suppress(Exception):
             await client.logout()
+
+    return result
+
+
+async def _clear_folder_to(op_id: str, db_path: Path) -> None:
+    """Forget a trash op's Trash destination after a STORE fallback.
+
+    Undo reads ``folder_to`` as "where the message went"; after a fallback
+    it never went there, so leaving it set would make undo move the wrong
+    thing out of Trash.
+    """
+    async with get_db(db_path) as db:
+        await db.execute(
+            "UPDATE staged_operations SET folder_to = NULL WHERE id = ?", (op_id,)
+        )
+        await db.commit()
 
 
 async def _record_execution_failure(
@@ -573,6 +690,7 @@ async def execute_operation(
     Returns ``{"executed_at": <int|None>}`` on success.
     """
     protocol = row.get("protocol", "imap")
+    imap_detail: dict | None = None
 
     if protocol == "smtp":
         # Deserialize smtp_envelope
@@ -748,7 +866,7 @@ async def execute_operation(
     else:
         # IMAP ops: replay the stored command against the upstream IMAP server.
         try:
-            await _execute_imap_upstream(row, db_path)
+            imap_detail = await _execute_imap_upstream(row, db_path)
         except Exception as exc:
             logger.error("[execute] IMAP execution failed for %s: %s", op_id, exc)
             await _record_execution_failure(op_id, row, exc, db_path)
@@ -762,6 +880,8 @@ async def execute_operation(
     executed_detail: str | None = None
     if protocol == "smtp":
         executed_detail = json.dumps({"recipient_count": len(relay_recipients)})
+    elif imap_detail:
+        executed_detail = json.dumps(imap_detail)
     await record_audit_event(
         db_path, timestamp=int(time.time()), event='executed', actor=actor,
         operation_id=op_id, agent_id=row.get('agent_id'), op_type=row.get('op_type'),
