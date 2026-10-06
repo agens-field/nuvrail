@@ -8,7 +8,7 @@
 - v3 — multi-provider support (Google, Microsoft, Apple, generic IMAP/SMTP) added to Milestone 2; provider abstraction layer specified
 - v4 — open source scope defined (superseded in v6: license is AGPL-3.0, not MIT/Apache)
 - v5 — updated to reflect actual built state as of 2026-03-19
-- v6 — full reconciliation against the codebase as of 2026-06-12. Everything previously "Phase 1/2 planned" that has since shipped is now documented as built: secret-store credential handling, Gmail XOAUTH2, hash-chained audit log + verification, web push, batching, undo, SMTP 550 rejection notice, Sent-folder write-back, auto-approval rules (enterprise plugin), per-user tenancy, GDPR retention/erasure/export, send rate caps, loop health. Decisions log updated with supersessions (§19).
+- v6 — full reconciliation against the codebase as of 2026-06-12. Everything previously "Phase 1/2 planned" that has since shipped is now documented as built: secret-store credential handling, Gmail XOAUTH2, hash-chained audit log + verification, web push, batching, undo, SMTP 214 rejection notice, Sent-folder write-back, auto-approval rules (enterprise plugin), per-user tenancy, GDPR retention/erasure/export, send rate caps, loop health. Decisions log updated with supersessions (§19).
 - v7 — open-source-first framing for the public launch. This repository **is** the product: a free, self-hostable core (AGPL-3.0). A hosted deployment, where operated, is simply one deployment of this same core, not a separate paid product; multi-user/tenancy and secret-manager sections describe capabilities of the core, not a commercial tier. No behavioral spec change from v6.
 
 ---
@@ -136,7 +136,7 @@ The gateway authenticates to real email providers using credentials captured at 
 
 - **Username:** `nuvrail_<hex>`; **token** generated once, shown once, stored bcrypt-hashed (rounds=10)
 - Verified on every IMAP LOGIN / SMTP AUTH; revoked or suspended credentials rejected immediately
-- Scoped to a single upstream inbox; multiple agents per user supported (quota by plan tier)
+- Scoped to a single upstream inbox; multiple agents per user supported (no agent quota in the open core; see `gateway/entitlements.py`)
 
 ### 4.3 Lane 3 — Human credentials (web app / REST API) **[BUILT]**
 
@@ -191,7 +191,7 @@ Provider profiles normalize execution upstream (e.g. prefer native `MOVE` over `
 - SMTPS 465 external (TLS at edge); AUTH LOGIN/PLAIN verified against Lane 2
 - All sends staged: DATA intercepted, full body + envelope stored in the op record (required for relay), 200-char preview for the approval card
 - **On approval:** relayed via `aiosmtplib` (STARTTLS, CA-validated) — *after* passing the outbound send rate caps (§6.1) — then a copy is **appended to the account's Sent folder** (discovered via RFC 6154, cached per agent), mirroring normal client behaviour
-- **On rejection [BUILT]:** the agent receives a `550` rejection notice for the op on its next SMTP session (`rejection_notified` tracking)
+- **On rejection [BUILT]:** on the agent's next SMTP session, right after AUTH succeeds, the proxy sends one informational line per unnotified rejected op, oldest first, up to 10 per session: `214 [NUVRAIL] REJECTED <op_id>: <op description>` (`gateway/smtp_proxy.py`; `rejection_notified` tracking, so each op is notified once). It is a `214`, not a `550`: the rejected message was already accepted with `250` at submit time, so the notice is out-of-band and the session continues normally. Agents should parse `214 [NUVRAIL] REJECTED` lines for op IDs they sent.
 - **On expiry:** as IMAP — status `expired`, audit logged
 - Bodies (and APPEND literals) are scrubbed 7 days after a terminal state (§10)
 
@@ -313,7 +313,7 @@ The log is therefore *immutable while retained*, not retained forever — public
 
 ---
 
-## 11. Rejection Handling — IMAP Mechanics **[BUILT]** — unchanged (snapshot restore → pending_reverts → unsolicited FETCH before tagged OK; no IMAP extensions required). SMTP rejections additionally surface a `550` notice on the agent's next session.
+## 11. Rejection Handling — IMAP Mechanics **[BUILT]** — unchanged (snapshot restore → pending_reverts → unsolicited FETCH before tagged OK; no IMAP extensions required). SMTP rejections additionally surface a `214 [NUVRAIL] REJECTED <op_id>: <op description>` notice right after AUTH on the agent's next session (§6).
 
 ---
 
@@ -354,7 +354,7 @@ The log is therefore *immutable while retained*, not retained forever — public
 
 | Table | Purpose | Notes |
 |---|---|---|
-| `users` | Human accounts | + `suspended_at`, `deleted_at` (tombstone), reset tokens, plan tier (plugin migration) |
+| `users` | Human accounts | + `suspended_at`, `deleted_at` (tombstone), reset tokens |
 | `agent_credentials` | Agent tokens + upstream config | secret-store reference envelopes; OAuth2 fields; cached `sent_folder` |
 | `staged_operations` | Pending/decided operations | see §7.1 |
 | `audit_log` | Append-only, hash-chained event log | + `user_id`, `prev_hash`, `entry_hash`, `intent_label` |
@@ -371,7 +371,7 @@ The log is therefore *immutable while retained*, not retained forever — public
 
 ### Shipped (Phases 0–2a)
 
-Proxies, staging, reverts, expiry, REST API, web PWA, audit API — plus everything v5 listed as planned: Gmail XOAUTH2, credential secret store, web push (VAPID), batch approve/reject (API + UI), undo (API + UI), SMTP 550 rejection notice, urgency, per-agent audit, intent labelling + special-use discovery, provider profiles, auto-approval rules engine (enterprise plugin: predicates, cool-down, guardrails, shadow), plan entitlements, account maintenance (export / delete / token rotate / password reset), hash-chained + verified audit log, two-stage GDPR erasure + body scrub, send rate caps, per-user tenancy, loop health, CORS fail-closed, unified agent-add wizard.
+Proxies, staging, reverts, expiry, REST API, web PWA, audit API — plus everything v5 listed as planned: Gmail XOAUTH2, credential secret store, web push (VAPID), batch approve/reject (API + UI), undo (API + UI), SMTP 214 rejection notice, urgency, per-agent audit, intent labelling + special-use discovery, provider profiles, auto-approval rules engine (enterprise plugin: predicates, cool-down, guardrails, shadow), plan entitlements, account maintenance (export / delete / token rotate / password reset), hash-chained + verified audit log, two-stage GDPR erasure + body scrub, send rate caps, per-user tenancy, loop health, CORS fail-closed, unified agent-add wizard.
 
 ### Next
 
@@ -423,7 +423,7 @@ End-to-end flow for a new user: register → connect mailbox (manual IMAP/SMTP o
 | # | Question | Decision |
 |---|---|---|
 | 1 | SMTP proxy? | Yes — IMAP and SMTP together |
-| 2 | Multi-agent support? | Multiple agent credential sets per user from day 1 (quota by plan tier) |
+| 2 | Multi-agent support? | Multiple agent credential sets per user from day 1 (no quota in the open core) |
 | 3 | Calendar scope? | Deferred — email only |
 | 4 | Personal clients bypass gateway? | Yes — AI lane only |
 | 5 | APPEND to Sent folder? | ~~Blocked at IMAP layer~~ **Superseded:** on an approved send, the gateway itself appends a copy to the discovered Sent folder (RFC 6154), mirroring normal client behaviour. Agent-initiated APPENDs remain staged writes. |
