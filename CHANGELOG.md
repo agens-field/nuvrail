@@ -12,6 +12,20 @@ heading format exact and add new work under `[Unreleased]`.
 
 ## [Unreleased]
 
+### Security
+- The IMAP and SMTP proxies now fail closed. Previously the IMAP proxy
+  forwarded any command verb it did not recognise as a read, so write-capable
+  IMAP extensions (`REPLACE`, which appends and expunges; `SETACL`/`DELETEACL`,
+  which share a mailbox; `SETMETADATA`; `SETQUOTA`) and `COMPRESS` could reach
+  the real mailbox without approval on servers that support them (typically
+  Dovecot/Cyrus, not Gmail). The SMTP proxy likewise forwarded unknown verbs
+  after AUTH, including `BDAT`, which on CHUNKING-capable servers could
+  complete a message transaction without going through `DATA` staging. Now only an explicit allowlist is
+  forwarded; everything else is refused locally (`NO [CANNOT]` / `502 5.5.1`).
+  Non-synchronizing IMAP literals are refused and `LITERAL+`/`LITERAL-`/
+  `COMPRESS`/`REPLACE`/`STARTTLS`/`IMAP4rev2` are no longer advertised to the
+  agent. Upgrading is recommended.
+
 ## [0.1.1] - 2026-10-01
 
 Patch release: four approval-path correctness fixes in the gateway. Upgrading

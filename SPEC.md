@@ -161,7 +161,9 @@ Personal email clients connect directly to the provider — the gateway is the A
 
 ### 5.2 Read operations — pass-through
 
-`SELECT`, `EXAMINE`, `FETCH`, `SEARCH`, `LIST`, `LSUB`, `STATUS`, `NOOP`, `CAPABILITY`, `ID`, `LOGOUT`, `CHECK`, `SUBSCRIBE`, `UNSUBSCRIBE`, `NAMESPACE`, `IDLE` forwarded directly. The per-user local mirror is updated from FETCH/SELECT/LIST responses; special-use folder attributes (RFC 6154) are captured for intent classification. Upstream→client is line-buffered so pending reverts can be injected before tagged responses.
+`SELECT`, `EXAMINE`, `FETCH`, `SEARCH`, `LIST`, `LSUB`, `STATUS`, `NOOP`, `CAPABILITY`, `ID`, `LOGOUT`, `CHECK`, `SUBSCRIBE`, `UNSUBSCRIBE`, `NAMESPACE`, `IDLE`, `UNSELECT`, plus the read-only extensions `ENABLE`, `SORT`, `THREAD`, `ESEARCH`, `GETQUOTA`, `GETQUOTAROOT`, `GETACL`, `MYRIGHTS`, `LISTRIGHTS`, `GETMETADATA`, `XLIST`, forwarded directly (allowlist: `READ_COMMANDS` in `gateway/command_router.py`).
+
+**Fail closed.** Any verb not in the read allowlist, the staged-write set (§5.3) or the blocked set (§5.5) is answered locally with `NO [CANNOT]` and never forwarded. That covers write-capable extensions such as `REPLACE`, `SETACL`/`DELETEACL`, `SETMETADATA`, `SETQUOTA`, and framing changes (`COMPRESS`, `STARTTLS`). Commands carrying a non-synchronizing literal (`{N+}`/`{N-}`) are consumed and refused, and `LITERAL+`, `LITERAL-`, `COMPRESS=*`, `REPLACE`, `STARTTLS` and `IMAP4rev2` are stripped from capabilities relayed to the agent. The per-user local mirror is updated from FETCH/SELECT/LIST responses; special-use folder attributes (RFC 6154) are captured for intent classification. Upstream→client is line-buffered so pending reverts can be injected before tagged responses.
 
 ### 5.3 Write operations — staged
 
@@ -190,6 +192,7 @@ Provider profiles normalize execution upstream (e.g. prefer native `MOVE` over `
 
 - SMTPS 465 external (TLS at edge); AUTH LOGIN/PLAIN verified against Lane 2
 - All sends staged: DATA intercepted, full body + envelope stored in the op record (required for relay), 200-char preview for the approval card
+- Fail closed after AUTH: only `MAIL`, `RCPT`, `DATA` (staged), `QUIT`, `NOOP`, `RSET`, `HELP`, `VRFY` reach upstream; `EHLO`/`HELO`/`AUTH` are handled locally. Anything else, notably `BDAT` (RFC 3030 CHUNKING, which would submit a message without `DATA`), gets `502 5.5.1` and is never forwarded
 - **On approval:** relayed via `aiosmtplib` (STARTTLS, CA-validated) — *after* passing the outbound send rate caps (§6.1) — then a copy is **appended to the account's Sent folder** (discovered via RFC 6154, cached per agent), mirroring normal client behaviour
 - **On rejection [BUILT]:** on the agent's next SMTP session, right after AUTH succeeds, the proxy sends one informational line per unnotified rejected op, oldest first, up to 10 per session: `214 [NUVRAIL] REJECTED <op_id>: <op description>` (`gateway/smtp_proxy.py`; `rejection_notified` tracking, so each op is notified once). It is a `214`, not a `550`: the rejected message was already accepted with `250` at submit time, so the notice is out-of-band and the session continues normally. Agents should parse `214 [NUVRAIL] REJECTED` lines for op IDs they sent.
 - **On expiry:** as IMAP — status `expired`, audit logged
