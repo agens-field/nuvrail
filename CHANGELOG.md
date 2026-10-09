@@ -26,6 +26,14 @@ heading format exact and add new work under `[Unreleased]`.
   `COMPRESS`/`REPLACE`/`STARTTLS`/`IMAP4rev2` are no longer advertised to the
   agent. Upgrading is recommended.
 
+### Changed
+- The web UI no longer loads fonts from Google Fonts
+  ([#184](https://github.com/agens-field/nuvrail/issues/184)). Inter and
+  Montserrat (SIL OFL 1.1) are now served from the web container itself, so
+  opening the approval UI makes no third-party request by default, and the CSP
+  drops `fonts.googleapis.com` / `fonts.gstatic.com`. A CI test now fails if
+  `index.html` or the stylesheet references another origin.
+
 ## [0.1.1] - 2026-10-01
 
 Patch release: four approval-path correctness fixes in the gateway. Upgrading
