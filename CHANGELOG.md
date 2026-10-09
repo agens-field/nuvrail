@@ -12,6 +12,15 @@ heading format exact and add new work under `[Unreleased]`.
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-10-09
+
+Security patch. The IMAP and SMTP proxies now fail closed on commands they do
+not classify (details below); before this release, write-capable IMAP
+extensions and SMTP `BDAT` could reach the real server without approval on
+servers that support them. Upgrading from 0.1.1 is recommended. The web UI
+also stops loading fonts from Google, so opening it makes no third-party
+request by default.
+
 ### Security
 - The IMAP and SMTP proxies now fail closed. Previously the IMAP proxy
   forwarded any command verb it did not recognise as a read, so write-capable
@@ -33,6 +42,19 @@ heading format exact and add new work under `[Unreleased]`.
   opening the approval UI makes no third-party request by default, and the CSP
   drops `fonts.googleapis.com` / `fonts.gstatic.com`. A CI test now fails if
   `index.html` or the stylesheet references another origin.
+- The API reports its version from the installed package metadata instead of
+  a hardcoded string, so it cannot drift from the release
+  ([#177](https://github.com/agens-field/nuvrail/issues/177)).
+
+### Fixed
+- The audit view now offers Undo for flag/unflag operations, and its op-type
+  filter lists the types the gateway actually records (`flag`, `unflag`,
+  `store` added; `archive`/`star`/`unstar`, which never matched anything,
+  removed). Archived messages are still filtered via the intent filter
+  ([#178](https://github.com/agens-field/nuvrail/issues/178)).
+- SPEC.md documents the SMTP rejection notice as `214`, which is what the
+  proxy sends, not `550`
+  ([#177](https://github.com/agens-field/nuvrail/issues/177)).
 
 ## [0.1.1] - 2026-10-01
 
