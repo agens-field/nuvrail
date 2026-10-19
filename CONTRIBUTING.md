@@ -23,7 +23,7 @@ Nuvrail is a Python gateway (the proxy + API) plus a React web app (the PWA).
 
 ### Gateway / API (Python)
 
-Requires **Python 3.9+** (CI runs on 3.11).
+Requires **Python 3.11+** (CI runs on 3.11).
 
 ```bash
 # from the repo root
