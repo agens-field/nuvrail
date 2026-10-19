@@ -15,6 +15,7 @@ from gateway.command_router import (
     WRITE_COMMANDS,
     classify,
     filter_capabilities,
+    filter_enable_args,
     nonsync_literal_size,
 )
 from gateway.imap_parser import ParsedCommand
@@ -148,9 +149,27 @@ def test_read_set_has_no_write_capable_verbs() -> None:
     ("* OK [CAPABILITY IMAP4rev1 IDLE] ready", "* OK [CAPABILITY IMAP4rev1 IDLE] ready"),
     ("* 3 EXISTS", "* 3 EXISTS"),
     ("* CAPABILITY IMAP4rev1 ACL QUOTA", "* CAPABILITY IMAP4rev1 ACL QUOTA"),
+    # BINARY = literal8 (~{N}), which the proxy refuses (nuvrail-internal#41 item 1).
+    ("* CAPABILITY IMAP4rev1 BINARY IDLE", "* CAPABILITY IMAP4rev1 IDLE"),
+    ("a1 OK [CAPABILITY IMAP4rev1 binary] hi", "a1 OK [CAPABILITY IMAP4rev1] hi"),
 ])
 def test_filter_capabilities(line: str, expected: str) -> None:
     assert filter_capabilities(line) == expected
+
+
+@pytest.mark.parametrize("args,expected", [
+    (["CONDSTORE"], ["CONDSTORE"]),
+    (["condstore"], ["condstore"]),
+    (["QRESYNC"], []),
+    (["UTF8=ACCEPT"], []),
+    (["CONDSTORE", "QRESYNC", "UTF8=ACCEPT"], ["CONDSTORE"]),
+    (["QRESYNC", "CONDSTORE"], ["CONDSTORE"]),
+    ([], []),
+])
+def test_filter_enable_args_allowlists_condstore_only(args, expected) -> None:
+    """nuvrail-internal#41 item 3: QRESYNC (EXPUNGE -> VANISHED) and UTF8=ACCEPT
+    (mailbox-name encoding) change grammar the staging code assumes."""
+    assert filter_enable_args(args) == expected
 
 
 # ---------------------------------------------------------------------------

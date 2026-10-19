@@ -9,12 +9,11 @@ Data flow:
                      ◄──────────────────────────      220 greeting
        ◄── greeting
 
-       EHLO          ──────────────────────────►
-                     ◄──────────────────────────      250 capabilities
-       ◄── 250 (STARTTLS stripped)
+       EHLO          (answered locally: synthetic 250, no STARTTLS)
+       ◄── 250
 
-       AUTH          ──────────────────────────►      (log user, redact creds)
-                     ◄──────────────────────────      235 OK
+       AUTH          (agent creds checked locally, then the proxy logs in
+                      upstream with the real creds; never relayed)
        ◄── 235
 
        MAIL FROM     ──────────────────────────►      (track sender)
@@ -70,7 +69,7 @@ from gateway.credentials import fetch_credential
 from gateway.extensions import load_plugins
 from gateway.intent import derive_send_intent, extract_message_ids, strip_subject_prefixes
 from gateway.mime_render import render_body
-from gateway.security_controls import build_auth_abuse_protector
+from gateway.security_controls import build_auth_abuse_protector, has_bare_cr_or_nul
 from gateway.staging import create_operation
 from gateway.state_db import (
     find_message_by_message_id,
@@ -119,23 +118,6 @@ async def _read_smtp_response(reader: asyncio.StreamReader) -> list[bytes]:
         if len(line) < 4 or line[3:4] != b"-":
             break
     return lines
-
-
-def _strip_starttls(lines: list[bytes]) -> list[bytes]:
-    """Remove STARTTLS capability from EHLO response and fix continuation markers.
-
-    When STARTTLS is the last capability listed, the line before it becomes the
-    new last line and must use a space (not a dash) at position 3.
-    """
-    filtered = [ln for ln in lines if b"STARTTLS" not in ln.upper()]
-    if not filtered:
-        return lines  # safety fallback
-
-    # Ensure the final line uses a space at position 3 (not a dash)
-    last = filtered[-1]
-    if len(last) >= 4 and last[3:4] == b"-":
-        filtered[-1] = last[:3] + b" " + last[4:]
-    return filtered
 
 
 # Headers extracted from an outgoing message for staging/intent purposes.
@@ -419,6 +401,14 @@ async def handle_smtp_client(
 
             line = line_bytes.decode("utf-8", errors="replace").rstrip("\r\n")
             cmd = line.split()[0].upper() if line.split() else ""
+
+            if has_bare_cr_or_nul(line_bytes):
+                client_writer.write(
+                    b"500 5.5.2 Nuvrail: bare CR or NUL in command line\r\n"
+                )
+                await client_writer.drain()
+                logger.warning("[%s] REJECTED SMTP line with bare CR/NUL", peer_str)
+                continue
 
             logger.debug("[%s] C→P: %s", peer_str, redact_protocol_line(line))
 
@@ -879,15 +869,7 @@ async def handle_smtp_client(
                 upstream_writer.write(line_bytes)
                 await upstream_writer.drain()
                 resp_lines = await _read_smtp_response(upstream_reader)
-                resp_bytes = b"".join(resp_lines)
-
-                # Strip STARTTLS from EHLO capabilities — client is already plain TCP;
-                # advertising STARTTLS would confuse clients into attempting an upgrade
-                # over a channel that is already plaintext on the client side.
-                if cmd in ("EHLO", "HELO"):
-                    resp_bytes = b"".join(_strip_starttls(list(resp_lines)))
-
-                client_writer.write(resp_bytes)
+                client_writer.write(b"".join(resp_lines))
                 await client_writer.drain()
 
     except (ConnectionResetError, BrokenPipeError, OSError) as exc:

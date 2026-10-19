@@ -220,6 +220,8 @@ SYNC_LITERAL_CASES = [
     r"A007 APPEND Drafts (\Seen) {500}",
     "A008 APPEND INBOX {1234}",
     r"A009 APPEND Sent (\Answered) {0}",
+    "A010 APPEND INBOX ~{5}",          # RFC 3516 literal8 (nuvrail-internal#41 item 1)
+    "A011 UID REPLACE 4 INBOX {3}",    # any verb: the proxy routes by verb
 ]
 
 

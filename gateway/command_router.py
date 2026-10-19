@@ -121,7 +121,8 @@ BLOCKED_COMMANDS = {
 #   STARTTLS             TLS upgrade after login, rejected
 #   IMAP4rev2            RFC 9051 makes LITERAL- implicit; the proxy speaks
 #                        IMAP4rev1 to the agent, so a rev2 client must not assume it
-_HIDDEN_CAPABILITIES = {"LITERAL+", "LITERAL-", "REPLACE", "STARTTLS", "IMAP4REV2"}
+#   BINARY               RFC 3516 literal8 (~{N}), refused by the proxy
+_HIDDEN_CAPABILITIES = {"LITERAL+", "LITERAL-", "REPLACE", "STARTTLS", "IMAP4REV2", "BINARY"}
 _HIDDEN_CAPABILITY_PREFIXES = ("COMPRESS=",)
 
 # "* CAPABILITY a b c" (untagged) or "... [CAPABILITY a b c] ..." (response code).
@@ -131,6 +132,22 @@ _CAPABILITY_CODE_RE = re.compile(r"(\[CAPABILITY )([^\]]*)(\])", re.IGNORECASE)
 # A non-synchronizing literal marker (RFC 7888): {N+} (LITERAL+), {N-} (LITERAL-),
 # optionally ~-prefixed (RFC 6855 UTF-8 literal). It must end the line.
 _NONSYNC_LITERAL_TAIL_RE = re.compile(r"~?\{(\d+)[+-]\}$")
+
+
+# ENABLE (RFC 5161) arguments the proxy forwards. Others change the response
+# grammar or mailbox-name encoding the staging and folder-tracking code assume:
+# QRESYNC turns EXPUNGE into VANISHED, UTF8=ACCEPT switches mailbox names off
+# modified UTF-7. CONDSTORE only adds MODSEQ data, which nothing here parses.
+_ENABLE_ALLOWED = frozenset({"CONDSTORE"})
+
+
+def filter_enable_args(args: list[str]) -> list[str]:
+    """Return the ENABLE arguments the proxy may forward, in order.
+
+    RFC 5161 lets a server ignore extensions it won't enable (the client reads
+    the ``* ENABLED`` reply), so dropping the rest is protocol-correct.
+    """
+    return [a for a in args if a.upper() in _ENABLE_ALLOWED]
 
 
 def _keep_capability(atom: str) -> bool:

@@ -116,3 +116,17 @@ async def test_session_verbs_still_forwarded(monkeypatch) -> None:
     )
     assert sent == b"NOOP\r\nRSET\r\n"
     assert client.endswith(b"250 2.0.0 ok\r\n250 2.0.0 reset\r\n")
+
+
+@pytest.mark.parametrize("line", [
+    b"NOOP\rRCPT TO:<attacker@example.com>\r\n",
+    b"RSET\x00\r\n",
+])
+async def test_bare_cr_or_nul_smtp_line_never_forwarded(line: bytes, monkeypatch) -> None:
+    """nuvrail-internal#41 item 5: the proxy and upstream must never disagree
+    about where a command ends."""
+    sent, client = await _run(line + b"NOOP\r\n", b"250 2.0.0 ok\r\n", monkeypatch)
+    assert sent == b"NOOP\r\n"
+    assert b"500 5.5.2 Nuvrail: bare CR or NUL in command line\r\n" in client
+    assert client.endswith(b"250 2.0.0 ok\r\n")
+

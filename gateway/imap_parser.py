@@ -27,8 +27,10 @@ Tokenizer state machine
 Sync-literal short-circuit
 ---------------------------
 If the last token of the parsed line matches ``{N}`` (digits only, no ``+``),
-the line is incomplete — the client must send literal bytes before the command
-is finished.  ``parse_line`` returns ``None`` in this case.
+or its RFC 3516 literal8 form ``~{N}``, the line is incomplete — the client
+must send literal bytes before the command is finished.  ``parse_line``
+returns ``None`` in this case; the proxy decides (by verb) whether to accept
+the literal.
 
 Non-sync literals ``{N+}`` are returned as an ordinary arg token.
 """
@@ -46,8 +48,9 @@ class ParsedCommand:
     raw: str = ""
 
 
-# Matches a sync literal: {digits} with NO trailing +
-_SYNC_LITERAL_RE = re.compile(r"^\{\d+\}$")
+# Matches a sync literal: {digits} with NO trailing +, optionally ~-prefixed
+# (RFC 3516 literal8). The tokenizer reads "~{5}" as one atom.
+_SYNC_LITERAL_RE = re.compile(r"^~?\{\d+\}$")
 
 
 def _skip_n_tokens(line: str, n: int) -> str:
@@ -171,8 +174,8 @@ def _tokenize_args(s: str) -> list[str]:
 def parse_line(line: str) -> ParsedCommand | None:
     """Parse a single IMAP command line (no trailing CRLF).
 
-    Returns ``None`` if the line ends with a sync literal ``{N}`` — the caller
-    must read the literal bytes before the command is complete.
+    Returns ``None`` if the line ends with a sync literal ``{N}`` or ``~{N}`` —
+    the command is incomplete until the literal is sent.
 
     Non-sync literals ``{N+}`` are included in ``args`` and the command is
     returned normally.
@@ -197,7 +200,7 @@ def parse_line(line: str) -> ParsedCommand | None:
 
     args = _tokenize_args(rest)
 
-    # Sync-literal detection: last token is {N} with digits only.
+    # Sync-literal detection: last token is {N} or ~{N} with digits only.
     if args and _SYNC_LITERAL_RE.match(args[-1]):
         return None
 
