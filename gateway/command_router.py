@@ -122,7 +122,11 @@ BLOCKED_COMMANDS = {
 #   IMAP4rev2            RFC 9051 makes LITERAL- implicit; the proxy speaks
 #                        IMAP4rev1 to the agent, so a rev2 client must not assume it
 #   BINARY               RFC 3516 literal8 (~{N}), refused by the proxy
-_HIDDEN_CAPABILITIES = {"LITERAL+", "LITERAL-", "REPLACE", "STARTTLS", "IMAP4REV2", "BINARY"}
+#   MULTIAPPEND          RFC 3502 several messages per APPEND; the proxy stages
+#                        one message per APPEND and refuses the rest
+_HIDDEN_CAPABILITIES = {
+    "LITERAL+", "LITERAL-", "REPLACE", "STARTTLS", "IMAP4REV2", "BINARY", "MULTIAPPEND",
+}
 _HIDDEN_CAPABILITY_PREFIXES = ("COMPRESS=",)
 
 # "* CAPABILITY a b c" (untagged) or "... [CAPABILITY a b c] ..." (response code).

@@ -116,6 +116,8 @@ _MAX_APPEND_BYTES = int(os.environ.get("NUVRAIL_MAX_APPEND_BYTES", str(10 * 1024
 
 # Matches the literal size at end of an IMAP line: {N} or {N+}
 _LITERAL_RE = re.compile(r"\{(\d+)\+?\}$")
+# Any literal marker ending a line: {N}, ~{N} (literal8), {N+}/{N-} (RFC 7888).
+_LITERAL_TAIL_RE = re.compile(r"~?\{\d+[+-]?\}$")
 
 # A literal announced at the end of an upstream response line: {N}, or ~{N}
 # (RFC 3516 literal8). The next N bytes are message data, not response lines.
@@ -671,9 +673,42 @@ async def _client_to_upstream(
                         "body (will not replay upstream)",
                         peer, literal_size, _MAX_APPEND_BYTES,
                     )
-                await client_reader.readline()  # consume trailing CRLF after literal
+                # The rest of the command line after the literal: normally just
+                # CRLF. MULTIAPPEND (RFC 3502) puts the next message here.
+                append_rest = (await client_reader.readline()).decode(
+                    "utf-8", errors="replace"
+                ).rstrip("\r\n")
             except (asyncio.IncompleteReadError, ConnectionResetError, OSError):
                 break
+
+            if _LITERAL_TAIL_RE.search(append_rest):
+                # MULTIAPPEND: another message follows. We stage one message per
+                # APPEND (MULTIAPPEND is hidden from capabilities), and staging
+                # only the first while answering OK would tell the agent every
+                # message was saved. RFC 3502 makes MULTIAPPEND atomic, so the
+                # whole command fails and nothing is staged:
+                #
+                #   "a1 APPEND INBOX {5}"  ──► "+" ──► 5 bytes (read, dropped)
+                #   " {7}"                 ──► a1 NO [CANNOT], no second "+"
+                #   " {7+}" (LITERAL+)     ──► 7 bytes discarded ──► a1 NO [CANNOT]
+                #
+                # A sync {N} is refused before its "+", so the client must not send
+                # it (RFC 3501 §7.5); a non-sync literal is already on the wire and
+                # is consumed so the next line is a fresh command.
+                if not await _discard_nonsync_literals(
+                    client_reader, client_writer, append_rest, peer
+                ):
+                    break
+                try:
+                    client_writer.write(
+                        f"{tag} NO [CANNOT] Nuvrail: MULTIAPPEND is not supported,"
+                        f" append one message per command\r\n".encode()
+                    )
+                    await client_writer.drain()
+                except (ConnectionResetError, BrokenPipeError, OSError):
+                    break
+                logger.warning("[%s] REJECTED (MULTIAPPEND): %s APPEND", peer, tag)
+                continue
 
             try:
                 _profile: ProviderProfile = session.get("provider_profile")

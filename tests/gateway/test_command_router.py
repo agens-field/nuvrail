@@ -152,6 +152,8 @@ def test_read_set_has_no_write_capable_verbs() -> None:
     # BINARY = literal8 (~{N}), which the proxy refuses (nuvrail-internal#41 item 1).
     ("* CAPABILITY IMAP4rev1 BINARY IDLE", "* CAPABILITY IMAP4rev1 IDLE"),
     ("a1 OK [CAPABILITY IMAP4rev1 binary] hi", "a1 OK [CAPABILITY IMAP4rev1] hi"),
+    # MULTIAPPEND: the proxy stages one message per APPEND (#41 follow-up C).
+    ("* CAPABILITY IMAP4rev1 MULTIAPPEND UIDPLUS", "* CAPABILITY IMAP4rev1 UIDPLUS"),
 ])
 def test_filter_capabilities(line: str, expected: str) -> None:
     assert filter_capabilities(line) == expected
