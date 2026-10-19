@@ -95,6 +95,7 @@ from gateway.state_db import (
     upsert_message,
     warn_if_loopback_bind_in_container,
 )
+from logging_config import setup_logging
 
 load_dotenv()
 
@@ -1905,5 +1906,5 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
+    setup_logging()
     asyncio.run(main())

@@ -40,6 +40,7 @@ from gateway.retention import run_retention_loop
 from gateway.scheduler import run_scheduled_execution_loop
 from gateway.scrubber import run_scrubber_loop
 from gateway.state_db import DB_PATH, init_db
+from logging_config import setup_logging
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +84,9 @@ _AUDIT_VERIFY_INITIAL_DELAY = float(os.environ.get("NUVRAIL_AUDIT_VERIFY_INITIAL
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Initialize DB and start background tasks on startup; clean up on shutdown."""
+    # uvicorn configures only its own loggers. This gives the api.* and
+    # gateway.* loggers a root handler with the credential-redaction filter.
+    setup_logging()
     await init_db()
 
     # Start operation expiry background loop
