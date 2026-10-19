@@ -23,10 +23,26 @@ heading format exact and add new work under `[Unreleased]`.
 - Redaction now covers multi-word `AUTH`/`AUTHENTICATE` payloads and quoted
   IMAP `LOGIN` passwords that contain spaces (previously only the first token
   was redacted).
+- IMAP proxy: a synchronizing literal (`{N}`) is accepted only on `APPEND`.
+  On any other verb, and for a literal8 (`~{N}`), the command is now refused
+  before the `+` continuation instead of being staged as a misleading
+  `APPEND`. `BINARY` is no longer relayed in capabilities. None of these
+  could forward an unapproved write.
+- IMAP proxy: `ENABLE` forwards only `CONDSTORE`. Extensions that change the
+  response grammar or mailbox-name encoding the proxy relies on (`QRESYNC`,
+  `UTF8=ACCEPT`, ...) are answered locally as not enabled.
+- IMAP and SMTP proxies refuse command lines that contain a bare CR or a NUL,
+  so the proxy and the upstream server can never disagree about where a
+  command ends.
+- IMAP proxy: literal bytes in upstream responses (message bodies, `{N}`
+  mailbox names) are relayed verbatim and never parsed as response lines, so
+  a message body line that looks like `* CAPABILITY ...` is no longer
+  rewritten.
 
 ### Changed
 - `LOG_LEVEL` now sets the level for all three processes. The undocumented
   `NUVRAIL_LOG_LEVEL` variable, which nothing read, is gone.
+- SMTP proxy: removed an unreachable EHLO/HELO branch.
 
 ## [0.1.3] - 2026-10-17
 
