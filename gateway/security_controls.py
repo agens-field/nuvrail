@@ -216,3 +216,19 @@ def build_auth_abuse_protector(namespace: str) -> AuthAbuseProtector:
         base_lockout_seconds=int(os.environ.get("NUVRAIL_AUTH_BASE_LOCKOUT_SECONDS", "120")),
         max_lockout_seconds=int(os.environ.get("NUVRAIL_AUTH_MAX_LOCKOUT_SECONDS", "3600")),
     )
+
+
+def has_bare_cr_or_nul(line_bytes: bytes) -> bool:
+    """True if a protocol command line holds a CR that isn't part of its line
+    ending, or a NUL.
+
+    Both proxies forward some command lines upstream verbatim. Real servers end
+    a line at LF, so ``a NOOP<CR>b DELETE x`` is one line to them and to the
+    proxy today; refusing such lines keeps the two from ever disagreeing about
+    where a command ends. Use on command lines only: IMAP literal bytes and
+    SMTP DATA body lines are read separately and never pass through here.
+    """
+    body = line_bytes[:-1] if line_bytes.endswith(b"\n") else line_bytes
+    if body.endswith(b"\r"):
+        body = body[:-1]
+    return b"\r" in body or b"\x00" in body

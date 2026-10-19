@@ -46,7 +46,12 @@ from dotenv import load_dotenv
 
 from gateway.agent_auth import decode_sasl_plain, verify_agent_login
 from gateway.batching import get_or_create_batch
-from gateway.command_router import classify, filter_capabilities, nonsync_literal_size
+from gateway.command_router import (
+    classify,
+    filter_capabilities,
+    filter_enable_args,
+    nonsync_literal_size,
+)
 from gateway.credentials import fetch_credential
 from gateway.extensions import load_plugins
 from gateway.imap_parser import ParsedCommand, parse_line
@@ -74,7 +79,7 @@ from gateway.provider_profiles import (
     detect_provider,
     should_suppress_append,
 )
-from gateway.security_controls import build_auth_abuse_protector
+from gateway.security_controls import build_auth_abuse_protector, has_bare_cr_or_nul
 from gateway.staging import create_operation
 from gateway.state_db import (
     DB_PATH,
@@ -111,6 +116,22 @@ _MAX_APPEND_BYTES = int(os.environ.get("NUVRAIL_MAX_APPEND_BYTES", str(10 * 1024
 
 # Matches the literal size at end of an IMAP line: {N} or {N+}
 _LITERAL_RE = re.compile(r"\{(\d+)\+?\}$")
+
+# A literal announced at the end of an upstream response line: {N}, or ~{N}
+# (RFC 3516 literal8). The next N bytes are message data, not response lines.
+_U2C_LITERAL_TAIL_RE = re.compile(rb"~?\{(\d+)\}$")
+
+# Untagged status responses carry free text (resp-text), which may end in
+# "{N}" without announcing a literal. Only data responses carry literals.
+_U2C_STATUS_RE = re.compile(rb"^\* (OK|NO|BAD|BYE|PREAUTH)\b", re.IGNORECASE)
+
+
+def _sync_literal_verb(raw: str) -> str:
+    """Verb of a command line that ends in a sync literal ("" if none)."""
+    parts = raw.split()
+    if len(parts) >= 3 and parts[1].upper() == "UID":
+        return "UID " + parts[2].upper()
+    return parts[1].upper() if len(parts) >= 2 else ""
 
 
 def _build_parsed_op(parsed: ParsedCommand) -> ParsedOperation | None:
@@ -577,14 +598,49 @@ async def _client_to_upstream(
 
         raw = line_bytes.decode("utf-8", errors="replace").rstrip("\r\n")
 
+        if has_bare_cr_or_nul(line_bytes):
+            # Never forward: upstream and proxy could split this line differently.
+            tag = raw.split(" ", 1)[0].replace("\r", "").replace("\x00", "") or "*"
+            try:
+                client_writer.write(
+                    f"{tag} BAD Nuvrail: bare CR or NUL in command line\r\n".encode()
+                )
+                await client_writer.drain()
+            except (ConnectionResetError, BrokenPipeError, OSError):
+                break
+            logger.warning("[%s] REJECTED (bare CR/NUL in command line)", peer)
+            continue
+
         # --- Parse line -------------------------------------------------------
         parsed = parse_line(raw)
 
         if parsed is None:
-            # Sync literal: {N} at end of line — this is typically an APPEND command.
-            # Consume the literal bytes, stage the operation, respond with OK [STAGED].
             parts = raw.split()
             tag = parts[0] if parts else "?"
+            verb = _sync_literal_verb(raw)
+            # parse_line returned None, so the last token is {N} or ~{N}.
+            literal8 = bool(parts) and parts[-1].startswith("~")
+            if verb != "APPEND" or literal8:
+                # Only a plain APPEND {N} is staged. Any other verb (e.g.
+                # "UID REPLACE 4 INBOX {3}") or a literal8 ~{N} (we hide BINARY)
+                # is refused BEFORE the "+" continuation: per RFC 3501 §7.5 the
+                # client then must not send the literal, so nothing is consumed
+                # and the next line is a fresh command. Never staged as APPEND,
+                # never forwarded.
+                what = "literal8 (~{N})" if literal8 else f"a literal on {verb or 'this command'}"
+                try:
+                    client_writer.write(
+                        f"{tag} NO [CANNOT] Nuvrail: {what} is not supported\r\n".encode()
+                    )
+                    await client_writer.drain()
+                except (ConnectionResetError, BrokenPipeError, OSError):
+                    break
+                # Log the verb only: the line may carry credentials or data.
+                logger.warning("[%s] REJECTED (sync literal): %s %s", peer, tag, verb)
+                continue
+
+            # Sync literal on APPEND: {N} at end of line.
+            # Consume the literal bytes, stage the operation, respond with OK [STAGED].
             m = _LITERAL_RE.search(raw)
             literal_size = int(m.group(1)) if m else 0
 
@@ -737,6 +793,24 @@ async def _client_to_upstream(
             # filter_capabilities) — only while this command is outstanding.
             if parsed.command.upper() == "CAPABILITY":
                 session["capability_tag"] = parsed.tag.upper()
+
+            # ENABLE: forward only allowlisted extensions (filter_enable_args).
+            # If none survive, answer locally; RFC 5161 lets a server enable
+            # nothing, and the empty "* ENABLED" tells the client so.
+            if parsed.command.upper() == "ENABLE":
+                kept = filter_enable_args(parsed.args)
+                if not kept:
+                    try:
+                        client_writer.write(
+                            f"* ENABLED\r\n{parsed.tag} OK ENABLE completed\r\n".encode()
+                        )
+                        await client_writer.drain()
+                    except (ConnectionResetError, BrokenPipeError, OSError):
+                        break
+                    logger.info("[%s] ENABLE answered locally (nothing allowlisted)", peer)
+                    continue
+                if kept != parsed.args:
+                    line_bytes = f"{parsed.tag} ENABLE {' '.join(kept)}\r\n".encode()
 
             # Track whether the current SEARCH is UID-mode so the u2c pump
             # can filter pending-move UIDs from the SEARCH response.
@@ -1107,8 +1181,20 @@ async def _upstream_to_client(
 
     The line-buffering delay is minimal (~microseconds per line) because upstream
     IMAP responses are line-terminated and we read in 4KB chunks.
+
+    Literals: a data response line ending in ``{N}`` announces N bytes of
+    message data. Those bytes are relayed verbatim and never treated as
+    response lines, so a message body line such as ``* CAPABILITY ...`` or
+    ``* 3 EXISTS`` is never rewritten (a rewrite would change the byte count
+    and desync the agent's parser):
+
+      "* 1 FETCH (BODY[] {N}"  ──► line processing ──► forward
+      <N literal bytes>        ──► forward verbatim (literal_remaining)
+      " FLAGS (\\Seen))"       ──► line processing (may announce another literal)
     """
     buffer = b""
+    literal_remaining = 0   # bytes of an announced literal still to relay verbatim
+    after_literal = False   # next line continues the response that held a literal
     while True:
         try:
             chunk = await upstream_reader.read(_READ_CHUNK)
@@ -1119,8 +1205,26 @@ async def _upstream_to_client(
 
         buffer += chunk
 
-        while b"\r\n" in buffer:
+        while True:
+            if literal_remaining:
+                if not buffer:
+                    break  # need more bytes from upstream
+                lit_chunk = buffer[:literal_remaining]
+                buffer = buffer[len(lit_chunk):]
+                literal_remaining -= len(lit_chunk)
+                try:
+                    client_writer.write(lit_chunk)
+                    await client_writer.drain()
+                except (ConnectionResetError, BrokenPipeError, OSError):
+                    return
+                if not literal_remaining:
+                    after_literal = True
+                continue
+            if b"\r\n" not in buffer:
+                break
             line_bytes, buffer = buffer.split(b"\r\n", 1)
+            continues_response = after_literal
+            after_literal = False
             line = line_bytes.decode("utf-8", errors="replace")
             line_with_crlf = line_bytes + b"\r\n"
 
@@ -1276,6 +1380,8 @@ async def _upstream_to_client(
                 except Exception as _lit_exc:
                     logger.warning("[%s] RFC822 literal handling error (non-fatal): %s", peer, _lit_exc)
                 # Skip normal forward + sync for this line — already forwarded above.
+                # The next line continues this FETCH and may announce a literal.
+                after_literal = True
                 continue
 
             # Suppress FETCH lines for UIDs that are pending MOVE from the
@@ -1359,6 +1465,18 @@ async def _upstream_to_client(
                 await client_writer.drain()
             except (ConnectionResetError, BrokenPipeError, OSError):
                 return
+
+            # Does this line announce a literal? Only data responses ("* ..."
+            # other than status responses) and the continuation line after a
+            # literal can; tagged lines and status text cannot.
+            _sent = line_with_crlf[:-2]
+            if continues_response or (
+                _sent.startswith(b"* ") and not _U2C_STATUS_RE.match(_sent)
+            ):
+                _tail = _U2C_LITERAL_TAIL_RE.search(_sent)
+                if _tail:
+                    literal_remaining = int(_tail.group(1))
+                    after_literal = literal_remaining == 0
 
             # State sync (best-effort, errors never propagate).
             try:
