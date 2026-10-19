@@ -12,6 +12,22 @@ heading format exact and add new work under `[Unreleased]`.
 
 ## [Unreleased]
 
+### Security
+- The credential-redaction log filter is now actually installed. Before this,
+  `setup_logging()` was never called, so no process had the filter, and even
+  when called it sat on the root logger, which named loggers bypass. Every
+  process (IMAP proxy, SMTP proxy, API) now calls `setup_logging()` at
+  startup, and the filter is attached to the handler so every logger is
+  covered. No credential leak was found: the protocol-logging call sites
+  already redact or log only the verb. This closes the gap behind them.
+- Redaction now covers multi-word `AUTH`/`AUTHENTICATE` payloads and quoted
+  IMAP `LOGIN` passwords that contain spaces (previously only the first token
+  was redacted).
+
+### Changed
+- `LOG_LEVEL` now sets the level for all three processes. The undocumented
+  `NUVRAIL_LOG_LEVEL` variable, which nothing read, is gone.
+
 ## [0.1.3] - 2026-10-17
 
 Undo now works on OAuth-connected accounts, including Gmail, and the upstream
