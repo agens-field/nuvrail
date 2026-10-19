@@ -89,7 +89,7 @@ def test_leading_dash_user_can_be_listed(db_path, capsys):
 @pytest.mark.parametrize("script", CALLERS, ids=lambda p: p.name)
 def test_callers_pass_password_with_equals_form(script):
     """No caller may pass a password as a separate argv item (nuvrail#191)."""
-    text = script.read_text()
+    text = script.read_text(encoding="utf-8")
     assert "manage_users.py create" in text, f"{script.name} no longer calls manage_users.py"
     assert re.search(r"--password=\"\$", text), f"{script.name}: expected --password=\"$VAR\""
     # Comments may say `--password -abc` to explain the bug; code lines may not.

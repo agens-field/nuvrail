@@ -486,7 +486,7 @@ async def test_anchor_writes_appendonly_record(db_conn, db_path, anchor_path):
     assert rec["chain_head"] == head
     assert rec["row_count"] == 3
     # File exists and holds exactly one line.
-    lines = anchor_path.read_text().strip().splitlines()
+    lines = anchor_path.read_text(encoding="utf-8").strip().splitlines()
     assert len(lines) == 1
     assert json.loads(lines[0])["chain_head"] == head
 
@@ -498,7 +498,7 @@ async def test_anchor_is_append_only(db_conn, db_path, anchor_path):
     await _seed_rows(db_conn, db_path, 1, base_ts=6000)  # one more row → new head
     r2 = await anchor_chain_head(db_path, anchor_path=anchor_path)
     assert r1["chain_head"] != r2["chain_head"]
-    lines = anchor_path.read_text().strip().splitlines()
+    lines = anchor_path.read_text(encoding="utf-8").strip().splitlines()
     assert len(lines) == 2
     assert json.loads(lines[0])["chain_head"] == r1["chain_head"]
     assert read_last_anchor(anchor_path)["chain_head"] == r2["chain_head"]

@@ -53,10 +53,14 @@ First release.
 
 
 def make_root(tmp_path, *, py="0.1.0", web="0.1.0", changelog=CHANGELOG):
-    (tmp_path / "pyproject.toml").write_text(f'[project]\nname = "x"\nversion = "{py}"\n')
+    (tmp_path / "pyproject.toml").write_text(
+        f'[project]\nname = "x"\nversion = "{py}"\n', encoding="utf-8"
+    )
     (tmp_path / "web").mkdir()
-    (tmp_path / "web" / "package.json").write_text(json.dumps({"version": web}))
-    (tmp_path / "CHANGELOG.md").write_text(changelog)
+    (tmp_path / "web" / "package.json").write_text(
+        json.dumps({"version": web}), encoding="utf-8"
+    )
+    (tmp_path / "CHANGELOG.md").write_text(changelog, encoding="utf-8")
     return tmp_path
 
 
@@ -136,7 +140,7 @@ def test_main_writes_out_file(tmp_path):
     root = make_root(tmp_path)
     out = tmp_path / "notes.md"
     assert release_notes.main(["--root", str(root), "--tag", "v0.1.0", "--out", str(out)]) == 0
-    assert out.read_text().startswith("First release.")
+    assert out.read_text(encoding="utf-8").startswith("First release.")
 
 
 @pytest.mark.parametrize(
