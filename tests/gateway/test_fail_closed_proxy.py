@@ -208,6 +208,80 @@ async def test_append_sync_literal_still_staged(db_path: Path) -> None:
     assert client.startswith(b"+ Ready for literal data\r\na1 OK [STAGED]")
 
 
+# MULTIAPPEND (#41 follow-up C) -----------------------------------------------
+#
+# Before: the first message was staged, the second literal never got its "+",
+# and the agent got a tagged OK for the whole command. Now the whole command is
+# refused (RFC 3502 MULTIAPPEND is atomic) and nothing is staged:
+#
+#   "a1 APPEND INBOX {5}" ──► "+" ──► "hello" ──► " {7}" ──► a1 NO [CANNOT]
+# ---------------------------------------------------------------------------
+
+_MULTIAPPEND_NO = (
+    b"a1 NO [CANNOT] Nuvrail: MULTIAPPEND is not supported, append one message per command\r\n"
+)
+
+
+async def _staged_count(db_path: Path) -> int:
+    async with get_db(db_path) as db:
+        cur = await db.execute("SELECT COUNT(*) FROM staged_operations")
+        (count,) = await cur.fetchone()
+    return count
+
+
+@pytest.mark.parametrize("rest", [
+    b" {7}",
+    b" (\\Seen) {7}",
+    b' (\\Draft) "19-Oct-2026 10:00:00 +0000" {7}',
+    b" ~{7}",
+])
+async def test_multiappend_sync_second_literal_refused_before_continuation(
+    rest: bytes, db_path: Path
+) -> None:
+    data = b"a1 APPEND INBOX {5}\r\nhello" + rest + b"\r\na2 NOOP\r\n"
+    upstream, client, _ = await _run_c2u(data, db_path)
+    # Exactly one "+" (for the first literal), then the refusal. No second "+",
+    # so a compliant client never sends message 2 and the next line is a command.
+    assert client == b"+ Ready for literal data\r\n" + _MULTIAPPEND_NO
+    assert upstream == b"a2 NOOP\r\n"
+    assert await _staged_count(db_path) == 0
+
+
+async def test_multiappend_nonsync_second_literal_consumed_and_refused(db_path: Path) -> None:
+    """A client that ignores the hidden LITERAL+ sends message 2 without waiting.
+    Its bytes are discarded (never read as commands) and nothing is staged."""
+    msg2 = b"a9 FETCH 1 (FLAGS)\r\n"
+    data = (
+        b"a1 APPEND INBOX {5}\r\nhello {" + str(len(msg2)).encode() + b"+}\r\n"
+        + msg2 + b"\r\na2 NOOP\r\n"
+    )
+    upstream, client, _ = await _run_c2u(data, db_path)
+    assert client == b"+ Ready for literal data\r\n" + _MULTIAPPEND_NO
+    assert upstream == b"a2 NOOP\r\n"
+    assert await _staged_count(db_path) == 0
+
+
+async def test_multiappend_oversized_nonsync_second_literal_closes(db_path: Path) -> None:
+    data = (
+        b"a1 APPEND INBOX {5}\r\nhello {" + str(_MAX_APPEND_BYTES + 1).encode() + b"+}\r\n"
+        b"a2 NOOP\r\n"
+    )
+    upstream, client, _ = await _run_c2u(data, db_path)
+    assert client == b"+ Ready for literal data\r\n* BYE Nuvrail: literal too large\r\n"
+    assert upstream == b""
+    assert await _staged_count(db_path) == 0
+
+
+async def test_single_append_with_empty_rest_still_staged_once(db_path: Path) -> None:
+    upstream, client, _ = await _run_c2u(
+        b"a1 APPEND INBOX {5}\r\nhello\r\na2 APPEND INBOX {3}\r\nabc\r\n", db_path
+    )
+    assert upstream == b""
+    assert client.count(b"+ Ready for literal data\r\n") == 2
+    assert b"a1 OK [STAGED]" in client and b"a2 OK [STAGED]" in client
+    assert await _staged_count(db_path) == 2
+
+
 # ENABLE allowlist (item 3) ---------------------------------------------------
 
 @pytest.mark.parametrize("line,forwarded", [

@@ -38,6 +38,11 @@ heading format exact and add new work under `[Unreleased]`.
   mailbox names) are relayed verbatim and never parsed as response lines, so
   a message body line that looks like `* CAPABILITY ...` is no longer
   rewritten.
+- IMAP proxy: a multi-message `APPEND` (RFC 3502 `MULTIAPPEND`) is now
+  refused as a whole with `NO [CANNOT]`. Before, only the first message was
+  staged while the agent got `OK` for the whole command, so it believed every
+  message was saved. `MULTIAPPEND` is no longer relayed in capabilities. No
+  message was ever written upstream without approval.
 
 ### Changed
 - `LOG_LEVEL` now sets the level for all three processes. The undocumented
