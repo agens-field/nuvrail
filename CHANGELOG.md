@@ -12,6 +12,12 @@ heading format exact and add new work under `[Unreleased]`.
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-10-26
+
+Hardens the IMAP/SMTP proxies and makes the credential-redaction log filter
+actually run. None of the gaps fixed here let an unapproved write reach the
+upstream server. Upgrading from 0.1.3 is recommended for everyone.
+
 ### Security
 - The credential-redaction log filter is now actually installed. Before this,
   `setup_logging()` was never called, so no process had the filter, and even
@@ -48,6 +54,17 @@ heading format exact and add new work under `[Unreleased]`.
 - `LOG_LEVEL` now sets the level for all three processes. The undocumented
   `NUVRAIL_LOG_LEVEL` variable, which nothing read, is gone.
 - SMTP proxy: removed an unreachable EHLO/HELO branch.
+- `pip install` now requires Python 3.11 or newer, matching what the code
+  needs. Before, it installed on 3.9 and 3.10 and the API then failed to
+  import ([#205](https://github.com/agens-field/nuvrail/pull/205)).
+- CONTRIBUTING lists the same providers as the bug-report template
+  ([#201](https://github.com/agens-field/nuvrail/pull/201)).
+
+### Fixed
+- The test suite passes on Windows: test files are read and written as
+  UTF-8 instead of the platform default
+  ([#206](https://github.com/agens-field/nuvrail/pull/206)). New tests cover
+  log redaction ([#204](https://github.com/agens-field/nuvrail/pull/204)).
 
 ## [0.1.3] - 2026-10-17
 
