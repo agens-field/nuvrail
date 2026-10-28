@@ -37,6 +37,7 @@ import json
 import logging
 import os
 import secrets
+import time
 import uuid
 from pathlib import Path
 
@@ -82,7 +83,7 @@ def _load_or_generate_master_key() -> bytes:
 
     # 2. Key file
     if _MASTER_KEY_FILE.exists():
-        hex_key = _MASTER_KEY_FILE.read_text().strip()
+        hex_key = _MASTER_KEY_FILE.read_text(encoding="utf-8").strip()
         try:
             key = bytes.fromhex(hex_key)
             _cached_master_key = key
@@ -99,12 +100,62 @@ def _load_or_generate_master_key() -> bytes:
         _MASTER_KEY_FILE,
         _MASTER_KEY_ENV,
     )
-    key = secrets.token_bytes(32)
-    _DATA_DIR.mkdir(parents=True, exist_ok=True)
-    _MASTER_KEY_FILE.write_text(key.hex())
-    _MASTER_KEY_FILE.chmod(0o600)
+    key = _create_master_key_file()
     _cached_master_key = key
     return key
+
+
+# How long a process that lost the first-boot race waits for the winner's key
+# to be fully written (the winner writes 64 bytes right after creating it).
+_KEY_RACE_WAIT_S = 2.0
+
+
+def _create_master_key_file() -> bytes:
+    """Create master.key exclusively, mode 0600; return the key now on disk.
+
+    The file is created with O_EXCL and mode 0600 in one call, so it is never
+    readable by group/other, not even briefly, and a crash cannot leave it
+    world-readable. (The old write_text() + chmod() left it 0644 under umask
+    022 until the chmod.) A new data dir is created 0700.
+
+    Two processes generating on first boot (api + gateway sharing a data dir):
+
+      A: open(O_EXCL) ok ──► write 64 hex ──► use key A
+      B: open(O_EXCL) FileExistsError ──► read A's key ──► use key A
+
+    Without O_EXCL both wrote, the second overwrote the first, and each process
+    cached a different key.
+    """
+    _DATA_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+    key = secrets.token_bytes(32)
+    try:
+        fd = os.open(_MASTER_KEY_FILE, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        return _read_key_file_waiting()
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(key.hex())
+        fh.flush()
+        os.fsync(fh.fileno())
+    return key
+
+
+def _read_key_file_waiting() -> bytes:
+    """Read the key another process just created, allowing it time to finish."""
+    deadline = time.monotonic() + _KEY_RACE_WAIT_S
+    while True:
+        hex_key = _MASTER_KEY_FILE.read_text(encoding="utf-8").strip()
+        if len(hex_key) == 64 or time.monotonic() >= deadline:
+            break
+        time.sleep(0.01)
+    if len(hex_key) != 64:
+        raise ValueError(
+            f"Invalid master.key file at {_MASTER_KEY_FILE}: expected 64 hex "
+            f"characters, got {len(hex_key)}"
+        )
+    try:
+        return bytes.fromhex(hex_key)
+    except ValueError as exc:
+        raise ValueError(f"Invalid master.key file at {_MASTER_KEY_FILE}: {exc}") from exc
 
 
 def get_master_key() -> bytes:

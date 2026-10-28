@@ -413,3 +413,292 @@ async def test_literal_split_across_reads_is_relayed_whole(db_path: Path) -> Non
     await _upstream_to_client(reader, client, session, db_path, peer="test")
     assert client.written == head + body + b")\r\n* CAPABILITY IMAP4rev1\r\nc1 OK done\r\n"
 
+
+
+# ---------------------------------------------------------------------------
+# nuvrail-internal#43
+#
+# A. A response line split across upstream reads is buffered whole, so it gets
+#    the same rewrites as an unsplit line. Only a line over _U2C_MAX_LINE is
+#    relayed raw ahead of its CRLF; a literal it announces is still honoured.
+# B. A FETCH for a pending-MOVE UID is dropped whole: header line, literal
+#    bytes, and continuation line(s) up to the end of that response.
+#
+# The split tests drive _upstream_to_client with a reader that hands back one
+# fixed piece per read(), so a split lands exactly where the test puts it
+# (asyncio.StreamReader would merge fed pieces into one read).
+# ---------------------------------------------------------------------------
+
+import gateway.proxy as _proxy  # noqa: E402
+
+_PENDING_UID = 7
+
+
+class _PieceReader:
+    """read() returns the next fixed piece (never merged), then b"" for EOF."""
+
+    def __init__(self, pieces: list[bytes]) -> None:
+        self._pieces = [p for p in pieces if p]
+
+    async def read(self, n: int) -> bytes:
+        if not self._pieces:
+            return b""
+        piece = self._pieces.pop(0)
+        if len(piece) > n:
+            self._pieces.insert(0, piece[n:])
+            piece = piece[:n]
+        return piece
+
+
+@pytest.fixture()
+def pending_move(monkeypatch: pytest.MonkeyPatch) -> None:
+    """UID 7 in INBOX has a staged MOVE; no staged flag changes anywhere."""
+
+    async def _pending(folder: str, agent_id=None, db_path=None) -> set[int]:
+        return {_PENDING_UID} if folder == "INBOX" else set()
+
+    async def _no_flags(folder: str, uid: int, agent_id=None, db_path=None):
+        return set(), set()
+
+    monkeypatch.setattr(_proxy, "get_pending_move_uids_for_folder", _pending)
+    monkeypatch.setattr(_proxy, "get_pending_flag_changes_for_uid", _no_flags)
+
+
+def _inbox_session() -> dict:
+    session = _session()
+    session["folder"] = "INBOX"
+    session["capability_tag"] = "C1"
+    session["search_uid_mode"] = True
+    return session
+
+
+async def _run_pieces(pieces: list[bytes], session: dict, db_path: Path) -> bytes:
+    client = FakeWriter()
+    await _upstream_to_client(_PieceReader(pieces), client, session, db_path, peer="test")
+    return client.written
+
+
+def _lit(data: bytes) -> bytes:
+    return b"{" + str(len(data)).encode() + b"}"
+
+
+# Every line here is rewritten (or dropped) by u2c, and the literal body holds
+# lookalikes that must NOT be rewritten.
+_A_BODY = b"* CAPABILITY IMAP4rev1 LITERAL+\r\n* 9 EXISTS\r\n"
+_A_STREAM = (
+    b"* CAPABILITY IMAP4rev1 LITERAL+ IDLE COMPRESS=DEFLATE\r\n"
+    b"* 5 EXISTS\r\n"
+    b"* SEARCH 3 7 9\r\n"
+    b"* 2 FETCH (UID 7 FLAGS (\\Seen))\r\n"
+    b"* 1 FETCH (BODY[TEXT] " + _lit(_A_BODY) + b"\r\n" + _A_BODY + b")\r\n"
+    b"c1 OK done\r\n"
+)
+_A_EXPECTED = (
+    b"* CAPABILITY IMAP4rev1 IDLE\r\n"
+    b"* 4 EXISTS\r\n"
+    b"* SEARCH 3 9\r\n"
+    b"* 1 FETCH (BODY[TEXT] " + _lit(_A_BODY) + b"\r\n" + _A_BODY + b")\r\n"
+    b"c1 OK done\r\n"
+)
+
+
+async def test_unsplit_stream_gets_every_rewrite(db_path: Path, pending_move: None) -> None:
+    assert await _run_pieces([_A_STREAM], _inbox_session(), db_path) == _A_EXPECTED
+
+
+async def test_split_at_every_offset_gets_the_same_rewrites(
+    db_path: Path, pending_move: None
+) -> None:
+    """Before #43 A, the half-line at the end of a read was forwarded raw, so a
+    split capability line kept LITERAL+ and a split EXISTS kept its count."""
+    for i in range(1, len(_A_STREAM)):
+        out = await _run_pieces([_A_STREAM[:i], _A_STREAM[i:]], _inbox_session(), db_path)
+        assert out == _A_EXPECTED, f"split at byte {i}: {_A_STREAM[:i][-20:]!r}"
+
+
+async def test_one_byte_per_read_gets_the_same_rewrites(
+    db_path: Path, pending_move: None
+) -> None:
+    pieces = [_A_STREAM[i:i + 1] for i in range(len(_A_STREAM))]
+    assert await _run_pieces(pieces, _inbox_session(), db_path) == _A_EXPECTED
+
+
+async def test_partial_line_at_eof_is_relayed(db_path: Path) -> None:
+    out = await _run_pieces([b"* OK almost\r\n* OK cut sh", b"ort"], _session(), db_path)
+    assert out == b"* OK almost\r\n* OK cut short"
+
+
+async def test_overlong_line_is_relayed_raw_then_lines_resume(
+    db_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Over the cap, a line goes out raw (its rewrite is skipped: fail-safe,
+    c2u still refuses LITERAL+); the next line is processed normally."""
+    monkeypatch.setattr(_proxy, "_U2C_MAX_LINE", 64)
+    session = _session()
+    session["capability_tag"] = "C1"
+    long_line = b"* CAPABILITY IMAP4rev1 LITERAL+ " + b"X-PAD " * 30
+    stream = long_line + b"\r\n* CAPABILITY IMAP4rev1 LITERAL+\r\nc1 OK done\r\n"
+    for size in (1, 7, 64):
+        pieces = [stream[i:i + size] for i in range(0, len(stream), size)]
+        out = await _run_pieces(pieces, dict(session), db_path)
+        assert out == long_line + b"\r\n* CAPABILITY IMAP4rev1\r\nc1 OK done\r\n", size
+    # A long line that arrives whole (CRLF in the same read) never hits the
+    # cap and is rewritten like any other. In production the cap is 8 MiB
+    # against 4 KB reads, so an over-cap line always goes the raw route.
+    out = await _run_pieces([stream], dict(session), db_path)
+    assert out.startswith(b"* CAPABILITY IMAP4rev1 X-PAD ")
+
+
+async def test_overlong_line_announcing_a_literal_keeps_it_verbatim(
+    db_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The literal at the end of an over-cap line is still detected (from the
+    kept tail), so a lookalike inside it is not rewritten."""
+    monkeypatch.setattr(_proxy, "_U2C_MAX_LINE", 64)
+    session = _session()
+    session["capability_tag"] = "C1"
+    body = b"* CAPABILITY LITERAL+\r\n"
+    head = b"* 1 FETCH (X-PAD " + b"p" * 200 + b" BODY[TEXT] " + _lit(body) + b"\r\n"
+    stream = head + body + b")\r\n* CAPABILITY IMAP4rev1 LITERAL+\r\nc1 OK done\r\n"
+    expected = head + body + b")\r\n* CAPABILITY IMAP4rev1\r\nc1 OK done\r\n"
+    for size in (1, 5, 64, 4096):
+        pieces = [stream[i:i + size] for i in range(0, len(stream), size)]
+        assert await _run_pieces(pieces, dict(session), db_path) == expected, size
+    # CRLF of the long line split across two reads.
+    cut = len(head) - 1
+    assert await _run_pieces([stream[:cut], stream[cut:]], dict(session), db_path) == expected
+
+
+async def test_pending_move_literal_fetch_is_dropped_whole(
+    db_path: Path, pending_move: None
+) -> None:
+    """Before #43 B, a pending-move UID fetched with a body literal went out in
+    full. The body holds response lookalikes that must not leak either."""
+    body = b"* 3 FETCH (UID 3 FLAGS ())\r\nc1 OK fake\r\n"
+    stream = (
+        b"* 1 FETCH (UID 7 BODY[] " + _lit(body) + b"\r\n" + body + b" FLAGS (\\Seen))\r\n"
+        b"* 2 FETCH (UID 3 FLAGS (\\Seen))\r\n"
+        b"c1 OK done\r\n"
+    )
+    expected = b"* 2 FETCH (UID 3 FLAGS (\\Seen))\r\nc1 OK done\r\n"
+    assert await _run_pieces([stream], _inbox_session(), db_path) == expected
+    pieces = [stream[i:i + 1] for i in range(len(stream))]
+    assert await _run_pieces(pieces, _inbox_session(), db_path) == expected
+
+
+@pytest.mark.parametrize("a,b", [
+    (b"Subject: hi\r\n\r\n", b"* 9 EXISTS\r\n"),
+    (b"", b"x"),          # {0} literal, then another
+    (b"x", b""),          # literal, then {0}
+])
+async def test_pending_move_fetch_with_two_literals_is_dropped_whole(
+    a: bytes, b: bytes, db_path: Path, pending_move: None
+) -> None:
+    stream = (
+        b"* 1 FETCH (UID 7 BODY[HEADER] " + _lit(a) + b"\r\n" + a
+        + b" BODY[TEXT] " + _lit(b) + b"\r\n" + b + b")\r\n"
+        b"* 5 EXISTS\r\n"
+    )
+    assert await _run_pieces([stream], _inbox_session(), db_path) == b"* 4 EXISTS\r\n"
+
+
+async def test_non_pending_literal_fetch_is_untouched(db_path: Path, pending_move: None) -> None:
+    body = b"Subject: hi\r\n\r\nbody\r\n"
+    stream = b"* 1 FETCH (UID 3 BODY[] " + _lit(body) + b"\r\n" + body + b")\r\nc1 OK done\r\n"
+    session = _inbox_session()
+    session["capability_tag"] = None
+    assert await _run_pieces([stream], session, db_path) == stream
+
+
+async def test_overlong_continuation_of_suppressed_fetch_is_dropped(
+    db_path: Path, pending_move: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(_proxy, "_U2C_MAX_LINE", 64)
+    body = b"hello\r\n"
+    stream = (
+        b"* 1 FETCH (UID 7 BODY[] " + _lit(body) + b"\r\n" + body
+        + b" X-GM-LABELS (" + b"label " * 40 + b"))\r\n"
+        b"* 5 EXISTS\r\n"
+    )
+    for size in (1, 16, 4096):
+        pieces = [stream[i:i + size] for i in range(0, len(stream), size)]
+        assert await _run_pieces(pieces, _inbox_session(), db_path) == b"* 4 EXISTS\r\n", size
+
+
+async def test_overlong_tagged_line_ending_in_braces_is_not_a_literal(
+    db_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only the line start decides whether an over-cap line can announce a
+    literal; a kept tail that happens to start with "* " must not."""
+    monkeypatch.setattr(_proxy, "_U2C_MAX_LINE", 64)
+    monkeypatch.setattr(_proxy, "_U2C_TAIL_KEEP", 16)
+    session = _session()
+    session["capability_tag"] = "C9"
+    tail = b"* see note {28}"
+    tail = b"*" + b" " * (16 - len(tail)) + tail[1:]  # exactly 16 bytes, starts "* "
+    assert len(tail) == 16 and tail.startswith(b"* ")
+    line = b"x1 OK " + b"w" * 100 + tail
+    stream = line + b"\r\n* CAPABILITY IMAP4rev1 LITERAL+ IDLE\r\nc9 OK done\r\n"
+    pieces = [stream[i:i + 8] for i in range(0, len(stream), 8)]
+    out = await _run_pieces(pieces, session, db_path)
+    assert out == line + b"\r\n* CAPABILITY IMAP4rev1 IDLE\r\nc9 OK done\r\n"
+
+
+# ---------------------------------------------------------------------------
+# Security-review follow-ups on #214 (nuvrail-internal#43 F2, F4, F5)
+# ---------------------------------------------------------------------------
+
+
+async def test_search_line_over_1mib_still_gets_pending_move_filter(
+    db_path: Path, pending_move: None
+) -> None:
+    """F2: a "* SEARCH" of ~200k UIDs (~1.3 MiB; Gmail All Mail can be this
+    big) arrives in 4 KB reads. With the old 1 MiB cap it went out raw and the
+    agent saw the pending-move UID. Under the 8 MiB cap it is filtered."""
+    uids = list(range(1, 200_001))
+    line = b"* SEARCH " + b" ".join(str(u).encode() for u in uids)
+    assert 1024 * 1024 < len(line) < _proxy._U2C_MAX_LINE
+    stream = line + b"\r\nc1 OK done\r\n"
+    pieces = [stream[i:i + 4096] for i in range(0, len(stream), 4096)]
+
+    out = await _run_pieces(pieces, _inbox_session(), db_path)
+
+    expected = (
+        b"* SEARCH "
+        + b" ".join(str(u).encode() for u in uids if u != _PENDING_UID)
+        + b"\r\nc1 OK done\r\n"
+    )
+    assert out == expected
+
+
+async def test_non_literal_brace_at_end_of_pending_fetch_swallows_nothing(
+    db_path: Path, pending_move: None
+) -> None:
+    """F4: "{5})" at the end of a FETCH is not a literal (a literal's "{N}"
+    ends the line). Before, the suppression branch took 5 from the loose
+    _RE_FETCH_LITERAL match and dropped the next 5 bytes of real responses."""
+    stream = (
+        b"* 1 FETCH (UID 7 X-NOTE {5})\r\n"
+        b"* 2 FETCH (UID 3 FLAGS (\\Seen))\r\n"
+        b"c1 OK done\r\n"
+    )
+    expected = b"* 2 FETCH (UID 3 FLAGS (\\Seen))\r\nc1 OK done\r\n"
+    assert await _run_pieces([stream], _inbox_session(), db_path) == expected
+
+
+async def test_suppressed_literal_fetch_still_syncs_state(
+    db_path: Path, pending_move: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """F5: the dropped header line still reaches state sync, as the
+    non-literal suppression branch already did."""
+    synced: list[str] = []
+
+    async def _record(line: str, session: dict, db_path: Path, peer: str) -> None:
+        synced.append(line)
+
+    monkeypatch.setattr(_proxy, "_sync_upstream_line", _record)
+    header = b"* 1 FETCH (UID 7 FLAGS (\\Seen) BODY[] {5}"
+    stream = header + b"\r\nhello)\r\nc1 OK done\r\n"
+
+    assert await _run_pieces([stream], _inbox_session(), db_path) == b"c1 OK done\r\n"
+    assert header.decode() in synced

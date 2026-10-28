@@ -127,6 +127,50 @@ _U2C_LITERAL_TAIL_RE = re.compile(rb"~?\{(\d+)\}$")
 # "{N}" without announcing a literal. Only data responses carry literals.
 _U2C_STATUS_RE = re.compile(rb"^\* (OK|NO|BAD|BYE|PREAUTH)\b", re.IGNORECASE)
 
+# Longest upstream response line we hold back while waiting for its CRLF.
+# A line split across reads is buffered whole so every rewrite (capability
+# filter, EXISTS/SEARCH adjustments, literal detection) sees the full line.
+# Past this cap the line is relayed raw until its CRLF (see _upstream_to_client).
+# 8 MiB holds a "* SEARCH" of about 1M UIDs (Gmail "All Mail" can pass 130k,
+# which is ~1 MiB), so the pending-move SEARCH filter still applies to it. The
+# partial-line path is linear (bytearray + CRLF scan offset), so a line near
+# the cap costs O(cap) copying and scanning, not O(cap^2).
+_U2C_MAX_LINE = 8 * 1024 * 1024
+
+# Bytes of an over-cap line kept for literal detection at its CRLF. "~{N}"
+# with a 10-digit N is 13 bytes; 64 leaves room.
+_U2C_TAIL_KEEP = 64
+
+
+def _u2c_announced_literal(sent: bytes, continues_response: bool) -> int | None:
+    """Size of the literal an upstream line announces, or None.
+
+    Only data responses ("* ..." other than status responses) and the
+    continuation line after a literal can announce one; tagged lines and
+    status text cannot (resp-text may legitimately end in "{N}").
+    """
+    if not (continues_response or (sent.startswith(b"* ") and not _U2C_STATUS_RE.match(sent))):
+        return None
+    tail = _U2C_LITERAL_TAIL_RE.search(sent)
+    return int(tail.group(1)) if tail else None
+
+
+async def _is_pending_move_uid(session: dict, uid: int, db_path: Path, peer: str) -> bool:
+    """True if ``uid`` in the selected folder has a staged MOVE awaiting approval."""
+    folder_name = session.get("folder")
+    if not folder_name:
+        return False
+    try:
+        pending = await get_pending_move_uids_for_folder(
+            folder_name,
+            agent_id=session.get("agent_id"),
+            db_path=db_path,
+        )
+    except Exception as exc:
+        logger.warning("[%s] Pending-move filter error (non-fatal): %s", peer, exc)
+        return False
+    return uid in pending
+
 
 def _sync_literal_verb(raw: str) -> str:
     """Verb of a command line that ends in a sync literal ("" if none)."""
@@ -1226,10 +1270,47 @@ async def _upstream_to_client(
       "* 1 FETCH (BODY[] {N}"  ──► line processing ──► forward
       <N literal bytes>        ──► forward verbatim (literal_remaining)
       " FLAGS (\\Seen))"       ──► line processing (may announce another literal)
+
+    Partial lines (nuvrail-internal#43 A): a line split across reads stays in
+    the buffer until its CRLF arrives, so it gets the same rewrites as any
+    other line. Only a line longer than _U2C_MAX_LINE is relayed raw ahead of
+    its CRLF ("overlong"); its last bytes are kept so a literal it announces
+    is still detected:
+
+      partial line ──► len <= cap ──► wait for more bytes (no forward)
+                   └─► len >  cap ──► overlong: relay raw up to CRLF
+                                      └─► literal tail check ──► resume lines
+
+    Pending-move suppression (nuvrail-internal#43 B): a FETCH for a UID with a
+    staged MOVE is dropped whole, including any literal it announces and the
+    continuation line(s) up to the end of that response ("suppressing"):
+
+      "* 3 FETCH (UID 9 BODY[] {N}" ──► dropped, suppressing = True
+      <N literal bytes>             ──► dropped (literal_remaining)
+      " FLAGS (\\Seen))"             ──► dropped; no new literal ──► suppressing = False
     """
-    buffer = b""
+    # bytearray, not bytes: "+=" appends in place and "del buffer[:n]" drops the
+    # front without copying the rest, so a long partial line costs O(n) total.
+    buffer = bytearray()
+    scan_from = 0           # buffer[:scan_from] holds no CRLF; reset on any consume
     literal_remaining = 0   # bytes of an announced literal still to relay verbatim
     after_literal = False   # next line continues the response that held a literal
+    suppressing = False     # dropping a pending-move FETCH response to its end
+    overlong = False        # relaying an over-cap line raw until its CRLF
+    overlong_is_data = False  # that line may announce a literal
+    overlong_tail = b""     # its last _U2C_TAIL_KEEP bytes, for literal detection
+
+    async def _emit(data: bytes) -> bool:
+        """Write to the client unless suppressing; False if the client is gone."""
+        if suppressing or not data:
+            return True
+        try:
+            client_writer.write(data)
+            await client_writer.drain()
+        except (ConnectionResetError, BrokenPipeError, OSError):
+            return False
+        return True
+
     while True:
         try:
             chunk = await upstream_reader.read(_READ_CHUNK)
@@ -1244,22 +1325,86 @@ async def _upstream_to_client(
             if literal_remaining:
                 if not buffer:
                     break  # need more bytes from upstream
-                lit_chunk = buffer[:literal_remaining]
-                buffer = buffer[len(lit_chunk):]
+                lit_chunk = bytes(buffer[:literal_remaining])
+                del buffer[:len(lit_chunk)]
+                scan_from = 0
                 literal_remaining -= len(lit_chunk)
-                try:
-                    client_writer.write(lit_chunk)
-                    await client_writer.drain()
-                except (ConnectionResetError, BrokenPipeError, OSError):
+                if not await _emit(lit_chunk):
                     return
                 if not literal_remaining:
                     after_literal = True
                 continue
-            if b"\r\n" not in buffer:
-                break
-            line_bytes, buffer = buffer.split(b"\r\n", 1)
+            if overlong:
+                end = buffer.find(b"\r\n")
+                if end < 0:
+                    # Hold back a trailing CR: it may be half of the CRLF.
+                    keep = 1 if buffer.endswith(b"\r") else 0
+                    piece = bytes(buffer[:len(buffer) - keep])
+                    del buffer[:len(buffer) - keep]
+                    scan_from = 0
+                    overlong_tail = (overlong_tail + piece)[-_U2C_TAIL_KEEP:]
+                    if not await _emit(piece):
+                        return
+                    break
+                piece = bytes(buffer[:end + 2])
+                del buffer[:end + 2]
+                scan_from = 0
+                overlong_tail = (overlong_tail + piece[:-2])[-_U2C_TAIL_KEEP:]
+                if not await _emit(piece):
+                    return
+                overlong = False
+                # The kept tail never starts the line, so the data-response
+                # check was made up front (overlong_is_data).
+                _lit_len = _u2c_announced_literal(overlong_tail, True) if overlong_is_data else None
+                if _lit_len is not None:
+                    literal_remaining = _lit_len
+                    after_literal = _lit_len == 0
+                else:
+                    suppressing = False
+                continue
+            # Search only bytes not already searched; back up one so a CRLF
+            # split across reads ("\r" | "\n") is still found.
+            end = buffer.find(b"\r\n", scan_from)
+            if end < 0:
+                scan_from = max(0, len(buffer) - 1)
+                if len(buffer) <= _U2C_MAX_LINE:
+                    break  # wait for the rest of the line
+                # Over the cap: relay this line raw up to its CRLF. Its rewrites
+                # are skipped (fail-safe: c2u still refuses anything the agent
+                # must not send), but a literal it announces is still honoured.
+                continues_response = after_literal
+                after_literal = False
+                overlong = True
+                overlong_is_data = continues_response or (
+                    buffer.startswith(b"* ") and not _U2C_STATUS_RE.match(buffer)
+                )
+                overlong_tail = b""
+                scan_from = 0
+                if not continues_response:
+                    suppressing = False
+                logger.warning(
+                    "[%s] upstream line exceeds %d bytes without CRLF; relaying raw",
+                    peer, _U2C_MAX_LINE,
+                )
+                continue
+            line_bytes = bytes(buffer[:end])
+            del buffer[:end + 2]
+            scan_from = 0
             continues_response = after_literal
             after_literal = False
+
+            # Continuation of a suppressed pending-move FETCH: drop it, and keep
+            # dropping if it announces another literal.
+            if suppressing:
+                _lit_len = _u2c_announced_literal(line_bytes, continues_response) if continues_response else None
+                if _lit_len is not None:
+                    literal_remaining = _lit_len
+                    after_literal = _lit_len == 0
+                    continue
+                suppressing = False
+                if continues_response:
+                    continue  # last line of the suppressed response
+
             line = line_bytes.decode("utf-8", errors="replace")
             line_with_crlf = line_bytes + b"\r\n"
 
@@ -1349,6 +1494,32 @@ async def _upstream_to_client(
             #
             # Non-fatal: if anything fails, bytes are still forwarded correctly.
             _lit_m = _RE_FETCH_LITERAL.match(line)
+            # Only a real literal counts: "{N}" ending the line (the strict
+            # check). _RE_FETCH_LITERAL alone also matches a non-conformant
+            # "{N})", which announces nothing; treating it as a literal would
+            # swallow N bytes of the next responses. Such a line takes the
+            # plain path below (forward, or drop if its UID is pending-move).
+            _sup_len = (
+                _u2c_announced_literal(line_bytes, continues_response) if _lit_m else None
+            )
+            if _sup_len is None:
+                _lit_m = None
+            if _lit_m and await _is_pending_move_uid(
+                session, int(_lit_m.group(2)), db_path, peer
+            ):
+                # Pending MOVE: drop the whole response (header line, literal,
+                # continuation lines), as for the non-literal FETCH below.
+                logger.debug(
+                    "[%s] Suppressing literal FETCH for pending-move UID %s",
+                    peer, _lit_m.group(2),
+                )
+                # Still sync state but don't forward to client (as below).
+                with contextlib.suppress(Exception):
+                    await _sync_upstream_line(line, session, db_path, peer)
+                suppressing = True
+                literal_remaining = _sup_len
+                after_literal = _sup_len == 0
+                continue
             if _lit_m:
                 _lit_uid = int(_lit_m.group(2))
                 _lit_size = int(_lit_m.group(3))
@@ -1367,8 +1538,9 @@ async def _upstream_to_client(
                     while _lit_remaining > 0:
                         if buffer:
                             _take = min(len(buffer), _lit_remaining)
-                            _chunk = buffer[:_take]
-                            buffer = buffer[_take:]
+                            _chunk = bytes(buffer[:_take])
+                            del buffer[:_take]
+                            scan_from = 0
                         else:
                             _to_read = min(_READ_CHUNK, _lit_remaining)
                             _chunk = await upstream_reader.read(_to_read)
@@ -1423,28 +1595,27 @@ async def _upstream_to_client(
             # current folder. This keeps the agent's view consistent with its
             # staged operations — the message appears already moved without
             # waiting for human approval.
-            if re.match(r"^\* \d+ FETCH\b", line, re.IGNORECASE):
-                folder_name = session.get("folder")
-                if folder_name:
-                    try:
-                        pending_move_uids = await get_pending_move_uids_for_folder(
-                            folder_name,
-                            agent_id=session.get("agent_id"),
-                            db_path=db_path,
-                        )
-                        if pending_move_uids:
-                            fetch_info = parse_fetch_line(line)
-                            if fetch_info and fetch_info.uid in pending_move_uids:
-                                logger.debug(
-                                    "[%s] Suppressing FETCH for pending-move UID %s",
-                                    peer, fetch_info.uid,
-                                )
-                                # Still sync state but don't forward to client
-                                with contextlib.suppress(Exception):
-                                    await _sync_upstream_line(line, session, db_path, peer)
-                                continue
-                    except Exception as exc:
-                        logger.warning("[%s] Pending-move filter error (non-fatal): %s", peer, exc)
+            if re.match(r"^\* \d+ FETCH\b", line, re.IGNORECASE) and session.get("folder"):
+                fetch_info = parse_fetch_line(line)
+                if (
+                    fetch_info
+                    and fetch_info.uid is not None
+                    and await _is_pending_move_uid(session, fetch_info.uid, db_path, peer)
+                ):
+                    logger.debug(
+                        "[%s] Suppressing FETCH for pending-move UID %s",
+                        peer, fetch_info.uid,
+                    )
+                    # Still sync state but don't forward to client
+                    with contextlib.suppress(Exception):
+                        await _sync_upstream_line(line, session, db_path, peer)
+                    # A literal announced here belongs to this response too.
+                    _lit_len = _u2c_announced_literal(line_bytes, continues_response)
+                    if _lit_len is not None:
+                        suppressing = True
+                        literal_remaining = _lit_len
+                        after_literal = _lit_len == 0
+                    continue
 
             # Patch FLAGS in FETCH responses for pending STORE ops.
             #
@@ -1501,17 +1672,12 @@ async def _upstream_to_client(
             except (ConnectionResetError, BrokenPipeError, OSError):
                 return
 
-            # Does this line announce a literal? Only data responses ("* ..."
-            # other than status responses) and the continuation line after a
-            # literal can; tagged lines and status text cannot.
-            _sent = line_with_crlf[:-2]
-            if continues_response or (
-                _sent.startswith(b"* ") and not _U2C_STATUS_RE.match(_sent)
-            ):
-                _tail = _U2C_LITERAL_TAIL_RE.search(_sent)
-                if _tail:
-                    literal_remaining = int(_tail.group(1))
-                    after_literal = literal_remaining == 0
+            # Does this line announce a literal? Checked on the bytes actually
+            # sent, after any rewrite.
+            _lit_len = _u2c_announced_literal(line_with_crlf[:-2], continues_response)
+            if _lit_len is not None:
+                literal_remaining = _lit_len
+                after_literal = _lit_len == 0
 
             # State sync (best-effort, errors never propagate).
             try:
@@ -1519,16 +1685,16 @@ async def _upstream_to_client(
             except Exception as exc:
                 logger.warning("[%s] State sync error: %s", peer, exc)
 
-        # If there are buffered bytes that don't form a complete line yet
-        # (partial line from upstream), forward them immediately so the client
-        # doesn't stall. These partial bytes will be re-buffered on the next chunk.
-        if buffer:
-            try:
-                client_writer.write(buffer)
-                await client_writer.drain()
-                buffer = b""
-            except (ConnectionResetError, BrokenPipeError, OSError):
-                break
+        # A partial line stays buffered until its CRLF arrives (see the
+        # docstring). IMAP responses are always CRLF-terminated, so nothing
+        # the client is waiting on is held back.
+
+    # Upstream closed mid-line or mid-literal: relay what we have (the session
+    # is ending; there is nothing left to keep in sync).
+    if buffer and not suppressing:
+        with contextlib.suppress(ConnectionResetError, BrokenPipeError, OSError):
+            client_writer.write(bytes(buffer))
+            await client_writer.drain()
 
 
 async def handle_client(
