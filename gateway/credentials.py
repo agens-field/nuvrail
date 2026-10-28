@@ -82,7 +82,7 @@ def _load_or_generate_master_key() -> bytes:
 
     # 2. Key file
     if _MASTER_KEY_FILE.exists():
-        hex_key = _MASTER_KEY_FILE.read_text().strip()
+        hex_key = _MASTER_KEY_FILE.read_text(encoding="utf-8").strip()
         try:
             key = bytes.fromhex(hex_key)
             _cached_master_key = key
@@ -101,7 +101,7 @@ def _load_or_generate_master_key() -> bytes:
     )
     key = secrets.token_bytes(32)
     _DATA_DIR.mkdir(parents=True, exist_ok=True)
-    _MASTER_KEY_FILE.write_text(key.hex())
+    _MASTER_KEY_FILE.write_text(key.hex(), encoding="utf-8")
     _MASTER_KEY_FILE.chmod(0o600)
     _cached_master_key = key
     return key
