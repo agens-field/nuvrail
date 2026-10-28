@@ -131,7 +131,11 @@ _U2C_STATUS_RE = re.compile(rb"^\* (OK|NO|BAD|BYE|PREAUTH)\b", re.IGNORECASE)
 # A line split across reads is buffered whole so every rewrite (capability
 # filter, EXISTS/SEARCH adjustments, literal detection) sees the full line.
 # Past this cap the line is relayed raw until its CRLF (see _upstream_to_client).
-_U2C_MAX_LINE = 1024 * 1024
+# 8 MiB holds a "* SEARCH" of about 1M UIDs (Gmail "All Mail" can pass 130k,
+# which is ~1 MiB), so the pending-move SEARCH filter still applies to it. The
+# partial-line path is linear (bytearray + CRLF scan offset), so a line near
+# the cap costs O(cap) copying and scanning, not O(cap^2).
+_U2C_MAX_LINE = 8 * 1024 * 1024
 
 # Bytes of an over-cap line kept for literal detection at its CRLF. "~{N}"
 # with a 10-digit N is 13 bytes; 64 leaves room.
@@ -1285,7 +1289,10 @@ async def _upstream_to_client(
       <N literal bytes>             ──► dropped (literal_remaining)
       " FLAGS (\\Seen))"             ──► dropped; no new literal ──► suppressing = False
     """
-    buffer = b""
+    # bytearray, not bytes: "+=" appends in place and "del buffer[:n]" drops the
+    # front without copying the rest, so a long partial line costs O(n) total.
+    buffer = bytearray()
+    scan_from = 0           # buffer[:scan_from] holds no CRLF; reset on any consume
     literal_remaining = 0   # bytes of an announced literal still to relay verbatim
     after_literal = False   # next line continues the response that held a literal
     suppressing = False     # dropping a pending-move FETCH response to its end
@@ -1318,8 +1325,9 @@ async def _upstream_to_client(
             if literal_remaining:
                 if not buffer:
                     break  # need more bytes from upstream
-                lit_chunk = buffer[:literal_remaining]
-                buffer = buffer[len(lit_chunk):]
+                lit_chunk = bytes(buffer[:literal_remaining])
+                del buffer[:len(lit_chunk)]
+                scan_from = 0
                 literal_remaining -= len(lit_chunk)
                 if not await _emit(lit_chunk):
                     return
@@ -1331,12 +1339,16 @@ async def _upstream_to_client(
                 if end < 0:
                     # Hold back a trailing CR: it may be half of the CRLF.
                     keep = 1 if buffer.endswith(b"\r") else 0
-                    piece, buffer = buffer[:len(buffer) - keep], buffer[len(buffer) - keep:]
+                    piece = bytes(buffer[:len(buffer) - keep])
+                    del buffer[:len(buffer) - keep]
+                    scan_from = 0
                     overlong_tail = (overlong_tail + piece)[-_U2C_TAIL_KEEP:]
                     if not await _emit(piece):
                         return
                     break
-                piece, buffer = buffer[:end + 2], buffer[end + 2:]
+                piece = bytes(buffer[:end + 2])
+                del buffer[:end + 2]
+                scan_from = 0
                 overlong_tail = (overlong_tail + piece[:-2])[-_U2C_TAIL_KEEP:]
                 if not await _emit(piece):
                     return
@@ -1350,7 +1362,11 @@ async def _upstream_to_client(
                 else:
                     suppressing = False
                 continue
-            if b"\r\n" not in buffer:
+            # Search only bytes not already searched; back up one so a CRLF
+            # split across reads ("\r" | "\n") is still found.
+            end = buffer.find(b"\r\n", scan_from)
+            if end < 0:
+                scan_from = max(0, len(buffer) - 1)
                 if len(buffer) <= _U2C_MAX_LINE:
                     break  # wait for the rest of the line
                 # Over the cap: relay this line raw up to its CRLF. Its rewrites
@@ -1363,6 +1379,7 @@ async def _upstream_to_client(
                     buffer.startswith(b"* ") and not _U2C_STATUS_RE.match(buffer)
                 )
                 overlong_tail = b""
+                scan_from = 0
                 if not continues_response:
                     suppressing = False
                 logger.warning(
@@ -1370,7 +1387,9 @@ async def _upstream_to_client(
                     peer, _U2C_MAX_LINE,
                 )
                 continue
-            line_bytes, buffer = buffer.split(b"\r\n", 1)
+            line_bytes = bytes(buffer[:end])
+            del buffer[:end + 2]
+            scan_from = 0
             continues_response = after_literal
             after_literal = False
 
@@ -1475,16 +1494,31 @@ async def _upstream_to_client(
             #
             # Non-fatal: if anything fails, bytes are still forwarded correctly.
             _lit_m = _RE_FETCH_LITERAL.match(line)
-            if _lit_m and await _is_pending_move_uid(session, int(_lit_m.group(2)), db_path, peer):
+            # Only a real literal counts: "{N}" ending the line (the strict
+            # check). _RE_FETCH_LITERAL alone also matches a non-conformant
+            # "{N})", which announces nothing; treating it as a literal would
+            # swallow N bytes of the next responses. Such a line takes the
+            # plain path below (forward, or drop if its UID is pending-move).
+            _sup_len = (
+                _u2c_announced_literal(line_bytes, continues_response) if _lit_m else None
+            )
+            if _sup_len is None:
+                _lit_m = None
+            if _lit_m and await _is_pending_move_uid(
+                session, int(_lit_m.group(2)), db_path, peer
+            ):
                 # Pending MOVE: drop the whole response (header line, literal,
                 # continuation lines), as for the non-literal FETCH below.
                 logger.debug(
                     "[%s] Suppressing literal FETCH for pending-move UID %s",
                     peer, _lit_m.group(2),
                 )
+                # Still sync state but don't forward to client (as below).
+                with contextlib.suppress(Exception):
+                    await _sync_upstream_line(line, session, db_path, peer)
                 suppressing = True
-                literal_remaining = int(_lit_m.group(3))
-                after_literal = literal_remaining == 0
+                literal_remaining = _sup_len
+                after_literal = _sup_len == 0
                 continue
             if _lit_m:
                 _lit_uid = int(_lit_m.group(2))
@@ -1504,8 +1538,9 @@ async def _upstream_to_client(
                     while _lit_remaining > 0:
                         if buffer:
                             _take = min(len(buffer), _lit_remaining)
-                            _chunk = buffer[:_take]
-                            buffer = buffer[_take:]
+                            _chunk = bytes(buffer[:_take])
+                            del buffer[:_take]
+                            scan_from = 0
                         else:
                             _to_read = min(_READ_CHUNK, _lit_remaining)
                             _chunk = await upstream_reader.read(_to_read)
@@ -1658,7 +1693,7 @@ async def _upstream_to_client(
     # is ending; there is nothing left to keep in sync).
     if buffer and not suppressing:
         with contextlib.suppress(ConnectionResetError, BrokenPipeError, OSError):
-            client_writer.write(buffer)
+            client_writer.write(bytes(buffer))
             await client_writer.drain()
 
 

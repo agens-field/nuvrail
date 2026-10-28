@@ -11,11 +11,19 @@ Plus:
   5. decrypt_credential() accepts legacy plaintext (backwards-compat migration path)
   6. Each encrypt_credential() call produces a unique ciphertext (nonce randomness)
   7. Tampered ciphertext raises ValueError (GCM authentication tag check)
+  8. A generated master.key is never group/other-readable, even if the process
+     dies mid-generation, and a new data dir is 0700 (nuvrail-internal#43 F1)
+  9. First-boot race: a process that loses O_EXCL uses the winner's key
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import os
+import stat
+import threading
+import time
+from pathlib import Path
 
 import pytest
 
@@ -176,3 +184,108 @@ def test_envelope_schema():
     assert len(envelope["iv"]) == 24, (
         f"Expected 24-char iv (12 bytes), got {len(envelope['iv'])}"
     )
+
+
+# ---------------------------------------------------------------------------
+# master.key generation (nuvrail-internal#43 F1)
+#
+#   no env var, no file ──► _create_master_key_file()
+#                           ├─ mkdir data dir 0700
+#                           ├─ os.open(O_CREAT|O_EXCL, 0600) ──► write key
+#                           └─ FileExistsError ──► read the winner's key
+#                                                  (wait up to _KEY_RACE_WAIT_S
+#                                                   for 64 hex chars)
+# ---------------------------------------------------------------------------
+
+_posix_only = pytest.mark.skipif(os.name != "posix", reason="POSIX file modes")
+
+
+@pytest.fixture
+def key_file_env(tmp_path, monkeypatch):
+    """No env key; data dir is a fresh subdir of tmp_path; umask 000 (worst case)."""
+    import gateway.credentials as creds_module
+
+    monkeypatch.delenv("NUVRAIL_MASTER_KEY", raising=False)
+    data_dir = tmp_path / "data"
+    monkeypatch.setattr(creds_module, "_DATA_DIR", data_dir)
+    monkeypatch.setattr(creds_module, "_MASTER_KEY_FILE", data_dir / "master.key")
+    creds_module._cached_master_key = None
+    old_umask = os.umask(0)
+    try:
+        yield creds_module, data_dir
+    finally:
+        os.umask(old_umask)
+        creds_module._cached_master_key = None
+
+
+@_posix_only
+def test_generated_master_key_is_0600_and_dir_0700(key_file_env):
+    creds_module, data_dir = key_file_env
+
+    key = creds_module.get_master_key()
+
+    key_file = data_dir / "master.key"
+    assert stat.S_IMODE(key_file.stat().st_mode) == 0o600
+    assert stat.S_IMODE(data_dir.stat().st_mode) == 0o700
+    assert key_file.read_text(encoding="utf-8") == key.hex()
+
+
+@_posix_only
+def test_master_key_never_world_readable_if_process_dies_mid_generation(
+    key_file_env, monkeypatch
+):
+    """Old code: write_text() (0666 under umask 000) then chmod(0600). A crash
+    between the two left the key readable by every local user. The mode must be
+    right from creation, so a chmod that never runs changes nothing."""
+    creds_module, data_dir = key_file_env
+
+    def _die(self, *a, **kw):
+        raise RuntimeError("process died before chmod")
+
+    monkeypatch.setattr(Path, "chmod", _die)
+    with contextlib.suppress(RuntimeError):
+        creds_module.get_master_key()
+
+    key_file = data_dir / "master.key"
+    assert key_file.exists()
+    assert stat.S_IMODE(key_file.stat().st_mode) & 0o077 == 0
+
+
+def test_first_boot_race_loser_uses_winners_key(key_file_env):
+    creds_module, data_dir = key_file_env
+    data_dir.mkdir()
+    winner = os.urandom(32)
+    (data_dir / "master.key").write_text(winner.hex(), encoding="utf-8")
+
+    assert creds_module._create_master_key_file() == winner
+    assert (data_dir / "master.key").read_text(encoding="utf-8") == winner.hex()
+
+
+def test_first_boot_race_loser_waits_for_partial_write(key_file_env):
+    """The winner has created the file but not written the key yet."""
+    creds_module, data_dir = key_file_env
+    data_dir.mkdir()
+    key_file = data_dir / "master.key"
+    key_file.write_text("", encoding="utf-8")
+    winner = os.urandom(32)
+
+    def _finish_write():
+        time.sleep(0.05)
+        key_file.write_text(winner.hex(), encoding="utf-8")
+
+    t = threading.Thread(target=_finish_write)
+    t.start()
+    try:
+        assert creds_module._create_master_key_file() == winner
+    finally:
+        t.join()
+
+
+def test_first_boot_race_truncated_key_raises(key_file_env, monkeypatch):
+    creds_module, data_dir = key_file_env
+    monkeypatch.setattr(creds_module, "_KEY_RACE_WAIT_S", 0.05)
+    data_dir.mkdir()
+    (data_dir / "master.key").write_text("abcd", encoding="utf-8")
+
+    with pytest.raises(ValueError, match=r"Invalid master\.key"):
+        creds_module._create_master_key_file()

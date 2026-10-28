@@ -543,7 +543,7 @@ async def test_overlong_line_is_relayed_raw_then_lines_resume(
         out = await _run_pieces(pieces, dict(session), db_path)
         assert out == long_line + b"\r\n* CAPABILITY IMAP4rev1\r\nc1 OK done\r\n", size
     # A long line that arrives whole (CRLF in the same read) never hits the
-    # cap and is rewritten like any other. In production the cap is 1 MiB
+    # cap and is rewritten like any other. In production the cap is 8 MiB
     # against 4 KB reads, so an over-cap line always goes the raw route.
     out = await _run_pieces([stream], dict(session), db_path)
     assert out.startswith(b"* CAPABILITY IMAP4rev1 X-PAD ")
@@ -642,3 +642,63 @@ async def test_overlong_tagged_line_ending_in_braces_is_not_a_literal(
     pieces = [stream[i:i + 8] for i in range(0, len(stream), 8)]
     out = await _run_pieces(pieces, session, db_path)
     assert out == line + b"\r\n* CAPABILITY IMAP4rev1 IDLE\r\nc9 OK done\r\n"
+
+
+# ---------------------------------------------------------------------------
+# Security-review follow-ups on #214 (nuvrail-internal#43 F2, F4, F5)
+# ---------------------------------------------------------------------------
+
+
+async def test_search_line_over_1mib_still_gets_pending_move_filter(
+    db_path: Path, pending_move: None
+) -> None:
+    """F2: a "* SEARCH" of ~200k UIDs (~1.3 MiB; Gmail All Mail can be this
+    big) arrives in 4 KB reads. With the old 1 MiB cap it went out raw and the
+    agent saw the pending-move UID. Under the 8 MiB cap it is filtered."""
+    uids = list(range(1, 200_001))
+    line = b"* SEARCH " + b" ".join(str(u).encode() for u in uids)
+    assert 1024 * 1024 < len(line) < _proxy._U2C_MAX_LINE
+    stream = line + b"\r\nc1 OK done\r\n"
+    pieces = [stream[i:i + 4096] for i in range(0, len(stream), 4096)]
+
+    out = await _run_pieces(pieces, _inbox_session(), db_path)
+
+    expected = (
+        b"* SEARCH "
+        + b" ".join(str(u).encode() for u in uids if u != _PENDING_UID)
+        + b"\r\nc1 OK done\r\n"
+    )
+    assert out == expected
+
+
+async def test_non_literal_brace_at_end_of_pending_fetch_swallows_nothing(
+    db_path: Path, pending_move: None
+) -> None:
+    """F4: "{5})" at the end of a FETCH is not a literal (a literal's "{N}"
+    ends the line). Before, the suppression branch took 5 from the loose
+    _RE_FETCH_LITERAL match and dropped the next 5 bytes of real responses."""
+    stream = (
+        b"* 1 FETCH (UID 7 X-NOTE {5})\r\n"
+        b"* 2 FETCH (UID 3 FLAGS (\\Seen))\r\n"
+        b"c1 OK done\r\n"
+    )
+    expected = b"* 2 FETCH (UID 3 FLAGS (\\Seen))\r\nc1 OK done\r\n"
+    assert await _run_pieces([stream], _inbox_session(), db_path) == expected
+
+
+async def test_suppressed_literal_fetch_still_syncs_state(
+    db_path: Path, pending_move: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """F5: the dropped header line still reaches state sync, as the
+    non-literal suppression branch already did."""
+    synced: list[str] = []
+
+    async def _record(line: str, session: dict, db_path: Path, peer: str) -> None:
+        synced.append(line)
+
+    monkeypatch.setattr(_proxy, "_sync_upstream_line", _record)
+    header = b"* 1 FETCH (UID 7 FLAGS (\\Seen) BODY[] {5}"
+    stream = header + b"\r\nhello)\r\nc1 OK done\r\n"
+
+    assert await _run_pieces([stream], _inbox_session(), db_path) == b"c1 OK done\r\n"
+    assert header.decode() in synced
