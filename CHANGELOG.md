@@ -12,6 +12,33 @@ heading format exact and add new work under `[Unreleased]`.
 
 ## [Unreleased]
 
+### Security
+- IMAP proxy: a message with a staged (pending-approval) move is no longer
+  shown to the agent when it is fetched with a body literal
+  (`* 1 FETCH (UID 7 BODY[] {N}`). Before, that response matched the
+  message-body branch first, so the agent got the whole message. The header
+  line, its literal(s) and the continuation line are now dropped as one
+  response. Display-only: no write ever reached the upstream server
+  ([#214](https://github.com/agens-field/nuvrail/pull/214)).
+- IMAP proxy: a response line split across two upstream reads now gets the
+  same handling as any other line (capability filter, pending-move
+  EXISTS/SEARCH/FETCH adjustments, literal detection). Before, the partial
+  line at the end of each 4 KB read was relayed raw. Lines over 8 MiB are
+  still relayed raw, then normal handling resumes
+  ([#214](https://github.com/agens-field/nuvrail/pull/214)).
+- `master.key`, which decrypts every stored mailbox credential, is now
+  created with mode 0600 in a single call, and a new data directory is
+  created 0700. Before, the key was written under the process umask (often
+  0644) and then chmod-ed, so it could stay world-readable if the process
+  died in between. Two processes generating a key on first boot now share
+  one key instead of each caching its own
+  ([#214](https://github.com/agens-field/nuvrail/pull/214)).
+
+### Changed
+- `master.key` is read and written as UTF-8 explicitly, and CI runs the
+  tests with `EncodingWarning` as an error
+  ([#214](https://github.com/agens-field/nuvrail/pull/214)).
+
 ## [0.1.4] - 2026-10-26
 
 Hardens the IMAP/SMTP proxies and makes the credential-redaction log filter
