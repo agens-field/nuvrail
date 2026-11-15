@@ -42,10 +42,17 @@ jobs:
 
       - name: Run tests
         # Run all tests except integration/e2e suites (those require real credentials).
+        # EncodingWarning guard (nuvrail-internal#43, after #206): every text
+        # open()/read_text()/write_text() must name its encoding, or it breaks
+        # on Windows (cp1252). PYTHONWARNDEFAULTENCODING makes Python emit the
+        # warning; -W makes pytest fail on it.
+        env:
+          PYTHONWARNDEFAULTENCODING: "1"
         run: |
           python -m pytest \
             --ignore=tests/integration \
             --ignore=tests/e2e \
+            -W error::EncodingWarning \
             --tb=short \
             -q
 
