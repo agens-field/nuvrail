@@ -63,18 +63,33 @@ trap cleanup EXIT
 step "1. throwaway CA + server cert for 'mail' (this run only)"
 (
   cd "$DEMO_CERT_DIR"
+  # Python 3.13+ turns on VERIFY_X509_STRICT in ssl.create_default_context(),
+  # so both certs carry what a strict RFC 5280 check needs: the CA has critical
+  # basicConstraints + keyUsage, the leaf has keyUsage and AKI/SKI. Without
+  # them the readiness probe below never verifies (#217).
   openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj "/CN=Nuvrail 3am demo throwaway CA" \
+    -addext "basicConstraints=critical,CA:TRUE" \
+    -addext "keyUsage=critical,keyCertSign,cRLSign" \
     -keyout ca.key -out ca.pem 2>/dev/null
   openssl req -newkey rsa:2048 -nodes -subj "/CN=mail" -keyout mail.key -out mail.csr 2>/dev/null
-  printf 'subjectAltName=DNS:mail,DNS:localhost,IP:127.0.0.1\nextendedKeyUsage=serverAuth\n' > ext.cnf
+  printf '%s\n' \
+    'subjectAltName=DNS:mail,DNS:localhost,IP:127.0.0.1' \
+    'extendedKeyUsage=serverAuth' \
+    'keyUsage=critical,digitalSignature,keyEncipherment' \
+    'basicConstraints=critical,CA:FALSE' \
+    'subjectKeyIdentifier=hash' \
+    'authorityKeyIdentifier=keyid' > ext.cnf
   openssl x509 -req -in mail.csr -CA ca.pem -CAkey ca.key -CAcreateserial -days 1 \
     -extfile ext.cnf -out mail.crt 2>/dev/null
+  openssl verify -x509_strict -CAfile ca.pem mail.crt >/dev/null \
+    || fail "demo cert does not pass strict X.509 verification"
   openssl pkcs12 -export -name mail -inkey mail.key -in mail.crt -certfile ca.pem \
     -passout "pass:$DEMO_KEYSTORE_PASSWORD" -out mail.p12
   rm -f ca.key mail.key mail.csr ca.srl ext.cnf
   chmod 755 . && chmod 644 ./*
 )
 echo "CA + cert ready (private keys exist only inside mail.p12, deleted on exit)"
+echo "probe client: $(python3 --version 2>&1); $(openssl version)"
 
 CAPTURE="${DEMO_CAPTURE:-}"
 WEB="http://127.0.0.1:${NUVRAIL_HOST_WEB_PORT:-3000}"
