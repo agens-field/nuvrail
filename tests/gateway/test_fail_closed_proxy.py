@@ -702,3 +702,134 @@ async def test_suppressed_literal_fetch_still_syncs_state(
 
     assert await _run_pieces([stream], _inbox_session(), db_path) == b"c1 OK done\r\n"
     assert header.decode() in synced
+
+
+
+# ---------------------------------------------------------------------------
+# nuvrail-internal#44: pending-move suppression when the FETCH header line
+# carries no UID.
+#
+# 1. UID after the literal: "* 3 FETCH (BODY[] {N}" ... " UID 7)". While a
+#    staged MOVE exists in the folder, the response is held to its end and
+#    dropped if its UID is pending. Past _U2C_MAX_LINE it is relayed unfiltered.
+# 2. Non-UID FETCH with no UID item: c2u adds UID to the request, so the
+#    response carries one and the existing filter applies.
+# ---------------------------------------------------------------------------
+
+from gateway.proxy import _add_uid_to_fetch  # noqa: E402
+
+
+def _uid_after_literal(uid: int, body: bytes, seq: int = 1) -> bytes:
+    return (
+        b"* " + str(seq).encode() + b" FETCH (BODY[] " + _lit(body) + b"\r\n" + body
+        + b" UID " + str(uid).encode() + b" FLAGS (\\Seen))\r\n"
+    )
+
+
+async def test_pending_move_uid_after_literal_is_dropped_whole(
+    db_path: Path, pending_move: None
+) -> None:
+    """Before #44 the header line had no UID, so nothing was suppressed. The
+    body holds response lookalikes that must not leak either."""
+    body = b"* 3 FETCH (UID 3 FLAGS ())\r\nc1 OK fake\r\n"
+    keep = _uid_after_literal(3, b"Subject: kept\r\n\r\n", seq=2)
+    stream = _uid_after_literal(_PENDING_UID, body) + keep + b"c1 OK done\r\n"
+    expected = keep + b"c1 OK done\r\n"
+    for size in (1, 7, 4096):
+        pieces = [stream[i:i + size] for i in range(0, len(stream), size)]
+        assert await _run_pieces(pieces, _inbox_session(), db_path) == expected, size
+
+
+async def test_uid_after_two_literals_and_quoted_lookalike(
+    db_path: Path, pending_move: None
+) -> None:
+    """The UID can follow several literals; a quoted "UID 7" (e.g. in an
+    ENVELOPE subject) is not the UID item."""
+    pending = (
+        b"* 1 FETCH (BODY[HEADER] {3}\r\nabc BODY[TEXT] {2}\r\nxy"
+        b" ENVELOPE (NIL \"UID 3\" NIL NIL NIL NIL NIL NIL NIL NIL) UID 7)\r\n"
+    )
+    lookalike = (
+        b"* 2 FETCH (BODY[] {2}\r\nhi ENVELOPE (NIL \"UID 7\" NIL NIL NIL NIL NIL NIL NIL NIL)"
+        b" UID 3)\r\n"
+    )
+    stream = pending + lookalike + b"c1 OK done\r\n"
+    out = await _run_pieces([stream], _inbox_session(), db_path)
+    assert out == lookalike + b"c1 OK done\r\n"
+
+
+async def test_no_hold_without_pending_moves(db_path: Path) -> None:
+    """No staged MOVE in the folder: the response streams as before."""
+    session = _inbox_session()
+    session["capability_tag"] = None
+    stream = _uid_after_literal(_PENDING_UID, b"hello\r\n") + b"c1 OK done\r\n"
+    assert await _run_pieces([stream], session, db_path) == stream
+
+
+async def test_held_response_over_cap_is_relayed_unfiltered(
+    db_path: Path, pending_move: None, monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A literal bigger than the cap can't be held: the response goes out
+    in full (fail-open display, logged) and the stream stays in sync."""
+    monkeypatch.setattr(_proxy, "_U2C_MAX_LINE", 64)
+    big = b"* 9 EXISTS\r\n" + b"x" * 200 + b"\r\n"
+    stream = _uid_after_literal(_PENDING_UID, big) + b"* 5 EXISTS\r\nc1 OK done\r\n"
+    expected = _uid_after_literal(_PENDING_UID, big) + b"* 4 EXISTS\r\nc1 OK done\r\n"
+    for size in (1, 16, 4096):
+        caplog.clear()
+        pieces = [stream[i:i + size] for i in range(0, len(stream), size)]
+        with caplog.at_level("WARNING", logger=_proxy.logger.name):
+            assert await _run_pieces(pieces, _inbox_session(), db_path) == expected, size
+        assert "relaying it unfiltered" in caplog.text
+
+
+async def test_held_response_cut_by_eof_is_not_relayed(
+    db_path: Path, pending_move: None
+) -> None:
+    stream = b"* 1 FETCH (BODY[] {10}\r\nhello"
+    assert await _run_pieces([stream], _inbox_session(), db_path) == b""
+
+
+@pytest.mark.parametrize("line,expected", [
+    (b"a1 FETCH 1:3 (FLAGS)\r\n", b"a1 FETCH 1:3 (FLAGS UID)\r\n"),
+    (b"a1 FETCH 4 BODY.PEEK[]\r\n", b"a1 FETCH 4 (BODY.PEEK[] UID)\r\n"),
+    (b"a1 fetch 2 fast\r\n", b"a1 fetch 2 (FLAGS INTERNALDATE RFC822.SIZE UID)\r\n"),
+    (
+        b"a1 FETCH 1 BODY.PEEK[HEADER.FIELDS (From \"To\")]\r\n",
+        b"a1 FETCH 1 (BODY.PEEK[HEADER.FIELDS (From \"To\")] UID)\r\n",
+    ),
+    (
+        b"a1 FETCH 1:* (FLAGS) (CHANGEDSINCE 12345)\r\n",
+        b"a1 FETCH 1:* (FLAGS UID) (CHANGEDSINCE 12345)\r\n",
+    ),
+    (b"a1 FETCH 1 (UID FLAGS)\r\n", None),   # already asks for the UID
+    (b"a1 FETCH 1 uid\r\n", None),
+    (b"a1 FETCH 1 (FLAGS\r\n", None),        # unbalanced: left alone
+    (b"a1 FETCH 1 ()\r\n", None),
+])
+def test_add_uid_to_fetch(line: bytes, expected: bytes | None) -> None:
+    assert _add_uid_to_fetch(line) == expected
+
+
+async def test_non_uid_fetch_is_sent_with_uid(db_path: Path) -> None:
+    """Before #44 the response to a plain FETCH (FLAGS) had no UID, so a
+    message with a staged MOVE showed through. UID FETCH is unchanged."""
+    data = b"a1 FETCH 1:3 (FLAGS)\r\na2 UID FETCH 1:* (FLAGS)\r\n"
+    upstream, client, _ = await _run_c2u(data, db_path)
+    assert upstream == b"a1 FETCH 1:3 (FLAGS UID)\r\na2 UID FETCH 1:* (FLAGS)\r\n"
+    assert client == b""
+
+
+async def test_non_uid_fetch_response_is_now_filtered(
+    db_path: Path, pending_move: None
+) -> None:
+    """End to end on the u2c side: with the UID added, the pending row drops."""
+    stream = (
+        b"* 1 FETCH (FLAGS (\\Seen) UID 7)\r\n"
+        b"* 2 FETCH (FLAGS () UID 3)\r\n"
+        b"a1 OK done\r\n"
+    )
+    out = await _run_pieces([stream], _inbox_session(), db_path)
+    assert out == b"* 2 FETCH (FLAGS () UID 3)\r\na1 OK done\r\n"
+

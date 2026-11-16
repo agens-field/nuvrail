@@ -13,6 +13,15 @@ heading format exact and add new work under `[Unreleased]`.
 ## [Unreleased]
 
 ### Security
+- IMAP proxy: a message with a staged move is now also hidden when the
+  FETCH response names its UID after the body literal
+  (`* 3 FETCH (BODY[] {N}` ... ` UID 9)`) or when the agent's plain
+  `FETCH` did not ask for the UID. The first kind is held to its end
+  (up to 8 MiB; past that it is relayed unfiltered and logged); for the
+  second, the proxy adds `UID` to the agent's non-UID `FETCH`, so the
+  response carries an extra `UID` item. Display-only: no write ever
+  reached the upstream server
+  ([#216](https://github.com/agens-field/nuvrail/pull/216)).
 - IMAP proxy: a message with a staged (pending-approval) move is no longer
   shown to the agent when it is fetched with a body literal
   (`* 1 FETCH (UID 7 BODY[] {N}`). Before, that response matched the
