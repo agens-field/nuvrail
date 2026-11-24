@@ -279,3 +279,183 @@ async def test_create_operation_without_snapshot_stores_null(db_path: Path) -> N
 # operation, execution-failure non-fatality, and push suppression) moved to the
 # nuvrail-enterprise package, since the auto-decision provider now lives there.
 # Open core stages every operation as pending.
+
+
+
+# ---------------------------------------------------------------------------
+# Pending-op dedup (nuvrail-internal#45)
+#
+#   stage MOVE 9 -> Archive        -> op A (pending)
+#   stage MOVE 9 -> Archive again  -> op A again, 'deduplicated' audit row
+#   anything that differs (UIDs, folder, flags, agent, op_type) -> new op
+#   op A decided or expired, then the same request -> new op
+#   smtp_send / append / no message_ids -> never deduplicated
+# ---------------------------------------------------------------------------
+
+
+async def _seed_agents(db_path: Path, count: int = 2) -> list[int]:
+    ids: list[int] = []
+    async with get_db(db_path) as db:
+        await db.execute(
+            "INSERT INTO users (id, email, display_name, hashed_password, created_at) "
+            "VALUES (1, 'dedup@example.com', 'T', 'x', 0)"
+        )
+        for n in range(count):
+            cur = await db.execute(
+                "INSERT INTO agent_credentials (user_id, label, agent_username, "
+                "hashed_token, upstream_host, upstream_imap_port, upstream_smtp_port, "
+                "upstream_user, upstream_password, created_at) "
+                "VALUES (1, ?, ?, 'x', 'imap.example.com', 993, 587, 'u@example.com', 'x', 0)",
+                (f"a{n}", f"nuvrail_dedup_{n}"),
+            )
+            ids.append(int(cur.lastrowid))
+        await db.commit()
+    return ids
+
+
+async def _stage_move(db_path: Path, **overrides) -> str:
+    kwargs = {
+        "op_type": "move",
+        "protocol": "imap",
+        "description": "Move 9 to Archive",
+        "message_ids": ["9"],
+        "folder_from": "INBOX",
+        "folder_to": "Archive",
+        "db_path": db_path,
+    }
+    kwargs.update(overrides)
+    return await create_operation(**kwargs)
+
+
+async def _count_rows(db_path: Path) -> int:
+    async with get_db(db_path) as db, db.execute(
+        "SELECT COUNT(*) FROM staged_operations"
+    ) as cur:
+        return (await cur.fetchone())[0]
+
+
+async def test_dedup_same_move_twice_returns_same_op(db_path: Path) -> None:
+    (agent,) = await _seed_agents(db_path, 1)
+    first = await _stage_move(db_path, agent_id=agent)
+    second = await _stage_move(db_path, agent_id=agent, description="again")
+    assert second == first
+    assert await _count_rows(db_path) == 1
+    async with get_db(db_path) as db, db.execute(
+        "SELECT event, actor, detail FROM audit_log WHERE operation_id = ? ORDER BY id",
+        (first,),
+    ) as cur:
+        events = [dict(r) for r in await cur.fetchall()]
+    assert [e["event"] for e in events] == ["staged", "deduplicated"]
+    assert events[1]["actor"] == "ai_agent"
+    assert "again" in events[1]["detail"]
+    # The original request text is kept; the duplicate does not overwrite it.
+    assert (await get_operation(first, db_path=db_path))["description"] == "Move 9 to Archive"
+
+
+async def test_dedup_ignores_uid_order_and_type(db_path: Path) -> None:
+    (agent,) = await _seed_agents(db_path, 1)
+    first = await _stage_move(db_path, agent_id=agent, message_ids=["9", "3"])
+    second = await _stage_move(db_path, agent_id=agent, message_ids=[3, 9])
+    assert second == first
+
+
+async def test_dedup_without_agent_matches_null_agent(db_path: Path) -> None:
+    first = await _stage_move(db_path)
+    assert await _stage_move(db_path) == first
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"message_ids": ["10"]},
+        {"message_ids": ["9", "10"]},
+        {"folder_to": "Trash"},
+        {"folder_from": "Sent"},
+        {"op_type": "copy"},
+        {"flags_add": ["\\Seen"]},
+    ],
+)
+async def test_dedup_different_request_creates_new_op(db_path: Path, override: dict) -> None:
+    (agent,) = await _seed_agents(db_path, 1)
+    first = await _stage_move(db_path, agent_id=agent)
+    second = await _stage_move(db_path, agent_id=agent, **override)
+    assert second != first
+    assert await _count_rows(db_path) == 2
+
+
+async def test_dedup_different_flags_on_same_message_creates_new_op(db_path: Path) -> None:
+    (agent,) = await _seed_agents(db_path, 1)
+    common = {"op_type": "store", "folder_to": None, "agent_id": agent}
+    seen = await _stage_move(db_path, flags_add=["\\Seen"], **common)
+    flagged = await _stage_move(db_path, flags_add=["\\Flagged"], **common)
+    unseen = await _stage_move(db_path, flags_remove=["\\Seen"], **common)
+    assert len({seen, flagged, unseen}) == 3
+    assert await _stage_move(db_path, flags_add=["\\Seen"], **common) == seen
+
+
+async def test_dedup_is_per_agent(db_path: Path) -> None:
+    a, b = await _seed_agents(db_path, 2)
+    assert await _stage_move(db_path, agent_id=a) != await _stage_move(db_path, agent_id=b)
+
+
+@pytest.mark.parametrize("status", ["approved", "executed", "rejected", "failed", "expired"])
+async def test_dedup_after_first_is_decided_creates_new_op(db_path: Path, status: str) -> None:
+    (agent,) = await _seed_agents(db_path, 1)
+    first = await _stage_move(db_path, agent_id=agent)
+    await update_operation_status(first, status, db_path=db_path)
+    second = await _stage_move(db_path, agent_id=agent)
+    assert second != first
+    assert (await get_operation(second, db_path=db_path))["status"] == "pending"
+
+
+async def test_dedup_skips_pending_row_past_expiry(db_path: Path) -> None:
+    """A pending row the expiry sweep has not reached yet is not reused."""
+    (agent,) = await _seed_agents(db_path, 1)
+    first = await _stage_move(db_path, agent_id=agent)
+    async with get_db(db_path) as db:
+        await db.execute(
+            "UPDATE staged_operations SET expires_at = 1 WHERE id = ?", (first,)
+        )
+        await db.commit()
+    assert await _stage_move(db_path, agent_id=agent) != first
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"op_type": "smtp_send", "protocol": "smtp", "message_ids": ["9"]},
+        {"op_type": "append", "message_ids": ["9"]},
+        {"message_ids": None},
+        {"message_ids": []},
+    ],
+)
+async def test_dedup_never_applies(db_path: Path, kwargs: dict) -> None:
+    first = await _stage_move(db_path, **kwargs)
+    second = await _stage_move(db_path, **kwargs)
+    assert first != second
+    assert await _count_rows(db_path) == 2
+
+
+async def test_dedup_does_not_rerun_auto_decision(db_path: Path, monkeypatch) -> None:
+    """The duplicate must not re-evaluate auto-rules (the first call did)."""
+    calls: list[str] = []
+
+    async def _fake_decision(op, db_path=None, user_id=None):
+        calls.append(op["id"])
+        return None
+
+    monkeypatch.setattr("gateway.staging.run_auto_decision", _fake_decision)
+    (agent,) = await _seed_agents(db_path, 1)
+    first = await _stage_move(db_path, agent_id=agent)
+    assert await _stage_move(db_path, agent_id=agent) == first
+    assert calls == [first]
+
+
+async def test_dedup_concurrent_stagings_create_one_op(db_path: Path) -> None:
+    import asyncio
+
+    (agent,) = await _seed_agents(db_path, 1)
+    ids = await asyncio.gather(*(_stage_move(db_path, agent_id=agent) for _ in range(5)))
+    assert len(set(ids)) == 1
+    assert await _count_rows(db_path) == 1
+

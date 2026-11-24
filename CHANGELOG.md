@@ -48,6 +48,15 @@ heading format exact and add new work under `[Unreleased]`.
   tests with `EncodingWarning` as an error
   ([#214](https://github.com/agens-field/nuvrail/pull/214)).
 
+### Fixed
+- Approvals: if an agent repeats the same write (same messages, same
+  folders, same flag change) before the first one has been decided, the
+  gateway now returns the existing pending operation ID instead of queueing
+  a second approval for the same action. The repeat is recorded in the audit
+  log as `deduplicated`. Sends and appends are never merged, and once the
+  first operation is decided or expired the same request queues a new one,
+  as before.
+
 ## [0.1.4] - 2026-10-26
 
 Hardens the IMAP/SMTP proxies and makes the credential-redaction log filter
