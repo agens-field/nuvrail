@@ -155,21 +155,116 @@ def _u2c_announced_literal(sent: bytes, continues_response: bool) -> int | None:
     return int(tail.group(1)) if tail else None
 
 
-async def _is_pending_move_uid(session: dict, uid: int, db_path: Path, peer: str) -> bool:
-    """True if ``uid`` in the selected folder has a staged MOVE awaiting approval."""
+async def _pending_move_uids(session: dict, db_path: Path, peer: str) -> set[int]:
+    """UIDs in the selected folder with a staged MOVE awaiting approval."""
     folder_name = session.get("folder")
     if not folder_name:
-        return False
+        return set()
     try:
-        pending = await get_pending_move_uids_for_folder(
+        return set(await get_pending_move_uids_for_folder(
             folder_name,
             agent_id=session.get("agent_id"),
             db_path=db_path,
-        )
+        ))
     except Exception as exc:
         logger.warning("[%s] Pending-move filter error (non-fatal): %s", peer, exc)
-        return False
-    return uid in pending
+        return set()
+
+
+async def _is_pending_move_uid(session: dict, uid: int, db_path: Path, peer: str) -> bool:
+    """True if ``uid`` in the selected folder has a staged MOVE awaiting approval."""
+    return uid in await _pending_move_uids(session, db_path, peer)
+
+
+# Quoted strings are blanked before looking for a UID item, so an ENVELOPE
+# subject such as "UID 9" is never read as one.
+_QUOTED_RE = re.compile(rb'"(?:[^"\\]|\\.)*"')
+_FETCH_UID_ITEM_RE = re.compile(rb"(?:^|[\s(])UID (\d+)(?=[\s)]|$)", re.IGNORECASE)
+_U2C_FETCH_HEAD_RE = re.compile(rb"^\* \d+ FETCH \(", re.IGNORECASE)
+
+
+def _uid_in_fetch_text(text: bytes) -> int | None:
+    """The UID data item in the non-literal text of a FETCH response, or None."""
+    m = _FETCH_UID_ITEM_RE.search(_QUOTED_RE.sub(b'""', text))
+    return int(m.group(1)) if m else None
+
+
+# RFC 3501 6.4.5 macros. They can't sit inside a list, so they are expanded
+# before UID is added.
+_FETCH_MACROS = {
+    "ALL": "FLAGS INTERNALDATE RFC822.SIZE ENVELOPE",
+    "FAST": "FLAGS INTERNALDATE RFC822.SIZE",
+    "FULL": "FLAGS INTERNALDATE RFC822.SIZE ENVELOPE BODY",
+}
+_FETCH_CMD_RE = re.compile(r"^(\S+ FETCH \S+ )(.+)$", re.IGNORECASE)
+_HAS_UID_ITEM_RE = re.compile(r"(?:^|[\s(])UID(?=[\s)]|$)", re.IGNORECASE)
+
+
+def _fetch_spec_end(rest: str) -> int | None:
+    """Index just past the FETCH item spec at the start of ``rest``, or None.
+
+    A spec is a parenthesised list or one item (which may hold a bracketed
+    section with spaces, e.g. BODY[HEADER.FIELDS (From To)]). Quoted strings
+    are skipped so a paren inside one doesn't count.
+    """
+    depth = 0
+    i = 0
+    while i < len(rest):
+        c = rest[i]
+        if c == '"':
+            i += 1
+            while i < len(rest) and rest[i] != '"':
+                i += 2 if rest[i] == "\\" else 1
+            if i >= len(rest):
+                return None
+        elif c in "([":
+            depth += 1
+        elif c in ")]":
+            depth -= 1
+            if depth < 0:
+                return None
+            if depth == 0 and rest[0] == "(":
+                return i + 1
+        elif c == " " and depth == 0:
+            return i
+        i += 1
+    return None if depth else len(rest)
+
+
+def _add_uid_to_fetch(line: bytes) -> bytes | None:
+    """Rewrite a non-UID FETCH command to also fetch the UID (internal#44).
+
+    The u2c pump hides a message with a staged MOVE by its UID; a plain
+    FETCH that doesn't ask for the UID gets a response without one, and the
+    message showed through. Returns None when the line is left as is: UID
+    already requested, or a shape we don't parse (fail-open display only,
+    c2u enforcement is unchanged).
+
+      a1 FETCH 1:3 (FLAGS)      ──► a1 FETCH 1:3 (FLAGS UID)
+      a1 FETCH 4 BODY.PEEK[]    ──► a1 FETCH 4 (BODY.PEEK[] UID)
+      a1 FETCH 2 FAST           ──► a1 FETCH 2 (FLAGS INTERNALDATE RFC822.SIZE UID)
+
+    The response then carries a UID item the agent didn't ask for. That is
+    valid IMAP (RFC 3501 7.4.2: servers may send items unasked, and many add
+    UID anyway), so it is not stripped on the way back.
+    """
+    try:
+        text = line.decode("ascii")
+    except UnicodeDecodeError:
+        return None
+    body = text[:-2] if text.endswith("\r\n") else text
+    m = _FETCH_CMD_RE.match(body)
+    if not m:
+        return None
+    head, rest = m.groups()
+    end = _fetch_spec_end(rest)
+    if end is None:
+        return None
+    spec, tail = rest[:end], rest[end:]
+    items = spec[1:-1].strip() if spec.startswith("(") else _FETCH_MACROS.get(spec.upper(), spec)
+    if not items or _HAS_UID_ITEM_RE.search(_QUOTED_RE.sub(b'""', items.encode()).decode()):
+        return None
+    return f"{head}({items} UID){tail}\r\n".encode("ascii")
 
 
 def _sync_literal_verb(raw: str) -> str:
@@ -896,6 +991,13 @@ async def _client_to_upstream(
             if parsed.command.upper() == "SEARCH":
                 session["search_uid_mode"] = parsed.uid
 
+            # Non-UID FETCH: also fetch the UID, so the u2c pump can hide a
+            # message with a staged MOVE (internal#44; see _add_uid_to_fetch).
+            if parsed.command.upper() == "FETCH" and not parsed.uid:
+                _with_uid = _add_uid_to_fetch(line_bytes)
+                if _with_uid is not None:
+                    line_bytes = _with_uid
+
             # Pass through to upstream; the u2c pump returns the response.
             try:
                 upstream_writer.write(line_bytes)
@@ -1288,6 +1390,18 @@ async def _upstream_to_client(
       "* 3 FETCH (UID 9 BODY[] {N}" ──► dropped, suppressing = True
       <N literal bytes>             ──► dropped (literal_remaining)
       " FLAGS (\\Seen))"             ──► dropped; no new literal ──► suppressing = False
+
+    UID after the literal (nuvrail-internal#44): a FETCH whose header line
+    announces a literal but carries no UID may name it after the literal
+    (servers order items freely). While a staged MOVE exists in the folder,
+    that response is held to its end, then dropped or relayed ("held"):
+
+      "* 3 FETCH (BODY[] {N}"       ──► held, held_text = [header]
+      <N literal bytes>             ──► held
+      " UID 9 FLAGS (\\Seen))"      ──► held; end of response
+                                    ──► UID 9 pending? drop all : relay all
+      held > _U2C_MAX_LINE          ──► relay held bytes unfiltered (logged),
+                                        stop holding (fail-open display)
     """
     # bytearray, not bytes: "+=" appends in place and "del buffer[:n]" drops the
     # front without copying the rest, so a long partial line costs O(n) total.
@@ -1299,11 +1413,28 @@ async def _upstream_to_client(
     overlong = False        # relaying an over-cap line raw until its CRLF
     overlong_is_data = False  # that line may announce a literal
     overlong_tail = b""     # its last _U2C_TAIL_KEEP bytes, for literal detection
+    held: bytearray | None = None  # FETCH response held to its end (#44)
+    held_text: list[bytes] = []    # its lines outside literals, searched for UID
+    held_pending: set[int] = set()  # pending-move UIDs when the hold began
 
     async def _emit(data: bytes) -> bool:
-        """Write to the client unless suppressing; False if the client is gone."""
+        """Write to the client unless suppressing; False if the client is gone.
+
+        While a response is held, bytes go to the hold instead. Past the cap
+        the hold is released unfiltered and holding stops.
+        """
+        nonlocal held
         if suppressing or not data:
             return True
+        if held is not None:
+            held += data
+            if len(held) <= _U2C_MAX_LINE:
+                return True
+            data, held = bytes(held), None
+            logger.warning(
+                "[%s] held FETCH response exceeds %d bytes; relaying it unfiltered",
+                peer, _U2C_MAX_LINE,
+            )
         try:
             client_writer.write(data)
             await client_writer.drain()
@@ -1405,6 +1536,38 @@ async def _upstream_to_client(
                 if continues_response:
                     continue  # last line of the suppressed response
 
+            # Line of a held FETCH response (#44): hold it too; at the end of
+            # the response, drop the lot if its UID has a staged MOVE.
+            if held is not None:
+                if not continues_response:
+                    # Can't happen (a held response ends on a continuation
+                    # line); if it does, release the hold rather than lose it.
+                    data, held = bytes(held), None
+                    if not await _emit(data):
+                        return
+                else:
+                    held_text.append(line_bytes)
+                    if not await _emit(line_bytes + b"\r\n"):
+                        return
+                    _lit_len = _u2c_announced_literal(line_bytes, True)
+                    if _lit_len is not None:
+                        literal_remaining = _lit_len
+                        after_literal = _lit_len == 0
+                        continue
+                    if held is None:
+                        continue  # went over the cap: already relayed
+                    data, held = bytes(held), None
+                    _held_uid = _uid_in_fetch_text(b" ".join(held_text))
+                    if _held_uid is not None and _held_uid in held_pending:
+                        logger.debug(
+                            "[%s] Suppressing FETCH (UID after literal) for pending-move UID %s",
+                            peer, _held_uid,
+                        )
+                        continue
+                    if not await _emit(data):
+                        return
+                    continue
+
             line = line_bytes.decode("utf-8", errors="replace")
             line_with_crlf = line_bytes + b"\r\n"
 
@@ -1504,6 +1667,29 @@ async def _upstream_to_client(
             )
             if _sup_len is None:
                 _lit_m = None
+            # No UID on a FETCH line that announces a literal (#44): the UID
+            # may come after the literal. Hold the response if anything in
+            # this folder has a staged MOVE (see the docstring).
+            if (
+                _lit_m is None
+                and not continues_response
+                and session.get("folder")
+                and _U2C_FETCH_HEAD_RE.match(line_bytes)
+                and _uid_in_fetch_text(line_bytes) is None
+            ):
+                _hold_len = _u2c_announced_literal(line_bytes, False)
+                _hold_pending = (
+                    await _pending_move_uids(session, db_path, peer) if _hold_len is not None else set()
+                )
+                if _hold_pending:
+                    with contextlib.suppress(Exception):
+                        await _sync_upstream_line(line, session, db_path, peer)
+                    held = bytearray(line_with_crlf)
+                    held_text = [line_bytes]
+                    held_pending = _hold_pending
+                    literal_remaining = _hold_len
+                    after_literal = _hold_len == 0
+                    continue
             if _lit_m and await _is_pending_move_uid(
                 session, int(_lit_m.group(2)), db_path, peer
             ):
@@ -1691,7 +1877,8 @@ async def _upstream_to_client(
 
     # Upstream closed mid-line or mid-literal: relay what we have (the session
     # is ending; there is nothing left to keep in sync).
-    if buffer and not suppressing:
+    # A held response (#44) is dropped: it is cut short and may be one to hide.
+    if buffer and not suppressing and held is None:
         with contextlib.suppress(ConnectionResetError, BrokenPipeError, OSError):
             client_writer.write(bytes(buffer))
             await client_writer.drain()
