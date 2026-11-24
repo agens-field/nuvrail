@@ -7,6 +7,28 @@ Takes structured operation parameters and:
   3. Inserts a 'staged' audit_log row
   4. Returns the operation ID
 
+Pending-op dedup (nuvrail-internal#45). An agent that repeats a write before
+the human has decided would otherwise get a second approval for the same
+action. For ops that name a message set:
+
+  create_operation(op)
+        |
+        |  message_ids non-empty and op_type not in _NEVER_DEDUP_OP_TYPES?
+        |-- no --------------------------------------------> INSERT (new op)
+        | yes
+        v
+  BEGIN IMMEDIATE  (serialise against other gateway processes)
+  pending, unexpired row with same agent, protocol, op_type,
+  folder_from, folder_to, sorted message_ids, sorted flags?
+        |-- no --------------------------------------------> INSERT (new op)
+        | yes
+        v
+  'deduplicated' audit row on the EXISTING op; return its id.
+  No new row, no auto-rule run, no push (the first call did those).
+
+Once the first op is decided (approved/executed/rejected/failed/expired) the
+same request stages a new op, as before.
+
 Sub-milestone: 1.0
 """
 from __future__ import annotations
@@ -60,6 +82,75 @@ async def _resolve_user_id_for_agent(
     ) as cur:
         row = await cur.fetchone()
     return row["user_id"] if row is not None else None
+
+
+# Op types never deduplicated even when they carry message_ids. Sending the
+# same mail twice may be deliberate, and an APPEND carries a body, not a set.
+_NEVER_DEDUP_OP_TYPES = {"smtp_send", "append"}
+
+
+def _normalize_id_list(value: object) -> list[str] | None:
+    """Return a sorted list of strings, or None for missing/empty.
+
+    Accepts a Python list or the JSON text stored in staged_operations, so a
+    stored row and a new request compare equal regardless of order or of int
+    vs str UIDs. Anything else is compared as a single opaque value.
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except ValueError:
+            return [value]
+    if not isinstance(value, (list, tuple)):
+        return [str(value)]
+    if not value:
+        return None
+    return sorted(str(v) for v in value)
+
+
+async def _find_pending_duplicate(
+    db,
+    *,
+    now: int,
+    agent_id: int | None,
+    op_type: str,
+    protocol: str,
+    folder_from: str | None,
+    folder_to: str | None,
+    message_ids: list | None,
+    flags_add: list | None,
+    flags_remove: list | None,
+) -> str | None:
+    """Return the id of a still-pending op identical to this request, or None.
+
+    "Identical" = same agent, protocol, op_type, source and destination folder,
+    and the same message set and flag changes (order-insensitive). Expired
+    rows that the expiry sweep has not reached yet do not count.
+    """
+    async with db.execute(
+        "SELECT id, message_ids, flags_add, flags_remove FROM staged_operations "
+        "WHERE status = 'pending' AND expires_at > ? AND agent_id IS ? "
+        "AND op_type = ? AND protocol = ? AND folder_from IS ? AND folder_to IS ? "
+        "ORDER BY created_at ASC",
+        (now, agent_id, op_type, protocol, folder_from, folder_to),
+    ) as cur:
+        rows = await cur.fetchall()
+    wanted = (
+        _normalize_id_list(message_ids),
+        _normalize_id_list(flags_add),
+        _normalize_id_list(flags_remove),
+    )
+    for row in rows:
+        found = (
+            _normalize_id_list(row["message_ids"]),
+            _normalize_id_list(row["flags_add"]),
+            _normalize_id_list(row["flags_remove"]),
+        )
+        if found == wanted:
+            return row["id"]
+    return None
 
 
 # Auto-actions that fully decide an op at staging time (no human review left).
@@ -240,6 +331,9 @@ async def create_operation(
 ) -> str:
     """Insert a staged_operations row + audit_log entry. Returns operation ID.
 
+    If an identical op is already pending (see the module docstring), no row
+    is inserted and the existing op's ID is returned instead.
+
     snapshot:   pre-op state dict for rejection revert (milestone 1.2).
     is_urgent:  1 = show at top of Pending view with urgent styling.
                 Defaults to 1 for smtp_send and trash ops, and for any op
@@ -256,7 +350,31 @@ async def create_operation(
             1 if (op_type in _URGENT_OP_TYPES or intent_label in _URGENT_INTENTS) else 0
         )
 
+    dedup = bool(message_ids) and op_type not in _NEVER_DEDUP_OP_TYPES
+
     async with get_db(db_path) as db:
+        if dedup:
+            # Take the write lock before the lookup so two gateway processes
+            # cannot both miss the existing row and insert twice.
+            await db.execute("BEGIN IMMEDIATE")
+            existing_id = await _find_pending_duplicate(
+                db, now=now, agent_id=agent_id, op_type=op_type,
+                protocol=protocol, folder_from=folder_from, folder_to=folder_to,
+                message_ids=message_ids, flags_add=flags_add,
+                flags_remove=flags_remove,
+            )
+            if existing_id is not None:
+                await insert_audit_event(
+                    db, timestamp=now, event='deduplicated', actor='ai_agent',
+                    operation_id=existing_id, agent_id=agent_id, op_type=op_type,
+                    intent_label=intent_label,
+                    detail=json.dumps({"description": description}),
+                )
+                await db.commit()
+                _logger.info(
+                    "Deduplicated %s request onto pending op %s", op_type, existing_id
+                )
+                return existing_id
         await db.execute(
             """
             INSERT INTO staged_operations (

@@ -224,7 +224,7 @@ CREATE TABLE IF NOT EXISTS audit_log (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     timestamp    INTEGER NOT NULL,
     operation_id TEXT REFERENCES staged_operations(id),
-    event        TEXT NOT NULL,             -- 'staged'|'approved'|'rejected'|'executed'|'execution_failed'
+    event        TEXT NOT NULL,             -- 'staged'|'deduplicated'|'approved'|'rejected'|'executed'|'execution_failed'|...
     actor        TEXT,                      -- 'ai_agent'|'human'|'system'
     agent_id     TEXT,
     intent_label TEXT,                      -- denormalized semantic intent (gateway.intent); NOT part of entry_hash

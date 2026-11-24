@@ -634,3 +634,29 @@ async def test_execute_oauth2_agent_moves_via_xoauth2(db_path: Path) -> None:
     assert not any(c[0] == "login" for c in fake.calls)
     assert result == {"dest_uidvalidity": 77, "dest_uids": "9"}
     assert fake.calls[-1] == ("logout",)
+
+
+
+async def test_second_move_of_already_moved_uid_fails_cleanly(db_path: Path) -> None:
+    """nuvrail-internal#45: once a MOVE has run, staging it again makes a new
+    op (no dedup against a decided op). If that one is approved too, the
+    upstream NO (UID already gone) marks it failed; nothing crashes."""
+    agent_id = await _seed_agent(db_path)
+    first = await _stage_move(db_path, agent_id)
+    with patch(
+        "gateway.execution.aioimaplib.IMAP4_SSL",
+        return_value=_FakeMailboxIMAP(uid_lines=[b"Move completed"]),
+    ):
+        await execute_operation(first["id"], first, db_path)
+    assert (await get_operation(first["id"], db_path=db_path))["status"] == "executed"
+
+    second = await _stage_move(db_path, agent_id)
+    assert second["id"] != first["id"]
+    with patch(
+        "gateway.execution.aioimaplib.IMAP4_SSL",
+        return_value=_FakeMailboxIMAP(uid_status="NO", uid_lines=[b"No such message"]),
+    ):
+        with pytest.raises(ExecutionError):
+            await execute_operation(second["id"], second, db_path)
+    assert (await get_operation(second["id"], db_path=db_path))["status"] == "failed"
+
